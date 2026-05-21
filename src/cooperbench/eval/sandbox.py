@@ -165,13 +165,65 @@ def test_merged(
         apply_status = setup_result.get("apply_status", {"agent1": "unknown", "agent2": "unknown"})
         any_apply_failed = "failed" in apply_status.values()
 
-        # Step 2: Try naive merge
+        # Short-circuit: if both agents submitted byte-identical patches
+        # (e.g. team mode where they fully merged each other's work and
+        # ended up with the exact same tree), there's nothing to merge.
+        # Skip the naive/union dance, which would try to apply patch B on
+        # top of patch A's hunks and reject them as already-applied — that
+        # produces an empty merged.patch and a downstream "No valid patches
+        # in input" failure even though both submissions are identical and
+        # individually fine.
+        #
+        # We also normalize the patch here: agents (notably codex) can emit
+        # unified diffs whose last hunk header has the wrong line count
+        # ("corrupt patch at line N").  ``git apply --recount`` ignores
+        # the header and rebuilds from content; we then re-emit the diff
+        # so runner.sh's plain ``git apply`` accepts it.
+        if patch1_content and patch2_content and patch1_content == patch2_content:
+            normalize = """
+cd /workspace/repo
+git checkout $BASE_SHA 2>&1 >/dev/null
+git checkout -b identical-merge 2>&1 >/dev/null
+if git apply /patches/patch1.patch 2>/dev/null \\
+   || git apply --recount /patches/patch1.patch 2>/dev/null; then
+    git add -A
+    git commit -m 'merged' --allow-empty >/dev/null 2>&1
+    git diff $BASE_SHA HEAD > /patches/merged.patch
+    echo "NORMALIZED"
+else
+    # fall back to raw patch if normalization itself fails
+    cp /patches/patch1.patch /patches/merged.patch
+    echo "RAW"
+fi
+"""
+            sb.exec("bash", "-c", f"export BASE_SHA={base_sha}\n{normalize}")
+            test1_result = _run_tests(sb, "tests1.patch", "merged.patch", base_sha)
+            test2_result = _run_tests(sb, "tests2.patch", "merged.patch", base_sha)
+            return {
+                "repo": repo_name,
+                "task_id": task_id,
+                "features": [feature1_id, feature2_id],
+                "setting": "coop",
+                "apply_status": {"agent1": "applied", "agent2": "applied"},
+                "merge": {
+                    "status": "identical",
+                    "strategy": "skip-merge-identical",
+                    "diff": patch1_content[:5000],
+                },
+                "feature1": test1_result,
+                "feature2": test2_result,
+                "both_passed": test1_result.get("passed", False) and test2_result.get("passed", False),
+                "error": None,
+                "evaluated_at": __import__("datetime").datetime.now().isoformat(),
+            }
+
+        # Step 2: Try naive merge.  No union fallback — union resolves
+        # conflicts by concatenating both sides, which usually produces
+        # syntactically broken code and rewards lucky non-overlap rather
+        # than real coordination.  Instead, when naive conflicts the eval
+        # falls through to "lead's patch alone" below.
         naive_result = _merge_naive(sb, base_sha)
 
-        # If any agent's patch failed to apply, the resulting "merge" is just
-        # a merge of base + the surviving agent's work into the other branch
-        # (which is also at base).  Don't pretend that's a clean merge of the
-        # agents' joint output — surface the apply failure as the merge status.
         if any_apply_failed:
             merge_status = "missing_input"
         elif naive_result["conflict"]:
@@ -181,43 +233,50 @@ def test_merged(
         strategy_used = "naive"
         merged_diff = naive_result["diff"]
 
-        # Step 3: If conflicts, try union merge
-        if naive_result["conflict"]:
-            union_result = _merge_union(sb, base_sha)
-            if not union_result.get("error"):
-                strategy_used = "union"
-                merged_diff = union_result["diff"]
-            else:
-                # Both naive and union failed - cannot proceed
-                return _merged_error_result(
-                    f"Both naive and union merge strategies failed. "
-                    f"Naive: conflicts. Union: {union_result.get('error')}"
-                )
-
-        # Step 4: Copy the right diff file to merged.patch
-        if strategy_used == "naive":
+        # Step 3: Compute the merged-tree test result.
+        #
+        # - status="clean": naive merge worked, copy that tree, run tests.
+        #   The merged-tree tests are AUTHORITATIVE for clean merges — no
+        #   fallback.  If the team's joint patch fails tests, the team failed.
+        # - status in {"conflicts", "missing_input"}: no useful merged tree.
+        #   Skip the merged-tree tests and go straight to the lead-alone
+        #   fallback below.
+        if merge_status == "clean":
             sb.exec("cp", "/patches/naive_diff.patch", "/patches/merged.patch")
+            verify = sb.exec("test", "-f", "/patches/merged.patch")
+            if verify.returncode != 0:
+                return _merged_error_result(f"Failed to create merged.patch (strategy: {strategy_used})")
+            test1_result = _run_tests(sb, "tests1.patch", "merged.patch", base_sha)
+            test2_result = _run_tests(sb, "tests2.patch", "merged.patch", base_sha)
+            winning_solo: str | None = None
         else:
-            sb.exec("cp", "/patches/union_diff.patch", "/patches/merged.patch")
+            # No merged-tree test path; surface failure for both features and
+            # let the lead-only fallback decide.
+            test1_result = {"passed": False, "exit_code": None, "tests_passed": 0, "tests_failed": 0, "output": ""}
+            test2_result = {"passed": False, "exit_code": None, "tests_passed": 0, "tests_failed": 0, "output": ""}
+            winning_solo = None
+            # Step 4 (fallback): only when naive failed.  Test the LEAD's
+            # patch alone against both feature suites — the lead is the
+            # team's integrator and their patch.txt is the "shipped artifact".
+            # No member fallback — if the member integrated but the lead
+            # didn't, the team coordination failed.
+            if apply_status.get("agent1") == "applied":
+                solo_t1 = _run_tests(sb, "tests1.patch", "patch1.patch", base_sha)
+                if solo_t1["passed"]:
+                    solo_t2 = _run_tests(sb, "tests2.patch", "patch1.patch", base_sha)
+                    if solo_t2["passed"]:
+                        test1_result, test2_result = solo_t1, solo_t2
+                        winning_solo = "agent1"
 
-        # Verify merged.patch was created
-        verify = sb.exec("test", "-f", "/patches/merged.patch")
-        if verify.returncode != 0:
-            return _merged_error_result(f"Failed to create merged.patch (strategy: {strategy_used})")
-
-        # Test feature 1
-        test1_result = _run_tests(sb, "tests1.patch", "merged.patch", base_sha)
-
-        # Test feature 2
-        test2_result = _run_tests(sb, "tests2.patch", "merged.patch", base_sha)
+        merge_payload = {
+            "status": merge_status,
+            "strategy": strategy_used if winning_solo is None else f"solo-{winning_solo}",
+            "diff": merged_diff[:5000] if merged_diff else "",  # Truncate for storage
+        }
 
         return {
             "apply_status": apply_status,
-            "merge": {
-                "status": merge_status,
-                "strategy": strategy_used,
-                "diff": merged_diff[:5000] if merged_diff else "",  # Truncate for storage
-            },
+            "merge": merge_payload,
             "feature1": {
                 "feature_id": feature1_id,
                 "passed": test1_result["passed"],

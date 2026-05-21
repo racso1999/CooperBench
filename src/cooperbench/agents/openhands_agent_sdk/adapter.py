@@ -350,7 +350,15 @@ class OpenHandsSDKRunner:
         Returns:
             AgentResult with status, patch, cost, steps, messages
         """
-        del team_role, team_id, task_list_url, kwargs  # see docstring
+        del kwargs  # unused
+        # NOTE: the team prompt section is NOT appended to the user
+        # ``task`` message for OpenHands — it's passed through
+        # ``coop_info["team_section"]`` below so the SDK injects it
+        # into the SYSTEM prompt instead, where it competes with
+        # OpenHands' own collaboration block.  Putting it in the user
+        # message gets out-prioritized (verified in oh_team_v2: agent
+        # ignored it entirely).
+        is_team = bool(team_role and team_id and task_list_url and agents and len(agents) > 1)
         # Convert to agent-server image if needed
         oh_image = self._get_oh_image(image)
 
@@ -416,6 +424,40 @@ class OpenHandsSDKRunner:
                 "messaging_enabled": redis_url is not None,
                 "git_enabled": git_enabled and git_url is not None,
             } if is_coop else None
+            # In team mode, fold team-mode env vars into coop_info so
+            # _build_credentials_dict (which already understands
+            # coop_info) propagates them to the sandbox.
+            if is_team and coop_info is None:
+                coop_info = {
+                    "agent_id": agent_id,
+                    "agents": agents or [],
+                    "messaging_enabled": False,
+                    "git_enabled": False,
+                }
+            if is_team and coop_info is not None:
+                from cooperbench.agents._coop.runtime import rewrite_comm_url_for_container
+                from cooperbench.agents._team import team_task_section
+                from cooperbench.agents._team.runtime import CONTAINER_TASKS_MIRROR_DIR
+
+                coop_info["team_env"] = {
+                    "CB_TEAM_REDIS_URL": rewrite_comm_url_for_container(task_list_url) or "",
+                    "CB_TEAM_RUN_ID": team_id or "",
+                    "CB_TEAM_AGENT_ID": agent_id,
+                    "CB_TEAM_AGENTS": ",".join(agents or []),
+                    "CB_TEAM_TASKS_DIR": CONTAINER_TASKS_MIRROR_DIR,
+                    "CB_TEAM_ROLE": team_role or "",
+                }
+                # Pass the team prompt section through coop_info so the
+                # OpenHands SDK injects it into the SYSTEM prompt (next
+                # to its own <collaboration> block).  Without this, the
+                # SDK's coop block teaches the model to use send_message
+                # only and our team_task_section appended to the user
+                # message gets ignored (oh_team_v2 failure mode).
+                coop_info["team_section"] = team_task_section(
+                    agents=agents,
+                    agent_id=agent_id,
+                    team_role=team_role,
+                )
             
             with ModalSandboxContext(oh_image, self.timeout, coop_info=coop_info) as sandbox_url:
 
@@ -670,15 +712,100 @@ class ModalSandboxContext:
                 creds["AGENT_ID"] = self.coop_info["agent_id"]
             if self.coop_info.get("agents"):
                 creds["AGENTS"] = ",".join(self.coop_info["agents"])
+            # Team-mode env vars consumed by the in-container
+            # coop-task-* CLI.
+            team_env = self.coop_info.get("team_env") or {}
+            for k, v in team_env.items():
+                if v:
+                    creds[k] = v
         
         return creds
 
     def __enter__(self) -> str:
         """Start sandbox, run agent-server, and return the tunnel URL."""
-        
+
         # Preserve image ENTRYPOINT.
         # The `-oh` images set ENTRYPOINT to launch `openhands.agent_server`.
         image = modal.Image.from_registry(self.image_name)
+
+        # Layer the team CLI onto the image when team mode is active so
+        # the agent-server's bash tool can call coop-task-* without us
+        # needing to rebuild the upstream `-oh` image.  Modal caches the
+        # resulting layered image; first team run pays a ~10s build,
+        # subsequent runs are instant.  Detected via the team_env dict
+        # that the adapter folds into coop_info.
+        team_env = (self.coop_info or {}).get("team_env") if self.coop_info else None
+        if team_env:
+            from pathlib import Path as _Path
+
+            _team_pkg = _Path(__file__).resolve().parent.parent / "_team"
+            coop_task_path = _team_pkg / "coop_task.py"
+            # The CoopTaskTrackerTool definition needs to be injected
+            # into the agent-server's openhands install so the agent
+            # can resolve ``Tool(name="CoopTaskTrackerTool")``.  We
+            # also drop a .pth file that auto-imports the module at
+            # site-init so register_tool fires before any tool lookup.
+            _oh_tools_dir = (
+                _Path(__file__).resolve().parent / "openhands-tools" / "openhands" / "tools"
+            )
+            coop_tracker_path = _oh_tools_dir / "task_tracker" / "coop_definition.py"
+            # Replacement __init__.py imports coop_definition so the
+            # registration overrides the upstream local TaskTracker.
+            init_override_path = _oh_tools_dir / "task_tracker" / "_team_init_override.py"
+            image = (
+                image.add_local_file(
+                    str(coop_task_path),
+                    "/usr/local/bin/cb-coop-task.py",
+                    copy=True,
+                )
+                .add_local_file(
+                    str(coop_tracker_path),
+                    "/tmp/cb-coop-tracker.py",
+                    copy=True,
+                )
+                .add_local_file(
+                    str(init_override_path),
+                    "/tmp/cb-task-tracker-init.py",
+                    copy=True,
+                )
+                .pip_install("redis")
+                # Inject CoopTaskTracker into the openhands install
+                # AND append a side-effect import to the package's
+                # ``__init__.py`` so it always runs when openhands
+                # tools are imported.  Note: this currently has no
+                # functional effect because the Modal sandbox can't
+                # reach the host Redis — see the docstring of
+                # ``coop_definition.py`` for details — but landing the
+                # injection plumbing here keeps the code path ready
+                # for the Redis-reachability follow-up.
+                .run_commands(
+                    # 1. Drop the tool file into the openhands install.
+                    # 2. Replace the package __init__.py with the
+                    #    pre-rendered override that imports
+                    #    coop_definition (overriding the local
+                    #    TaskTracker registration).  Using a pre-rendered
+                    #    file via add_local_file (not a shell heredoc)
+                    #    avoids quoting fragility.
+                    # 3. Delete any cached .pyc files so Python
+                    #    recompiles the new __init__ on next import.
+                    'OH_DIR="$(python3 -c \'import openhands.tools.task_tracker as t, os; print(os.path.dirname(t.__file__))\')"; '
+                    'cp /tmp/cb-coop-tracker.py "$OH_DIR/coop_definition.py" && '
+                    'cp /tmp/cb-task-tracker-init.py "$OH_DIR/__init__.py" && '
+                    'find "$OH_DIR" -name "*.pyc" -delete; '
+                    'find "$OH_DIR" -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true; '
+                    "echo INIT_PATCHED"
+                )
+                .run_commands(
+                    # Create one wrapper per coop-task-* subcommand.
+                    # Same Modal-Redis caveat as above; binaries are
+                    # present and discoverable but won't function until
+                    # Redis is reachable.
+                    'for sub in create claim update list request respond pending; do '
+                    'printf "#!/bin/bash\\nexec python3 /usr/local/bin/cb-coop-task.py %s \\"\\$@\\"\\n" "$sub" '
+                    '> "/usr/local/bin/coop-task-$sub" && chmod +x "/usr/local/bin/coop-task-$sub"; '
+                    'done'
+                )
+            )
         
         # Get or create app
         app = modal.App.lookup("cooperbench", create_if_missing=True)
