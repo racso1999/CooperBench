@@ -463,9 +463,22 @@ class OpenHandsSDKRunner:
                 from openhands.sdk.workspace import RemoteWorkspace
                 from openhands.tools.preset.default import get_default_agent
 
-                # Create LLM instance (will be serialized and sent to server)
-                api_key = os.getenv("GEMINI_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or os.getenv("OPENAI_API_KEY")
-                llm = LLM(model=model_name, api_key=api_key)
+                # Create LLM instance (will be serialized and sent to server).
+                # Azure OpenAI: when AZURE_OPENAI_* is set, point the LLM at the
+                # Azure deployment via litellm's openai-compatible provider
+                # (model openai/<deployment> + base_url + key).
+                from cooperbench.agents._azure import azure_litellm_model, resolve_azure_config
+
+                _azure = resolve_azure_config()
+                if _azure:
+                    llm = LLM(
+                        model=azure_litellm_model(model_name),
+                        api_key=_azure["api_key"],
+                        base_url=_azure["endpoint"],
+                    )
+                else:
+                    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or os.getenv("OPENAI_API_KEY")
+                    llm = LLM(model=model_name, api_key=api_key)
 
                 # Create agent with default tools (terminal, file_editor, task_tracker)
                 # Browser tools disabled since we're running headless
