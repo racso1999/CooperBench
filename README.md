@@ -86,16 +86,16 @@ pallets-click, pallets-jinja, pillow, openai-tiktoken, huggingface-datasets,
 llama-index). The matching amd64 images are published under
 `docker.io/racso1999/cooperbench-*`.
 
-The image registry namespace is overridable via the `COOPERBENCH_REGISTRY`
-environment variable (default `akhatua`). Point it at this fork's images:
+Use it exactly like the built-in subsets (`lite`, `flash`) — no extra setup:
 
 ```bash
-export COOPERBENCH_REGISTRY=racso1999
 cooperbench prepare
 cooperbench run -s amd64mini -a claude_code -m claude-sonnet-4-6 --setting coop --backend docker
 ```
 
-That's it — `docker run` auto-pulls the amd64 images for the 20 instances and runs.
+`docker run` auto-pulls the amd64 images for the 20 instances and runs. This
+fork defaults the image namespace to `racso1999`; set
+`COOPERBENCH_REGISTRY=akhatua` to target the upstream images for other subsets.
 
 ## Quick Start
 

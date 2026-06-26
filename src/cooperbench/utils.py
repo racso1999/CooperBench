@@ -21,11 +21,12 @@ from rich.console import Console
 
 console = Console()
 
-# Docker registry namespace that hosts the per-task images.  Defaults to the
-# upstream ``akhatua`` namespace; override with ``COOPERBENCH_REGISTRY`` to point
-# at a fork's own images (e.g. ``racso1999`` for the ``amd64mini`` subset, whose
-# amd64-native images live at ``docker.io/racso1999/cooperbench-*``).
-REGISTRY = os.environ.get("COOPERBENCH_REGISTRY", "akhatua")
+# Docker registry namespace that hosts the per-task images.  This fork defaults
+# to ``racso1999``, which hosts amd64-native images for the ``amd64mini`` subset
+# at ``docker.io/racso1999/cooperbench-*`` -- so ``cooperbench run -s amd64mini``
+# works with zero extra setup, exactly like the built-in subsets.  Set
+# ``COOPERBENCH_REGISTRY=akhatua`` to target the upstream image namespace instead.
+REGISTRY = os.environ.get("COOPERBENCH_REGISTRY", "racso1999")
 IMAGE_PREFIX = "cooperbench"
 
 
