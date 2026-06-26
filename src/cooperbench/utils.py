@@ -9,6 +9,7 @@ Provides:
 """
 
 import atexit
+import os
 import re
 import signal
 import sys
@@ -20,7 +21,11 @@ from rich.console import Console
 
 console = Console()
 
-REGISTRY = "akhatua"
+# Docker registry namespace that hosts the per-task images.  Defaults to the
+# upstream ``akhatua`` namespace; override with ``COOPERBENCH_REGISTRY`` to point
+# at a fork's own images (e.g. ``racso1999`` for the ``amd64mini`` subset, whose
+# amd64-native images live at ``docker.io/racso1999/cooperbench-*``).
+REGISTRY = os.environ.get("COOPERBENCH_REGISTRY", "akhatua")
 IMAGE_PREFIX = "cooperbench"
 
 

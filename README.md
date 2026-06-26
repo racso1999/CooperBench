@@ -77,6 +77,26 @@ Download the benchmark dataset from HuggingFace into `./dataset`:
 cooperbench prepare
 ```
 
+### `amd64mini` subset (this fork)
+
+This fork ships a small, **amd64-native** subset for quick local runs on x86_64
+machines, where many of the upstream task images are arm64-only. It selects
+**10 tasks × 2 feature pairs = 20 instances** across 7 repos (go-chi,
+pallets-click, pallets-jinja, pillow, openai-tiktoken, huggingface-datasets,
+llama-index). The matching amd64 images are published under
+`docker.io/racso1999/cooperbench-*`.
+
+The image registry namespace is overridable via the `COOPERBENCH_REGISTRY`
+environment variable (default `akhatua`). Point it at this fork's images:
+
+```bash
+export COOPERBENCH_REGISTRY=racso1999
+cooperbench prepare
+cooperbench run -s amd64mini -a claude_code -m claude-sonnet-4-6 --setting coop --backend docker
+```
+
+That's it — `docker run` auto-pulls the amd64 images for the 20 instances and runs.
+
 ## Quick Start
 
 ### CLI
