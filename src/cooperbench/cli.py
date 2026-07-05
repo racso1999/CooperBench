@@ -33,6 +33,7 @@ def _generate_run_name(
     repo: str | None = None,
     task: int | None = None,
     git_enabled: bool = False,
+    message_schema_name: str | None = None,
 ) -> str:
     """Generate experiment name from parameters.
 
@@ -49,6 +50,8 @@ def _generate_run_name(
 
     if git_enabled:
         parts.append("git")
+    if message_schema_name:
+        parts.append(f"struct-{message_schema_name}")
     parts.append(clean_model_name(model))
     if subset:
         parts.append(subset)
@@ -207,10 +210,21 @@ def main():
         action="store_true",
         help="Enable git collaboration (agents can push/pull/merge via shared remote)",
     )
-    run_parser.add_argument(
+    messaging_group = run_parser.add_mutually_exclusive_group()
+    messaging_group.add_argument(
         "--no-messaging",
         action="store_true",
         help="Disable messaging (send_message command)",
+    )
+    messaging_group.add_argument(
+        "--structured-messaging",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="SCHEMA_FILE",
+        help="(coop) enable STRUCTURED messaging: agents must send schema-conforming "
+        "messages instead of free text. Optionally pass a schema file (TOML/JSON); "
+        "omit it to use the bundled default. Mutually exclusive with --no-messaging.",
     )
     run_parser.add_argument(
         "--no-auto-eval",
@@ -367,6 +381,18 @@ def _run_command(args):
     if args.features:
         features = [int(f.strip()) for f in args.features.split(",")]
 
+    # Load the structured-messaging schema if --structured-messaging was passed.
+    # An empty string means "flag given without a path" -> bundled default.
+    message_schema = None
+    if getattr(args, "structured_messaging", None) is not None:
+        from cooperbench.agents._coop import SchemaError, load_schema
+
+        schema_path = args.structured_messaging or None
+        try:
+            message_schema = load_schema(schema_path)
+        except SchemaError as e:
+            raise SystemExit(f"error: invalid message schema: {e}")
+
     run_name = args.name
     if not run_name:
         run_name = _generate_run_name(
@@ -377,6 +403,7 @@ def _run_command(args):
             repo=args.repo,
             task=args.task,
             git_enabled=args.git,
+            message_schema_name=message_schema.get("name") if message_schema else None,
         )
 
     # Compose team-harness config from --team-no-* flags.  Only relevant
@@ -404,6 +431,7 @@ def _run_command(args):
         force=args.force,
         git_enabled=args.git,
         messaging_enabled=not args.no_messaging,
+        message_schema=message_schema,
         auto_eval=not args.no_auto_eval,
         eval_concurrency=args.eval_concurrency,
         backend=args.backend,

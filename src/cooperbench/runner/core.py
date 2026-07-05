@@ -49,6 +49,7 @@ def run(
     setting: str = "coop",
     git_enabled: bool = False,
     messaging_enabled: bool = True,
+    message_schema: dict | None = None,
     auto_eval: bool = True,
     eval_concurrency: int = 10,
     backend: str = "docker",
@@ -73,6 +74,7 @@ def run(
         setting: "coop" (2 agents) or "solo" (1 agent)
         git_enabled: Enable git collaboration (agents can push/pull/merge)
         messaging_enabled: Enable messaging (send_message command)
+        message_schema: Structured-messaging schema dict (coop only); None = free-form
         auto_eval: Automatically evaluate runs after completion
         eval_concurrency: Max parallel evaluations (default: 10)
         backend: Execution backend ("modal" or "docker")
@@ -172,6 +174,7 @@ def run(
                 quiet=not is_single,
                 git_enabled=git_enabled,
                 messaging_enabled=messaging_enabled,
+                message_schema=message_schema,
                 backend=backend,
                 agent_config=agent_config,
                 dataset_dir=dataset_dir,

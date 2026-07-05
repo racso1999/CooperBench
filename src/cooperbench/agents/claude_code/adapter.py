@@ -32,6 +32,7 @@ from cooperbench.agents._coop import (
 )
 from cooperbench.agents._coop.runtime import (
     CONTAINER_COOP_MSG_PATH,
+    CONTAINER_COOP_SCHEMA_PATH,
     CONTAINER_COOP_SEND_LOG,
     CONTAINER_INSTRUCTION_PATH,
     CONTAINER_REPO_PATH,
@@ -341,6 +342,7 @@ class ClaudeCodeRunner:
         git_server_url: str | None = None,
         git_enabled: bool = False,
         messaging_enabled: bool = True,
+        message_schema: dict | None = None,
         config: dict | None = None,
         agent_config: str | None = None,
         log_dir: str | None = None,
@@ -402,6 +404,7 @@ class ClaudeCodeRunner:
                 agents=agents if is_coop else None,
                 agent_id=agent_id if is_coop else None,
                 git_enabled=use_git,
+                message_schema=message_schema if is_coop else None,
             )
         setup_script = SETUP_SCRIPT_PATH.read_text()
         coop_msg_source = COOP_MSG_SCRIPT_PATH.read_text() if is_coop else None
@@ -420,6 +423,8 @@ class ClaudeCodeRunner:
                 "COOP_AGENTS": ",".join(agents or []),
                 "COOP_LOG_PATH": CONTAINER_COOP_SEND_LOG,
             }
+            if message_schema is not None:
+                coop_env["COOP_SCHEMA_PATH"] = CONTAINER_COOP_SCHEMA_PATH
             extra_run_args.append("--add-host=host.docker.internal:host-gateway")
         if endpoint_overrides and "--add-host=host.docker.internal:host-gateway" not in extra_run_args:
             extra_run_args.append("--add-host=host.docker.internal:host-gateway")
@@ -466,6 +471,8 @@ class ClaudeCodeRunner:
             if coop_msg_source is not None:
                 write_file_in_container(env, CONTAINER_COOP_MSG_PATH, coop_msg_source)
                 write_file_in_container(env, "/tmp/cb-coop-install.sh", COOP_INSTALL_SNIPPET_PATH.read_text())
+                if message_schema is not None:
+                    write_file_in_container(env, CONTAINER_COOP_SCHEMA_PATH, json.dumps(message_schema))
             if team_task_source is not None:
                 write_file_in_container(env, CONTAINER_TEAM_TASK_PATH, team_task_source)
                 write_file_in_container(env, CONTAINER_TEAM_INSTALL_PATH, TEAM_INSTALL_SNIPPET_PATH.read_text())
