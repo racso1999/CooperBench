@@ -25,6 +25,7 @@ def evaluate(
     backend: str = "docker",
     dataset_dir: str | None = None,
     logs_dir: str | None = None,
+    run_independent: bool = True,
 ) -> None:
     """Evaluate completed runs.
 
@@ -39,6 +40,9 @@ def evaluate(
         backend: Execution backend ("modal", "docker", "gcp")
         dataset_dir: Root of the dataset tree.  Defaults to ``./dataset``.
         logs_dir: Root of the logs tree.  Defaults to ``./logs``.
+        run_independent: When True (default), coop evals also run each agent's
+            own patch against its own feature's tests (pre-merge). Docker/Modal
+            path only; the GCP batch path computes its own.
     """
     runs = discover_runs(
         run_name=run_name,
@@ -108,7 +112,9 @@ def evaluate(
         skipped = 0
 
         def eval_run(run_info: dict) -> dict | None:
-            return _evaluate_single(run_info, force=force, backend=backend, dataset_dir=dataset_dir)
+            return _evaluate_single(
+                run_info, force=force, backend=backend, dataset_dir=dataset_dir, run_independent=run_independent
+            )
 
         if is_single:
             # Single run - show detailed output
@@ -276,6 +282,8 @@ def _run_gcp_batch(
                 "passed": batch_result.feature2_passed,
                 "test_output": batch_result.feature2_output or "",
             },
+            "feature1_independent": getattr(batch_result, "feature1_independent", None),
+            "feature2_independent": getattr(batch_result, "feature2_independent", None),
             "both_passed": batch_result.both_passed,
             "error": batch_result.error,
             "evaluated_at": datetime.now().isoformat(),
@@ -312,6 +320,7 @@ def _evaluate_single(
     force: bool = False,
     backend: str = "docker",
     dataset_dir: str | None = None,
+    run_independent: bool = True,
 ) -> dict | None:
     """Evaluate a single run."""
     log_dir = Path(run_info["log_dir"])
@@ -371,6 +380,7 @@ def _evaluate_single(
             patch2=patch2,
             backend=backend,
             dataset_dir=dataset_dir,
+            run_independent=run_independent,
         )
 
         eval_result = {
@@ -382,6 +392,8 @@ def _evaluate_single(
             "merge": result.get("merge", {}),
             "feature1": result.get("feature1", {}),
             "feature2": result.get("feature2", {}),
+            "feature1_independent": result.get("feature1_independent"),
+            "feature2_independent": result.get("feature2_independent"),
             "both_passed": result.get("both_passed", False),
             "error": result.get("error"),
             "evaluated_at": datetime.now().isoformat(),

@@ -156,6 +156,14 @@ def main():
         help="Number of parallel tasks (default: 20)",
     )
     run_parser.add_argument(
+        "--repeats",
+        type=int,
+        default=1,
+        help="Run the whole benchmark this many times for replicate sampling. "
+        "Each repeat is written to its own log dir with a numbered suffix "
+        "(e.g. myrun_1, myrun_2, ...). Default: 1.",
+    )
+    run_parser.add_argument(
         "--setting",
         choices=["coop", "solo", "team"],
         default="coop",
@@ -324,6 +332,13 @@ def main():
         default=None,
         help="Root of the logs tree (default: ./logs).",
     )
+    eval_parser.add_argument(
+        "--no-independent",
+        action="store_true",
+        help="(coop only) skip the pre-merge independent per-feature tests "
+        "(does each agent's own patch pass its own feature alone). On by "
+        "default; skipping is faster but loses the capability-vs-coordination split.",
+    )
 
     args = parser.parse_args()
 
@@ -390,28 +405,35 @@ def _run_command(args):
         protocol=not args.team_no_protocol,
     )
 
-    run(
-        run_name=run_name,
-        subset=args.subset,
-        repo=args.repo,
-        task_id=args.task,
-        features=features,
-        model_name=args.model,
-        agent=args.agent,
-        concurrency=args.concurrency,
-        setting=args.setting,
-        redis_url=args.redis,
-        force=args.force,
-        git_enabled=args.git,
-        messaging_enabled=not args.no_messaging,
-        auto_eval=not args.no_auto_eval,
-        eval_concurrency=args.eval_concurrency,
-        backend=args.backend,
-        agent_config=args.agent_config if hasattr(args, "agent_config") else None,
-        dataset_dir=args.dataset_dir if hasattr(args, "dataset_dir") else None,
-        logs_dir=args.log_dir if hasattr(args, "log_dir") else None,
-        team_features=team_features,
-    )
+    repeats = max(1, args.repeats)
+    for i in range(repeats):
+        # For repeats > 1, append a numbered suffix so replicates land in
+        # distinct log dirs under a shared prefix (e.g. myrun_1, myrun_2, ...).
+        rn = run_name if repeats == 1 else f"{run_name}_{i + 1}"
+        if repeats > 1:
+            print(f"=== repeat {i + 1}/{repeats}: {rn} ===")
+        run(
+            run_name=rn,
+            subset=args.subset,
+            repo=args.repo,
+            task_id=args.task,
+            features=features,
+            model_name=args.model,
+            agent=args.agent,
+            concurrency=args.concurrency,
+            setting=args.setting,
+            redis_url=args.redis,
+            force=args.force,
+            git_enabled=args.git,
+            messaging_enabled=not args.no_messaging,
+            auto_eval=not args.no_auto_eval,
+            eval_concurrency=args.eval_concurrency,
+            backend=args.backend,
+            agent_config=args.agent_config if hasattr(args, "agent_config") else None,
+            dataset_dir=args.dataset_dir if hasattr(args, "dataset_dir") else None,
+            logs_dir=args.log_dir if hasattr(args, "log_dir") else None,
+            team_features=team_features,
+        )
 
 
 def _eval_command(args):
@@ -437,6 +459,7 @@ def _eval_command(args):
         backend=args.backend,
         dataset_dir=args.dataset_dir if hasattr(args, "dataset_dir") else None,
         logs_dir=args.log_dir if hasattr(args, "log_dir") else None,
+        run_independent=not args.no_independent,
     )
 
 

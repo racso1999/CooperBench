@@ -100,11 +100,19 @@ def test_merged(
     timeout: int = 600,
     backend: str = "docker",
     dataset_dir: Path | str | None = None,
+    run_independent: bool = True,
 ) -> dict:
     """Test merged patches from two agents (coop mode).
 
     Creates two git branches, applies each agent's patch, merges them,
     then tests the merged result against both feature test suites.
+
+    When ``run_independent`` is set (the default), it ALSO tests each agent's
+    own patch against its own feature's tests in isolation (pre-merge), in the
+    same sandbox — so downstream analysis can tell "the agent never solved its
+    feature" apart from "the merge clobbered it".  Adds ``feature1_independent``
+    / ``feature2_independent`` to the result (``None`` when disabled or when the
+    eval errors before a base commit is available).
 
     Args:
         repo_name: Repository name
@@ -165,6 +173,22 @@ def test_merged(
         apply_status = setup_result.get("apply_status", {"agent1": "unknown", "agent2": "unknown"})
         any_apply_failed = "failed" in apply_status.values()
 
+        # Independent (pre-merge) capability: does each agent's OWN patch pass
+        # its OWN feature's tests, in isolation?  Computed regardless of the
+        # merge outcome (so a conflict doesn't hide that an agent had solved its
+        # feature), reusing this same sandbox — no extra container.  ``_run_tests``
+        # resets to the base commit before applying, so this is independent of
+        # the branch state the merge logic below relies on.
+        if run_independent:
+            feature1_independent: dict | None = _independent_result(
+                sb, "tests1.patch", "patch1.patch", patch1_content, base_sha
+            )
+            feature2_independent: dict | None = _independent_result(
+                sb, "tests2.patch", "patch2.patch", patch2_content, base_sha
+            )
+        else:
+            feature1_independent = feature2_independent = None
+
         # Short-circuit: if both agents submitted byte-identical patches
         # (e.g. team mode where they fully merged each other's work and
         # ended up with the exact same tree), there's nothing to merge.
@@ -212,6 +236,8 @@ fi
                 },
                 "feature1": test1_result,
                 "feature2": test2_result,
+                "feature1_independent": feature1_independent,
+                "feature2_independent": feature2_independent,
                 "both_passed": test1_result.get("passed", False) and test2_result.get("passed", False),
                 "error": None,
                 "evaluated_at": __import__("datetime").datetime.now().isoformat(),
@@ -293,6 +319,8 @@ fi
                 "tests_failed": test2_result.get("tests_failed", 0),
                 "test_output": test2_result["output"],
             },
+            "feature1_independent": feature1_independent,
+            "feature2_independent": feature2_independent,
             "both_passed": test1_result["passed"] and test2_result["passed"],
             "error": None,
         }
@@ -582,6 +610,23 @@ git checkout .gitattributes 2>/dev/null || rm -f .gitattributes
     return {"diff": diff, "output": output, "error": None}
 
 
+def _independent_result(sb: Sandbox, tests_patch: str, patch_file: str, patch_content: str, base_sha: str) -> dict:
+    """Test ONE agent's own patch against its OWN feature's tests, pre-merge.
+
+    Returns a compact dict (``passed`` / ``tests_passed`` / ``tests_failed`` /
+    ``reason``).  ``reason="no_patch"`` when the agent produced nothing to test.
+    """
+    if not patch_content:
+        return {"passed": False, "tests_passed": 0, "tests_failed": 0, "reason": "no_patch"}
+    r = _run_tests(sb, tests_patch, patch_file, base_sha)
+    return {
+        "passed": r["passed"],
+        "tests_passed": r.get("tests_passed", 0),
+        "tests_failed": r.get("tests_failed", 0),
+        "reason": None,
+    }
+
+
 def _run_tests(sb: Sandbox, tests_patch: str, feature_patch: str, base_sha: str) -> dict:
     """Run tests via runner.sh."""
     commands = f"""
@@ -760,6 +805,8 @@ def _merged_error_result(error: str) -> dict:
             "tests_failed": 0,
             "test_output": "",
         },
+        "feature1_independent": None,
+        "feature2_independent": None,
         "both_passed": False,
         "error": error,
     }

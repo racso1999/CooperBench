@@ -46,14 +46,21 @@ class DockerSandbox:
                 demux=False,
             )
 
-        # Use ThreadPoolExecutor to enforce timeout on exec_run
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(_run_exec)
-            try:
-                exit_code, output = future.result(timeout=self._timeout)
-            except FuturesTimeoutError:
-                return DockerExecResult(-1, f"Command timed out after {self._timeout} seconds".encode())
-
+        # Enforce a timeout on exec_run.  We deliberately do NOT use the
+        # executor as a context manager: its __exit__ runs shutdown(wait=True),
+        # which re-blocks on a genuinely hung exec_run thread and makes the
+        # timeout useless (the stall we hit on test suites that hang, e.g. ones
+        # that wait on a network/model fetch unavailable in-container).  With
+        # wait=False we return immediately on timeout; the abandoned worker
+        # thread unblocks when terminate() stops the container.
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(_run_exec)
+        try:
+            exit_code, output = future.result(timeout=self._timeout)
+        except FuturesTimeoutError:
+            executor.shutdown(wait=False)
+            return DockerExecResult(-1, f"Command timed out after {self._timeout} seconds".encode())
+        executor.shutdown(wait=False)
         return DockerExecResult(exit_code, output or b"")
 
     def terminate(self) -> None:

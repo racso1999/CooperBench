@@ -12,6 +12,7 @@ from cooperbench.eval import sandbox as _sandbox_module
 from cooperbench.eval.sandbox import (
     _error_result,
     _filter_test_files,
+    _independent_result,
     _load_patch,
     _merged_error_result,
     _parse_results,
@@ -45,6 +46,36 @@ class TestIdenticalPatchesShortCircuit:
         # caller can tell "we used identical-patches handling" from a
         # real merge.
         assert "identical" in src
+
+
+class TestIndependentPreMerge:
+    """The eval also runs each agent's OWN patch against its OWN feature's
+    tests (pre-merge), so downstream analysis can tell "the agent never solved
+    its feature" from "the merge clobbered it"."""
+
+    def test_independent_result_no_patch(self):
+        # Empty patch short-circuits without ever touching the sandbox.
+        r = _independent_result(None, "tests1.patch", "patch1.patch", "", "basesha")  # type: ignore[arg-type]
+        assert r["passed"] is False
+        assert r["reason"] == "no_patch"
+        assert r["tests_passed"] == 0
+        assert r["tests_failed"] == 0
+
+    def test_test_merged_runs_independent_by_default(self):
+        # Default-on flag, computed in-source and threaded into the results.
+        sig = inspect.signature(_sandbox_module.test_merged)
+        assert sig.parameters["run_independent"].default is True
+        src = inspect.getsource(_sandbox_module.test_merged)
+        assert "_independent_result(" in src
+        assert "feature1_independent" in src
+        assert "feature2_independent" in src
+
+    def test_merged_error_result_has_independent_fields(self):
+        # Error path must still carry the (None) independent keys so the schema
+        # is stable for downstream readers.
+        result = _merged_error_result("boom")
+        assert result["feature1_independent"] is None
+        assert result["feature2_independent"] is None
 
 
 class TestParseResults:
