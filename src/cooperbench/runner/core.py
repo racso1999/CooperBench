@@ -118,7 +118,17 @@ def run(
     log_dir = logs_root / run_name
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    _save_config(log_dir, run_name, agent, model_name, setting, concurrency, len(tasks))
+    _save_config(
+        log_dir,
+        run_name,
+        agent,
+        model_name,
+        setting,
+        concurrency,
+        len(tasks),
+        messaging_enabled=messaging_enabled,
+        message_schema=message_schema,
+    )
 
     results_list = []
     completed = 0
@@ -279,9 +289,29 @@ def _print_header(
 
 
 def _save_config(
-    log_dir: Path, run_name: str, agent: str, model_name: str, setting: str, concurrency: int, total_tasks: int
+    log_dir: Path,
+    run_name: str,
+    agent: str,
+    model_name: str,
+    setting: str,
+    concurrency: int,
+    total_tasks: int,
+    messaging_enabled: bool = True,
+    message_schema: dict | None = None,
 ) -> None:
-    """Save run configuration."""
+    """Save run configuration.
+
+    When structured messaging is used, the FULL message schema (field
+    definitions, not just its name) is recorded here so the run is
+    self-documenting and reproducible even if the source schema file is
+    later edited.
+    """
+    if message_schema is not None:
+        messaging_mode = "structured"
+    elif messaging_enabled:
+        messaging_mode = "free"
+    else:
+        messaging_mode = "off"
     run_config = {
         "run_name": run_name,
         "agent_framework": agent,
@@ -289,6 +319,8 @@ def _save_config(
         "setting": setting,
         "concurrency": concurrency,
         "total_tasks": total_tasks,
+        "messaging_mode": messaging_mode,
+        "message_schema": message_schema,
         "started_at": datetime.now().isoformat(),
     }
     with open(log_dir / "config.json", "w") as f:
