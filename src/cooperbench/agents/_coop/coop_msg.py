@@ -20,6 +20,11 @@ Config is read from environment variables (set by the adapter):
     COOP_LOG_PATH    optional; if set, every successful send is appended
                      to this file as one JSON line for the host adapter
                      to harvest after the run.
+    COOP_SCHEMA_PATH optional; path to a JSON schema (written by the adapter).
+                     When set, ``send``/``broadcast`` take one ``--<field>``
+                     flag per schema field and REJECT (nonzero exit, no send)
+                     messages that omit a required field or use an out-of-enum
+                     value.  When unset, messaging is free-form (legacy).
 """
 
 from __future__ import annotations
@@ -54,6 +59,68 @@ def _agents() -> list[str]:
     return [a.strip() for a in raw.split(",") if a.strip()]
 
 
+def _schema() -> dict[str, Any] | None:
+    """Load the structured-messaging schema, or None for free-form mode."""
+    path = os.environ.get("COOP_SCHEMA_PATH")
+    if not path:
+        return None
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _print_schema(schema: dict[str, Any]) -> None:
+    print(f"  required message format (schema '{schema.get('name')}'):", file=sys.stderr)
+    for f in schema.get("fields", []):
+        req = "required" if f.get("required") else "optional"
+        enum = f" one of {f['enum']}" if f.get("enum") else ""
+        print(f"    --{f['name']} <value>  [{req}]{enum}  {f.get('description', '')}", file=sys.stderr)
+
+
+def _collect_fields(schema: dict[str, Any], args: argparse.Namespace) -> dict[str, str] | None:
+    """Validate the ``--<field>`` args against the schema.
+
+    Returns the field dict on success, or None (after printing the problem
+    and the schema to stderr) if a required field is missing or an enum is
+    violated — the caller then aborts WITHOUT sending.
+    """
+    fields: dict[str, str] = {}
+    errors: list[str] = []
+    for f in schema.get("fields", []):
+        val = getattr(args, f["name"], None)
+        if val is None or val == "":
+            if f.get("required"):
+                errors.append(f"missing required field --{f['name']} ({f.get('description', '')})")
+            continue
+        enum = f.get("enum")
+        if enum and val not in enum:
+            errors.append(f"--{f['name']} must be one of {enum} (got {val!r})")
+            continue
+        fields[f["name"]] = val
+    if errors:
+        print("coop-send: message REJECTED — does not match the required schema:", file=sys.stderr)
+        for e in errors:
+            print(f"  - {e}", file=sys.stderr)
+        _print_schema(schema)
+        return None
+    return fields
+
+
+def _render_fields(fields: dict[str, str]) -> str:
+    """Human-readable rendering stored as the message body (for coop-recv)."""
+    return "\n".join(f"{k}: {v}" for k, v in fields.items())
+
+
+def _kind(schema: dict[str, Any], fields: dict[str, str]) -> str | None:
+    """Value of the first enum field, treated as the message 'type'/kind."""
+    for f in schema.get("fields", []):
+        if f.get("enum"):
+            return fields.get(f["name"])
+    return None
+
+
 def _log_send(entry: dict[str, Any]) -> None:
     path = os.environ.get("COOP_LOG_PATH")
     if not path:
@@ -66,34 +133,65 @@ def _log_send(entry: dict[str, Any]) -> None:
         pass
 
 
-def _send(client: redis.Redis, prefix: str, recipient: str, content: str) -> None:
-    entry = {
+def _send(
+    client: redis.Redis,
+    prefix: str,
+    recipient: str,
+    content: str,
+    *,
+    fields: dict[str, str] | None = None,
+    kind: str | None = None,
+) -> None:
+    entry: dict[str, Any] = {
         "from": _agent_id(),
         "to": recipient,
         "content": content,
         "timestamp": time.time(),
         "timestamp_iso": datetime.now().isoformat(),
     }
+    if fields is not None:
+        entry["fields"] = fields
+    if kind is not None:
+        entry["kind"] = kind
     client.rpush(f"{prefix}{recipient}:inbox", json.dumps(entry))
     _log_send(entry)
 
 
 def cmd_send(args: argparse.Namespace) -> int:
     client, prefix = _client_and_prefix()
-    content = args.content if args.content is not None else sys.stdin.read()
-    _send(client, prefix, args.recipient, content)
+    schema = _schema()
+    if schema is not None:
+        fields = _collect_fields(schema, args)
+        if fields is None:
+            return 1
+        _send(client, prefix, args.recipient, _render_fields(fields), fields=fields, kind=_kind(schema, fields))
+    else:
+        content = args.content if args.content is not None else sys.stdin.read()
+        _send(client, prefix, args.recipient, content)
     print(f"sent to {args.recipient}", file=sys.stderr)
     return 0
 
 
 def cmd_broadcast(args: argparse.Namespace) -> int:
     client, prefix = _client_and_prefix()
-    content = args.content if args.content is not None else sys.stdin.read()
+    schema = _schema()
     me = _agent_id()
-    for agent in _agents():
-        if agent == me:
-            continue
-        _send(client, prefix, agent, content)
+    if schema is not None:
+        fields = _collect_fields(schema, args)
+        if fields is None:
+            return 1
+        content = _render_fields(fields)
+        kind = _kind(schema, fields)
+        for agent in _agents():
+            if agent == me:
+                continue
+            _send(client, prefix, agent, content, fields=fields, kind=kind)
+    else:
+        content = args.content if args.content is not None else sys.stdin.read()
+        for agent in _agents():
+            if agent == me:
+                continue
+            _send(client, prefix, agent, content)
     return 0
 
 
@@ -125,17 +223,34 @@ def cmd_agents(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _add_field_args(parser: argparse.ArgumentParser, schema: dict[str, Any]) -> None:
+    """Add one ``--<field>`` option per schema field (validated in the command,
+    not by argparse, so we can print the full schema on a violation)."""
+    for f in schema.get("fields", []):
+        help_txt = f.get("description", "")
+        if f.get("enum"):
+            help_txt = f"{help_txt} (one of {', '.join(f['enum'])})".strip()
+        parser.add_argument(f"--{f['name']}", default=None, help=help_txt)
+
+
 def main(argv: list[str] | None = None) -> int:
+    schema = _schema()
     parser = argparse.ArgumentParser(prog="coop-msg")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_send = sub.add_parser("send")
     p_send.add_argument("recipient")
-    p_send.add_argument("content", nargs="?", default=None)
+    if schema is not None:
+        _add_field_args(p_send, schema)
+    else:
+        p_send.add_argument("content", nargs="?", default=None)
     p_send.set_defaults(func=cmd_send)
 
     p_bcast = sub.add_parser("broadcast")
-    p_bcast.add_argument("content", nargs="?", default=None)
+    if schema is not None:
+        _add_field_args(p_bcast, schema)
+    else:
+        p_bcast.add_argument("content", nargs="?", default=None)
     p_bcast.set_defaults(func=cmd_broadcast)
 
     sub.add_parser("recv").set_defaults(func=cmd_recv)

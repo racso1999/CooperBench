@@ -61,6 +61,65 @@ class TestGenerateRunName:
         assert solo_name.startswith("solo-msa_v2-")
         assert coop_name.startswith("coop-msa_v2-")
 
+    def test_structured_messaging_name_includes_schema(self):
+        """Structured-messaging arms are disambiguated by schema name."""
+        name = _generate_run_name("coop", "gpt-4o", message_schema_name="semi_structured_v1")
+        assert "struct-semi_structured_v1" in name
+        # free-form (no schema) stays clean
+        assert "struct-" not in _generate_run_name("coop", "gpt-4o")
+
+
+class TestStructuredMessagingCLI:
+    """Tests for the --structured-messaging flag wiring."""
+
+    def test_mutually_exclusive_with_no_messaging(self):
+        from cooperbench.cli import main
+
+        argv = ["cooperbench", "run", "--structured-messaging", "--no-messaging", "--subset", "nano"]
+        with patch.object(sys, "argv", argv):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 2  # argparse usage error
+
+    def test_flag_threads_schema_into_run(self, monkeypatch):
+        """--structured-messaging loads the default schema and passes it to run()."""
+        from cooperbench import cli
+
+        captured = {}
+
+        def fake_run(**kwargs):
+            captured.update(kwargs)
+
+        monkeypatch.setattr("cooperbench.runner.run", fake_run)
+        argv = [
+            "cooperbench",
+            "run",
+            "--setting",
+            "coop",
+            "--subset",
+            "nano",
+            "-a",
+            "claude_code",
+            "-m",
+            "claude-sonnet-5",
+            "--structured-messaging",
+        ]
+        with patch.object(sys, "argv", argv):
+            cli.main()
+        assert captured.get("message_schema") is not None
+        assert captured["message_schema"]["name"] == "semi_structured_v1"
+        assert captured["messaging_enabled"] is True
+
+    def test_no_flag_means_no_schema(self, monkeypatch):
+        from cooperbench import cli
+
+        captured = {}
+        monkeypatch.setattr("cooperbench.runner.run", lambda **kw: captured.update(kw))
+        argv = ["cooperbench", "run", "--setting", "coop", "--subset", "nano", "-a", "claude_code", "-m", "x"]
+        with patch.object(sys, "argv", argv):
+            cli.main()
+        assert captured.get("message_schema") is None
+
 
 class TestCLI:
     """Tests for CLI."""

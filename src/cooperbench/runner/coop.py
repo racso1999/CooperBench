@@ -50,6 +50,7 @@ def execute_coop(
     quiet: bool = False,
     git_enabled: bool = False,
     messaging_enabled: bool = True,
+    message_schema: dict | None = None,
     backend: str = "docker",
     agent_config: str | None = None,
     dataset_dir: Path | str | None = None,
@@ -58,6 +59,8 @@ def execute_coop(
     """Execute a cooperative task (two agents, separate features).
 
     Args:
+        message_schema: When set, agents use structured messaging conforming
+            to this schema (see ``--structured-messaging``); ``None`` = free-form.
         agent_config: Path to agent-specific configuration file (optional)
         dataset_dir: Root of the dataset tree.  Defaults to ``./dataset``.
         logs_dir: Root to write run logs under.  Defaults to ``./logs``.
@@ -125,6 +128,7 @@ def execute_coop(
                 git_enabled=git_enabled,
                 git_network=git_network,
                 messaging_enabled=messaging_enabled,
+                message_schema=message_schema,
                 quiet=quiet,
                 backend=backend,
                 agent_config=agent_config,
@@ -237,6 +241,8 @@ def execute_coop(
         "total_cost": total_cost,
         "total_steps": total_steps,
         "messages_sent": len(sent_msgs),
+        "message_schema": message_schema.get("name") if message_schema else None,
+        "messages_by_kind": _count_by_kind(sent_msgs),
         "log_dir": str(log_dir),
     }
 
@@ -266,6 +272,7 @@ def _spawn_agent(
     git_enabled: bool = False,
     git_network: str | None = None,
     messaging_enabled: bool = True,
+    message_schema: dict | None = None,
     quiet: bool = False,
     backend: str = "docker",
     agent_config: str | None = None,
@@ -328,6 +335,7 @@ def _spawn_agent(
         git_server_url=git_server_url,
         git_enabled=git_enabled,
         messaging_enabled=messaging_enabled,
+        message_schema=message_schema,
         config=config,
         agent_config=agent_config,
         log_dir=log_dir_path,
@@ -350,6 +358,16 @@ def _spawn_agent(
     }
 
 
+def _count_by_kind(sent_msgs: list[dict]) -> dict[str, int]:
+    """Count sent messages by their structured 'kind' (schema type field)."""
+    counts: dict[str, int] = {}
+    for m in sent_msgs:
+        kind = m.get("kind")
+        if kind is not None:
+            counts[kind] = counts.get(kind, 0) + 1
+    return counts
+
+
 def _extract_conversation(results: dict, agents: list[str]) -> list[dict]:
     """Extract inter-agent messages from results."""
     conversation = []
@@ -368,6 +386,7 @@ def _extract_conversation(results: dict, agents: list[str]) -> list[dict]:
                     "message": sent_msg.get("message", sent_msg.get("content", "")),
                     "timestamp": sent_msg.get("timestamp"),
                     "feature_id": fid,
+                    "kind": sent_msg.get("kind"),
                 }
             )
 

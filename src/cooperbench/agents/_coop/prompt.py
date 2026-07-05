@@ -131,12 +131,67 @@ Messages are not magic — your peers only know what you tell them.
 """
 
 
+def _structured_coop_block(agent_id: str, partners: list[str], schema: dict) -> str:
+    partner_str = ", ".join(partners)
+    fields = schema.get("fields", [])
+
+    field_lines = []
+    example_parts = []
+    for f in fields:
+        req = "required" if f.get("required") else "optional"
+        enum = f" — one of: {', '.join(f['enum'])}" if f.get("enum") else ""
+        field_lines.append(f"- `--{f['name']}` ({req}){enum}: {f.get('description', '')}")
+        if f.get("required"):
+            sample = f["enum"][0] if f.get("enum") else f"<{f['name']}>"
+            example_parts.append(f'--{f["name"]} "{sample}"')
+    fields_doc = "\n".join(field_lines)
+    example_recipient = partners[0] if partners else "agent2"
+    example = "coop-send " + example_recipient + " " + " ".join(example_parts)
+
+    return f"""## Cooperation protocol (structured messaging)
+
+You are **{agent_id}**, working alongside: **{partner_str}**.
+Each agent has been assigned a separate feature from the same codebase;
+your features may overlap (touch the same files), so coordinate to avoid
+clobbering each other's changes.
+
+Cross-agent messages are **structured** (schema `{schema.get("name")}`). Every
+`coop-send` / `coop-broadcast` MUST supply these fields as flags:
+
+{fields_doc}
+
+**Messages that omit a required field or use an out-of-enum value are
+REJECTED — they exit non-zero and are NOT delivered to your peer.** Field
+values are free text; only these coordination fields are enforced.
+
+```bash
+{example}                       # send to a specific peer
+coop-broadcast {" ".join(example_parts)}   # send to every other peer
+coop-recv                                    # drain your inbox (prints JSON list)
+coop-peek                                    # number of unread messages
+coop-agents                                  # list every agent id
+```
+
+Recommended workflow:
+
+1. At the START, `coop-broadcast` a `CLAIM` declaring the files you intend
+   to touch, before you begin editing.
+2. `coop-recv` your peers' claims — at minimum after major edits and before
+   submitting — and if two agents claim the same file, coordinate explicitly
+   (split the file, agree on one owner, or merge changes).
+3. Keep each field short and specific.
+
+Messages are not magic — your peers only know what you tell them.
+"""
+
+
 def build_instruction(
     task: str,
     *,
     agents: list[str] | None = None,
     agent_id: str | None = None,
     git_enabled: bool = False,
+    message_schema: dict | None = None,
 ) -> str:
     """Compose the full instruction for a single agent run.
 
@@ -148,13 +203,20 @@ def build_instruction(
         git_enabled: Whether the shared git remote is configured.  When
             true (and we're in coop mode), append a git collaboration
             section to the prompt.
+        message_schema: When provided (and in coop mode), render the
+            structured-messaging block for this schema instead of the
+            free-form messaging block.  ``None`` keeps the free-form block
+            verbatim (the baseline arm).
     """
     partners: list[str] = []
     if agents and agent_id:
         partners = [a for a in agents if a != agent_id]
     sections = [task, _SUBMISSION_BLOCK]
     if partners and agent_id:
-        sections.append(_coop_block(agent_id, partners))
+        if message_schema is not None:
+            sections.append(_structured_coop_block(agent_id, partners, message_schema))
+        else:
+            sections.append(_coop_block(agent_id, partners))
         if git_enabled:
             sections.append(_git_block(agent_id, partners))
     return "\n\n---\n\n".join(sections)

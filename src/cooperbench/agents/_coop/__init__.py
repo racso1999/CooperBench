@@ -23,10 +23,22 @@ from cooperbench.agents._coop.runtime import (
     parse_sent_messages_log,
     rewrite_comm_url_for_container,
 )
+from cooperbench.agents._coop.schema import (
+    DEFAULT_SCHEMA_PATH,
+    SchemaError,
+    load_schema,
+    to_container_json,
+    type_field,
+)
 
 __all__ = [
+    "DEFAULT_SCHEMA_PATH",
+    "SchemaError",
     "build_git_setup_command",
     "build_instruction",
+    "load_schema",
     "parse_sent_messages_log",
     "rewrite_comm_url_for_container",
+    "to_container_json",
+    "type_field",
 ]

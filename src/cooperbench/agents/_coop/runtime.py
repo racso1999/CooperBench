@@ -15,6 +15,7 @@ from typing import Any, Protocol
 # convention for outputs the adapter needs to harvest.
 CONTAINER_REPO_PATH = "/workspace/repo"
 CONTAINER_COOP_MSG_PATH = "/tmp/cb-coop-msg.py"
+CONTAINER_COOP_SCHEMA_PATH = "/tmp/cb-coop-schema.json"
 CONTAINER_COOP_SEND_LOG = "/tmp/cb-coop-sent.jsonl"
 CONTAINER_SETUP_PATH = "/tmp/cb-setup.sh"
 CONTAINER_INSTRUCTION_PATH = "/tmp/cb-instruction.txt"
