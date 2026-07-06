@@ -10,6 +10,7 @@ Usage:
     coop-send <recipient> <content>      # send to one agent
     coop-broadcast <content>             # send to every other agent
     coop-recv                            # drain this agent's inbox (JSON list)
+    coop-await [--timeout N]             # block until a message arrives, then drain
     coop-peek                            # count unread messages
     coop-agents                          # list all agent ids
 
@@ -211,6 +212,24 @@ def cmd_recv(_args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_await(args: argparse.Namespace) -> int:
+    """Block until at least one message is in this agent's inbox (or timeout),
+    then drain and print it like ``recv``.  Used for the plan/handshake barrier:
+    an agent sends its proposal, then ``coop-await``s the partner's reply."""
+    client, prefix = _client_and_prefix()
+    key = f"{prefix}{_agent_id()}:inbox"
+    deadline = time.time() + args.timeout
+    while time.time() < deadline:
+        if client.llen(key) > 0:
+            return cmd_recv(args)
+        time.sleep(2)
+    # Timed out: print an empty JSON list so callers that parse the output
+    # don't choke, and note it on stderr.
+    print("[]")
+    print(f"coop-await: no message within {args.timeout}s", file=sys.stderr)
+    return 0
+
+
 def cmd_peek(_args: argparse.Namespace) -> int:
     client, prefix = _client_and_prefix()
     print(client.llen(f"{prefix}{_agent_id()}:inbox"))
@@ -254,6 +273,9 @@ def main(argv: list[str] | None = None) -> int:
     p_bcast.set_defaults(func=cmd_broadcast)
 
     sub.add_parser("recv").set_defaults(func=cmd_recv)
+    p_await = sub.add_parser("await")
+    p_await.add_argument("--timeout", type=int, default=300)
+    p_await.set_defaults(func=cmd_await)
     sub.add_parser("peek").set_defaults(func=cmd_peek)
     sub.add_parser("agents").set_defaults(func=cmd_agents)
 

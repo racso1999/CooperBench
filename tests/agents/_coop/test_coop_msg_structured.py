@@ -72,6 +72,21 @@ class TestStructuredSend:
         assert _inbox(fake, "agent1") == []
 
 
+class TestAwait:
+    def test_await_drains_present_message(self, monkeypatch, tmp_path):
+        fake, _ = _setup(monkeypatch, tmp_path, structured=False)
+        fake.rpush("agent1:inbox", json.dumps({"from": "agent2", "content": "hi", "kind": "ACCEPT"}))
+        rc = coop_msg.main(["await"])
+        assert rc == 0
+        assert fake.llen("agent1:inbox") == 0  # drained
+
+    def test_await_timeout_prints_empty_list(self, monkeypatch, tmp_path, capsys):
+        _setup(monkeypatch, tmp_path, structured=False)
+        rc = coop_msg.main(["await", "--timeout", "0"])
+        assert rc == 0
+        assert "[]" in capsys.readouterr().out
+
+
 class TestFreeFormUnchanged:
     def test_freeform_send_has_no_fields_or_kind(self, monkeypatch, tmp_path):
         fake, _ = _setup(monkeypatch, tmp_path, structured=False)

@@ -148,6 +148,15 @@ def _structured_coop_block(agent_id: str, partners: list[str], schema: dict) -> 
     example_recipient = partners[0] if partners else "agent2"
     example = "coop-send " + example_recipient + " " + " ".join(example_parts)
 
+    default_workflow = """Recommended workflow:
+
+1. At the START, broadcast which files you intend to touch, before you begin editing.
+2. `coop-recv` (or `coop-await`) to read your peers' messages — at minimum after
+   major edits and before submitting — and if two agents want the same file,
+   coordinate explicitly (split it, agree on one owner, or merge changes).
+3. Keep each field short and specific."""
+    workflow = schema.get("instructions") or default_workflow
+
     return f"""## Cooperation protocol (structured messaging)
 
 You are **{agent_id}**, working alongside: **{partner_str}**.
@@ -167,19 +176,13 @@ values are free text; only these coordination fields are enforced.
 ```bash
 {example}                       # send to a specific peer
 coop-broadcast {" ".join(example_parts)}   # send to every other peer
-coop-recv                                    # drain your inbox (prints JSON list)
+coop-recv                                    # drain your inbox now (prints JSON list)
+coop-await                                   # BLOCK until a peer replies, then drain
 coop-peek                                    # number of unread messages
 coop-agents                                  # list every agent id
 ```
 
-Recommended workflow:
-
-1. At the START, `coop-broadcast` a `CLAIM` declaring the files you intend
-   to touch, before you begin editing.
-2. `coop-recv` your peers' claims — at minimum after major edits and before
-   submitting — and if two agents claim the same file, coordinate explicitly
-   (split the file, agree on one owner, or merge changes).
-3. Keep each field short and specific.
+{workflow}
 
 Messages are not magic — your peers only know what you tell them.
 """

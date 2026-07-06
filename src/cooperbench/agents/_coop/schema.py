@@ -71,6 +71,10 @@ def _normalize(data: dict[str, Any], source: str) -> dict[str, Any]:
     if not isinstance(name, str) or not name.strip():
         raise SchemaError(f"{source}: 'name' is required and must be a non-empty string")
 
+    instructions = data.get("instructions")
+    if instructions is not None and not isinstance(instructions, str):
+        raise SchemaError(f"{source}: 'instructions' must be a string")
+
     # TOML array-of-tables lands under 'field'; JSON authors may use 'fields'.
     raw_fields = data.get("field", data.get("fields"))
     if not isinstance(raw_fields, list) or not raw_fields:
@@ -110,7 +114,7 @@ def _normalize(data: dict[str, Any], source: str) -> dict[str, Any]:
             }
         )
 
-    return {"name": name, "fields": fields}
+    return {"name": name, "instructions": instructions, "fields": fields}
 
 
 def load_schema(path: str | Path | None) -> dict[str, Any]:

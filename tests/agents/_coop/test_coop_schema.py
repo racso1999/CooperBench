@@ -72,3 +72,20 @@ class TestLoadSchema:
         p.write_text("name = = broken")
         with pytest.raises(SchemaError):
             load_schema(p)
+
+    def test_instructions_parsed(self, tmp_path):
+        p = tmp_path / "s.toml"
+        p.write_text(
+            'name = "p"\ninstructions = "plan before code"\n[[field]]\nname = "type"\nrequired = true\nenum = ["A", "B"]\n'
+        )
+        s = load_schema(p)
+        assert s["instructions"] == "plan before code"
+
+    def test_instructions_default_none(self):
+        assert load_schema(None)["instructions"] is None  # semi_structured_v1 has none
+
+    def test_instructions_must_be_string(self, tmp_path):
+        p = tmp_path / "s.json"
+        p.write_text(json.dumps({"name": "x", "instructions": 5, "fields": [{"name": "a"}]}))
+        with pytest.raises(SchemaError):
+            load_schema(p)

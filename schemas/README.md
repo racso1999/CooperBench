@@ -23,6 +23,15 @@ Omitting the path uses the bundled default,
 | `typed_only.toml` | `typed_v1` | Just a required message **type** tag + free-text body. Isolates whether type-tagging alone helps. |
 | `ownership_first.toml` | `ownership_first_v1` | Heavy structure aimed squarely at textual merge conflicts: an explicit file/function **ownership claim** on every message. |
 | `minimal.toml` | `minimal_v1` | One free-text field. Near-baseline "structure floor" — tests whether *any* structure beats free-form. |
+| `plan_handshake.toml` | `plan_handshake_v1` | Two-phase protocol: agents must PROPOSE/ACCEPT a **disjoint file split** (a real handshake) *before* editing. Uses the schema's `instructions` block + the blocking `coop-await` verb. |
+
+## Protocol instructions (`instructions` block)
+
+A schema may include an optional top-level `instructions = """..."""` string. When
+present, it is rendered into each agent's prompt as the cooperation *workflow*
+(replacing the generic one) — so a schema like `plan_handshake` can specify a
+multi-phase protocol with **no code change**. Agents can use `coop-await` (blocking
+receive) to synchronize on a handshake.
 
 ## A/B'ing them
 

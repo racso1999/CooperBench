@@ -13,7 +13,7 @@ fi
 
 if [ -f /tmp/cb-coop-msg.py ]; then
     chmod +x /tmp/cb-coop-msg.py
-    for sub in send recv broadcast peek agents; do
+    for sub in send recv broadcast await peek agents; do
         cat >"/usr/local/bin/coop-$sub" <<EOF
 #!/bin/bash
 exec python3 /tmp/cb-coop-msg.py $sub "\$@"

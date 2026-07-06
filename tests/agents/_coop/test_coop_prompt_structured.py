@@ -27,3 +27,16 @@ def test_solo_ignores_schema():
     text = build_instruction("Task", message_schema=load_schema(None))  # no agents -> solo
     assert "structured messaging" not in text.lower()
     assert "Cooperation protocol" not in text
+
+
+def test_schema_instructions_render_as_workflow(tmp_path):
+    """A schema with `instructions` (e.g. plan_handshake) injects them into the
+    prompt in place of the default workflow, and coop-await is advertised."""
+    p = tmp_path / "s.toml"
+    p.write_text(
+        'name = "p"\ninstructions = "PLAN BEFORE CODE: step one do X"\n'
+        '[[field]]\nname = "type"\nrequired = true\nenum = ["PROPOSE", "ACCEPT"]\n'
+    )
+    text = build_instruction("Task", agents=_AGENTS, agent_id="agent1", message_schema=load_schema(p))
+    assert "PLAN BEFORE CODE: step one do X" in text
+    assert "coop-await" in text
