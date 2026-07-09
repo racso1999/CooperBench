@@ -65,8 +65,11 @@ Pre-defined task subsets are available in `subsets/` for quick evaluation:
 
 | Subset | Tasks | Pairs | Repos | Description |
 |--------|-------|-------|-------|-------------|
+| `nano` | 20 | 20 | 9 | Single-language (Python) coordination benchmark; one gold-conflict pair per task |
 | `flash` | 20 | 50 | 11 | Dev subset for rapid iteration (sampled from lite) |
 | `lite` | 26 | 100 | 12 | Quick evaluation subset |
+
+The `nano` subset is a Python-only instrument for measuring whether a multi-agent communication protocol improves conflict resolution. It holds 20 gold merge-conflict pairs, one per task across 9 Python repos, selected offline by static feature-overlap (a proxy for conflict severity). Single-language by design — it removes the language×repo confound and lets pairs (independent clusters) scale for statistical power. Run each pair many times (`--repeats`) per condition; validity is confirmed post-hoc from the no-messaging control. See `docs/nano_py_preregistration.md`.
 
 Both subsets are generated via **uniform pair-level sampling**:
 
