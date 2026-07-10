@@ -93,6 +93,8 @@ Pooled over the 18 validated pairs (Wilson CIs descriptive; CMH is the inferenti
 | designated_coder | 88 | 86% | **18%** [12–28] | 58% [48–68] |
 | **coauthor_overlap** | 89 | 94% | **78%** [68–85] | 69% [58–77] |
 
+![Primary endpoint — merge-clean rate by protocol, with Wilson 95% CIs. Every talk-only or plan-only arm sits at the ~13–21% control floor; only coauthor_overlap reaches 78%.](figures/nano_study/primary.png)
+
 **CMH, stratified by pair, Holm-corrected across the family:**
 
 | Contrast | base → arm | CMH OR | *p* (raw) | *p* (Holm) | |
@@ -132,6 +134,8 @@ significantly different**. But on the primary they are worlds apart (18% vs 78%)
 gap is the whole story: **`designated_coder`'s `both_passed` is `solo_rescue`, not a
 merge.** The failure taxonomy makes the mechanism explicit.
 
+![merge-clean (primary) vs both_passed (secondary) for each protocol. designated_coder shows a 40-point gap between the two — that gap is solo_rescue. coauthor_overlap is the only arm high on both.](figures/nano_study/divergence.png)
+
 ## 5. Failure taxonomy & merge outcome (validated set)
 
 | Arm | `pass` | `solo_rescue` | `functional_fail` | `textual_conflict` | `missing_patch` |
@@ -142,6 +146,8 @@ merge.** The failure taxonomy makes the mechanism explicit.
 | plan_handshake | 10% | 0% | 3% | **80%** | 7% |
 | designated_coder | 5% | **43%** | 0% | 39% | 14% |
 | **coauthor_overlap** | **62%** | 6% | 10% | 17% | 6% |
+
+![Stacked failure taxonomy by protocol. Talk/plan arms are ~80% textual_conflict (brown); designated_coder converts most of that to solo_rescue (amber); coauthor_overlap converts it to honest pass (forest).](figures/nano_study/taxonomy.png)
 
 Merge-status split (per pair-run):
 
@@ -296,6 +302,9 @@ pairing; treat as indicative only.
 # regenerate every table/number in §3–5 & appendix from logs/ (no evals, no deps):
 uv run python scripts/nano/analyze_study.py --json study.json
 
+# regenerate the figures in this doc (docs/figures/nano_study/*.png):
+uv run --with matplotlib python scripts/nano/make_figures.py
+
 # per-feature pre/post decomposition (capability + buckets) for any arm:
 uv run python scripts/eval2.py nano_coauthor    # -> logs/nano_coauthor/eval2_rows.csv
 
@@ -313,6 +322,8 @@ uv run cooperbench run --setting coop -a claude_code -m claude-sonnet-5 \
 - **Raw:** `logs/<arm>_<k>/coop/<repo>/<task>/f<i>_f<j>/{eval.json,result.json,agent*_sent.jsonl,agent*.patch}`
 
 ## Appendix — per-pair merge-clean rate (validated set)
+
+![Per-pair merge-clean heatmap, 18 validated pairs × 6 protocols. The coauthor_overlap column is uniformly deep forest (high); every other column stays pale amber (low).](figures/nano_study/heatmap.png)
 
 | pair | control | free | struct | handshake | dc | coauthor |
 |---|---|---|---|---|---|---|
