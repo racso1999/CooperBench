@@ -1,0 +1,184 @@
+diff --git a/crates/typst/src/foundations/str.rs b/crates/typst/src/foundations/str.rs
+index d90b6f206..22859e85a 100644
+--- a/crates/typst/src/foundations/str.rs
++++ b/crates/typst/src/foundations/str.rs
+@@ -11,7 +11,7 @@ use unicode_segmentation::UnicodeSegmentation;
+ use crate::diag::{bail, At, SourceResult, StrResult};
+ use crate::engine::Engine;
+ use crate::foundations::{
+-    cast, dict, func, repr, scope, ty, Array, Bytes, Context, Decimal, Dict, Func,
++    cast, dict, func, repr, scope, ty, Array, Bytes, Cast, Context, Decimal, Dict, Func,
+     IntoValue, Label, Repr, Type, Value, Version,
+ };
+ use crate::layout::Alignment;
+@@ -177,25 +177,61 @@ impl Str {
+     }
+ 
+     /// Extracts the first grapheme cluster of the string.
+-    /// Fails with an error if the string is empty.
++    /// Fails with an error if the string is empty or, if a `pattern` was
++    /// given, if no grapheme cluster matches it.
+     #[func]
+-    pub fn first(&self) -> StrResult<Str> {
+-        self.0
+-            .graphemes(true)
+-            .next()
+-            .map(Into::into)
+-            .ok_or_else(string_is_empty)
++    pub fn first(
++        &self,
++        /// If given, the first grapheme cluster matching this character
++        /// class is returned instead of the very first one.
++        #[named]
++        pattern: Option<CharPattern>,
++        /// If given, the returned grapheme cluster is converted to this
++        /// case.
++        #[named]
++        case: Option<StrCase>,
++    ) -> StrResult<Str> {
++        if self.0.is_empty() {
++            return Err(string_is_empty());
++        }
++        let grapheme = match pattern {
++            None => self.0.graphemes(true).next().unwrap(),
++            Some(pattern) => self
++                .0
++                .graphemes(true)
++                .find(|g| g.chars().next().is_some_and(|c| pattern.matches(c)))
++                .ok_or_else(|| no_match_for_pattern(pattern))?,
++        };
++        Ok(apply_case(case, grapheme))
+     }
+ 
+     /// Extracts the last grapheme cluster of the string.
+-    /// Fails with an error if the string is empty.
++    /// Fails with an error if the string is empty or, if a `pattern` was
++    /// given, if no grapheme cluster matches it.
+     #[func]
+-    pub fn last(&self) -> StrResult<Str> {
+-        self.0
+-            .graphemes(true)
+-            .next_back()
+-            .map(Into::into)
+-            .ok_or_else(string_is_empty)
++    pub fn last(
++        &self,
++        /// If given, the last grapheme cluster matching this character
++        /// class is returned instead of the very last one.
++        #[named]
++        pattern: Option<CharPattern>,
++        /// If given, the returned grapheme cluster is converted to this
++        /// case.
++        #[named]
++        case: Option<StrCase>,
++    ) -> StrResult<Str> {
++        if self.0.is_empty() {
++            return Err(string_is_empty());
++        }
++        let grapheme = match pattern {
++            None => self.0.graphemes(true).next_back().unwrap(),
++            Some(pattern) => self
++                .0
++                .graphemes(true)
++                .rfind(|g| g.chars().next().is_some_and(|c| pattern.matches(c)))
++                .ok_or_else(|| no_match_for_pattern(pattern))?,
++        };
++        Ok(apply_case(case, grapheme))
+     }
+ 
+     /// Extracts the first grapheme cluster after the specified index. Returns
+@@ -835,6 +871,12 @@ fn string_is_empty() -> EcoString {
+     "string is empty".into()
+ }
+ 
++/// The error message when no grapheme cluster matches the given pattern.
++#[cold]
++fn no_match_for_pattern(pattern: CharPattern) -> EcoString {
++    eco_format!("no grapheme cluster matches pattern \"{}\"", pattern.name())
++}
++
+ /// A regular expression.
+ ///
+ /// Can be used as a [show rule selector]($styling/#show-rules) and with
+@@ -930,6 +972,81 @@ cast! {
+     v: Regex => Self::Regex(v),
+ }
+ 
++/// A named character class used to search for a matching grapheme cluster in
++/// [`first`]($str.first) and [`last`]($str.last).
++#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Cast)]
++pub enum CharPattern {
++    /// Matches alphabetic characters.
++    Alpha,
++    /// Matches numeric characters.
++    Numeric,
++    /// Matches alphabetic or numeric characters.
++    Alphanumeric,
++    /// Matches uppercase letters.
++    Uppercase,
++    /// Matches lowercase letters.
++    Lowercase,
++    /// Matches whitespace.
++    Whitespace,
++}
++
++impl CharPattern {
++    /// Whether the given character belongs to this class.
++    fn matches(self, c: char) -> bool {
++        match self {
++            Self::Alpha => c.is_alphabetic(),
++            Self::Numeric => c.is_numeric(),
++            Self::Alphanumeric => c.is_alphanumeric(),
++            Self::Uppercase => c.is_uppercase(),
++            Self::Lowercase => c.is_lowercase(),
++            Self::Whitespace => c.is_whitespace(),
++        }
++    }
++
++    /// The name of this pattern, as it is written in Typst code.
++    fn name(self) -> &'static str {
++        match self {
++            Self::Alpha => "alpha",
++            Self::Numeric => "numeric",
++            Self::Alphanumeric => "alphanumeric",
++            Self::Uppercase => "uppercase",
++            Self::Lowercase => "lowercase",
++            Self::Whitespace => "whitespace",
++        }
++    }
++}
++
++/// A letter case to convert a grapheme cluster to, used by
++/// [`first`]($str.first) and [`last`]($str.last).
++#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Cast)]
++pub enum StrCase {
++    /// Converts to uppercase.
++    Upper,
++    /// Converts to lowercase.
++    Lower,
++    /// Converts to title case: The first scalar value is uppercased, the
++    /// rest are lowercased.
++    Title,
++}
++
++/// Applies the given case, if any, to a single grapheme cluster.
++fn apply_case(case: Option<StrCase>, grapheme: &str) -> Str {
++    match case {
++        None => grapheme.into(),
++        Some(StrCase::Upper) => grapheme.to_uppercase().into(),
++        Some(StrCase::Lower) => grapheme.to_lowercase().into(),
++        Some(StrCase::Title) => {
++            let mut chars = grapheme.chars();
++            let mut result = EcoString::new();
++            if let Some(first) = chars.next() {
++                result.extend(first.to_uppercase());
++            }
++            result.extend(chars.flat_map(char::to_lowercase));
++            result.into()
++        }
++    }
++}
++
+ /// A side of a string.
+ #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+ pub enum StrSide {

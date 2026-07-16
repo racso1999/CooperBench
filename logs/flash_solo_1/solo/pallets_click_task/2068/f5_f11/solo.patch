@@ -1,0 +1,248 @@
+diff --git a/src/click/_termui_impl.py b/src/click/_termui_impl.py
+index 7b97bfb..2d008a8 100644
+--- a/src/click/_termui_impl.py
++++ b/src/click/_termui_impl.py
+@@ -28,6 +28,9 @@ from ._compat import WIN
+ from .exceptions import ClickException
+ from .utils import echo
+ 
++if t.TYPE_CHECKING:
++    import subprocess
++
+ V = t.TypeVar("V")
+ 
+ if os.name == "nt":
+@@ -478,6 +481,9 @@ def _nullpager(
+         stream.write(text)
+ 
+ 
++EditorMonitorCallback = t.Callable[[str, int, str, float], None]
++
++
+ class Editor:
+     def __init__(
+         self,
+@@ -485,11 +491,15 @@ class Editor:
+         env: cabc.Mapping[str, str] | None = None,
+         require_save: bool = True,
+         extension: str = ".txt",
++        lock_files: bool = False,
++        monitor_process: EditorMonitorCallback | None = None,
+     ) -> None:
+         self.editor = editor
+         self.env = env
+         self.require_save = require_save
+         self.extension = extension
++        self.lock_files = lock_files
++        self.monitor_process = monitor_process
+ 
+     def get_editor(self) -> str:
+         if self.editor is not None:
+@@ -505,8 +515,113 @@ class Editor:
+                 return editor
+         return "vi"
+ 
++    def _get_lock_filename(self, filename: str) -> str:
++        directory, base = os.path.split(filename)
++        return os.path.join(directory, f".{base}.lock")
++
++    def _create_lock_file(self, filename: str) -> str:
++        from datetime import datetime
++
++        lock_filename = self._get_lock_filename(filename)
++
++        try:
++            fd = os.open(lock_filename, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
++        except FileExistsError as e:
++            raise ClickException(
++                _("Could not acquire lock for {filename!r}:"
++                  " {lock_filename!r} already exists").format(
++                    filename=filename, lock_filename=lock_filename
++                )
++            ) from e
++
++        try:
++            with os.fdopen(fd, "w") as f:
++                f.write(f"PID: {os.getpid()}\nTime: {datetime.now().isoformat()}\n")
++        except BaseException:
++            with contextlib.suppress(OSError):
++                os.unlink(lock_filename)
++            raise
++
++        return lock_filename
++
++    def _remove_lock_file(self, lock_filename: str) -> None:
++        with contextlib.suppress(OSError):
++            os.unlink(lock_filename)
++
++    @contextlib.contextmanager
++    def _lock_file_context(self, filename: str) -> cabc.Iterator[None]:
++        if not self.lock_files:
++            yield
++            return
++
++        lock_filename = self._create_lock_file(filename)
++
++        try:
++            yield
++        finally:
++            self._remove_lock_file(lock_filename)
++
++    def _get_process_state(self, pid: int) -> str | None:
++        """Return the single-character state code of a process on Linux,
++        or ``None`` if it can't be determined (e.g. on other platforms).
++        """
++        if sys.platform != "linux":
++            return None
++
++        try:
++            with open(f"/proc/{pid}/stat") as f:
++                data = f.read()
++        except OSError:
++            return None
++
++        # The process name is surrounded by parens and may itself contain
++        # parens or spaces, so find the state field after the last ")".
++        idx = data.rfind(")")
++        if idx == -1:
++            return None
++
++        fields = data[idx + 2 :].split()
++        return fields[0] if fields else None
++
++    def _monitor_process(
++        self,
++        process: subprocess.Popen,
++        editor_command: str,
++        callback: EditorMonitorCallback,
++    ) -> None:
++        import warnings
++
++        def invoke(event_type: str) -> None:
++            try:
++                callback(event_type, process.pid, editor_command, time.time())
++            except Exception as e:
++                warnings.warn(
++                    f"Exception raised in monitor_process callback for event"
++                    f" {event_type!r}: {e}",
++                    UserWarning,
++                    stacklevel=2,
++                )
++
++        invoke("start")
++        suspended = False
++
++        while process.poll() is None:
++            state = self._get_process_state(process.pid)
++
++            if state == "T" and not suspended:
++                suspended = True
++                invoke("suspend")
++            elif state not in ("T", None) and suspended:
++                suspended = False
++                invoke("resume")
++
++            time.sleep(0.1)
++
++        invoke("terminate")
++
+     def edit_file(self, filename: str) -> None:
+         import subprocess
++        import threading
+ 
+         editor = self.get_editor()
+         environ: dict[str, str] | None = None
+@@ -515,17 +630,35 @@ class Editor:
+             environ = os.environ.copy()
+             environ.update(self.env)
+ 
+-        try:
+-            c = subprocess.Popen(f'{editor} "{filename}"', env=environ, shell=True)
+-            exit_code = c.wait()
+-            if exit_code != 0:
+-                raise ClickException(
+-                    _("{editor}: Editing failed").format(editor=editor)
++        with self._lock_file_context(filename):
++            try:
++                c = subprocess.Popen(
++                    f'{editor} "{filename}"', env=environ, shell=True
+                 )
+-        except OSError as e:
+-            raise ClickException(
+-                _("{editor}: Editing failed: {e}").format(editor=editor, e=e)
+-            ) from e
++
++                monitor_thread: threading.Thread | None = None
++
++                if self.monitor_process is not None:
++                    monitor_thread = threading.Thread(
++                        target=self._monitor_process,
++                        args=(c, editor, self.monitor_process),
++                        daemon=True,
++                    )
++                    monitor_thread.start()
++
++                exit_code = c.wait()
++
++                if monitor_thread is not None:
++                    monitor_thread.join(timeout=1)
++
++                if exit_code != 0:
++                    raise ClickException(
++                        _("{editor}: Editing failed").format(editor=editor)
++                    )
++            except OSError as e:
++                raise ClickException(
++                    _("{editor}: Editing failed: {e}").format(editor=editor, e=e)
++                ) from e
+ 
+     def edit(self, text: t.AnyStr | None) -> t.AnyStr | None:
+         import tempfile
+diff --git a/src/click/termui.py b/src/click/termui.py
+index e14e670..cdb697b 100644
+--- a/src/click/termui.py
++++ b/src/click/termui.py
+@@ -650,6 +650,8 @@ def edit(
+     require_save: bool = True,
+     extension: str = ".txt",
+     filename: str | None = None,
++    lock_files: bool = False,
++    monitor_process: cabc.Callable[[str, int, str, float], None] | None = None,
+ ) -> t.AnyStr | None:
+     r"""Edits the given text in the defined editor.  If an editor is given
+     (should be the full path to the executable but the regular operating
+@@ -677,10 +679,33 @@ def edit(
+     :param filename: if provided it will edit this file instead of the
+                      provided text contents.  It will not use a temporary
+                      file as an indirection in that case.
++    :param lock_files: if this is true, a ``.<filename>.lock`` file is
++                       created next to the edited file for the duration of
++                       the editing session, to guard against concurrent
++                       edits of the same file. A :exc:`ClickException` is
++                       raised if a lock is already held.
++    :param monitor_process: an optional callback invoked from a background
++                            thread with ``(event_type, process_id,
++                            editor_command, timestamp)`` whenever the
++                            editor process starts, terminates, or (where
++                            supported by the platform) is suspended or
++                            resumed. Exceptions raised by the callback are
++                            turned into a :exc:`UserWarning` and do not
++                            interrupt editing.
++
++    .. versionadded:: 8.2
++        Added the ``lock_files`` and ``monitor_process`` parameters.
+     """
+     from ._termui_impl import Editor
+ 
+-    ed = Editor(editor=editor, env=env, require_save=require_save, extension=extension)
++    ed = Editor(
++        editor=editor,
++        env=env,
++        require_save=require_save,
++        extension=extension,
++        lock_files=lock_files,
++        monitor_process=monitor_process,
++    )
+ 
+     if filename is None:
+         return ed.edit(text)

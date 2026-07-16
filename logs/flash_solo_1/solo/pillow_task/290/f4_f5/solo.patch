@@ -1,0 +1,109 @@
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..7ef6c15d5 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -1048,7 +1048,16 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        error_threshold=None,
++        lightness_factor=1.0,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1082,17 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param error_threshold: An optional maximum allowed mean square error
++           (MSE) between this image and the quantized result, measured in RGB
++           space. When given, as few colors as possible (up to ``colors``)
++           are used to keep the error at or below this threshold. If the
++           threshold cannot be reached using ``colors`` colors, ``colors``
++           colors will be used. Has no effect when ``palette`` is given.
++        :param lightness_factor: Adjusts the brightness of the resulting
++           palette after quantization. Values greater than 1.0 brighten the
++           palette, values less than 1.0 darken it. The default, 1.0, leaves
++           the palette unchanged. Resulting channel values are clamped to the
++           0-255 range.
+         :returns: A new image
+ 
+         """
+@@ -1104,17 +1124,67 @@ class Image:
+             im = self.im.convert("P", dither, palette.im)
+             new_im = self._new(im)
+             new_im.palette = palette.palette.copy()
++            if lightness_factor != 1.0:
++                self._adjust_palette_lightness(new_im, lightness_factor)
+             return new_im
+ 
+-        im = self._new(self.im.quantize(colors, method, kmeans))
++        if error_threshold is not None:
++            im = None
++            candidate = None
++            for n in range(2, colors + 1):
++                candidate = self._new(self.im.quantize(n, method, kmeans))
++                if self._quantize_mse(candidate) <= error_threshold:
++                    im = candidate
++                    break
++            if im is None:
++                im = candidate if candidate is not None else self._new(
++                    self.im.quantize(colors, method, kmeans)
++                )
++        else:
++            im = self._new(self.im.quantize(colors, method, kmeans))
+ 
+         from . import ImagePalette
+ 
+         mode = im.im.getpalettemode()
+         im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
+ 
++        if lightness_factor != 1.0:
++            self._adjust_palette_lightness(im, lightness_factor)
++
+         return im
+ 
++    def _quantize_mse(self, quantized):
++        """
++        Returns the mean square error, in RGB space, between this image and
++        a quantized version of it.
++        """
++        from . import ImageChops, ImageStat
++
++        diff = ImageChops.difference(self.convert("RGB"), quantized.convert("RGB"))
++        stat = ImageStat.Stat(diff)
++        return sum(stat.sum2) / sum(stat.count)
++
++    @staticmethod
++    def _adjust_palette_lightness(im, lightness_factor):
++        """
++        Scales the channel values of an image's palette by ``lightness_factor``,
++        leaving any alpha channel untouched. Modifies ``im`` in place.
++        """
++        mode = im.palette.mode
++        channels = len(mode)
++        alpha_index = mode.find("A")
++
++        palette_bytes = im.palette.palette
++        adjusted = bytearray(len(palette_bytes))
++        for i in range(0, len(palette_bytes), channels):
++            for c in range(channels):
++                value = palette_bytes[i + c]
++                if c == alpha_index:
++                    adjusted[i + c] = value
++                else:
++                    adjusted[i + c] = min(255, max(0, round(value * lightness_factor)))
++        im.putpalette(bytes(adjusted), mode)
++
+     def copy(self):
+         """
+         Copies this image. Use this method if you wish to paste things

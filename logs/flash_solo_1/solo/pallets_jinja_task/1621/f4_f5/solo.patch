@@ -1,0 +1,115 @@
+diff --git a/src/jinja2/loaders.py b/src/jinja2/loaders.py
+index d7d9bd04..11b31e53 100644
+--- a/src/jinja2/loaders.py
++++ b/src/jinja2/loaders.py
+@@ -165,33 +165,96 @@ class FileSystemLoader(BaseLoader):
+ 
+         loader = FileSystemLoader(["/override/templates", "/default/templates"])
+ 
++    A path can also be given as a ``(path, priority)`` tuple to control
++    search order independently of the order paths are given in. Paths
++    with a higher priority are searched first. Paths given without a
++    priority default to a priority of ``0``.
++
++    .. code-block:: python
++
++        loader = FileSystemLoader([
++            ("/override/templates", 10),
++            ("/default/templates", 0),
++        ])
++
+     :param searchpath: A path, or list of paths, to the directory that
+-        contains the templates.
++        contains the templates. Each path may also be a ``(path,
++        priority)`` tuple.
+     :param encoding: Use this encoding to read the text from template
+         files.
+     :param followlinks: Follow symbolic links in the path.
+ 
+     .. versionchanged:: 2.8
+         Added the ``followlinks`` parameter.
++
++    .. versionchanged:: 3.2
++        Paths can be given as ``(path, priority)`` tuples to control
++        search order. Higher priority paths are searched first.
+     """
+ 
+     def __init__(
+         self,
+-        searchpath: t.Union[str, os.PathLike, t.Sequence[t.Union[str, os.PathLike]]],
++        searchpath: t.Union[
++            str,
++            os.PathLike,
++            t.Sequence[
++                t.Union[str, os.PathLike, t.Tuple[t.Union[str, os.PathLike], int]]
++            ],
++        ],
+         encoding: str = "utf-8",
+         followlinks: bool = False,
+     ) -> None:
+         if not isinstance(searchpath, abc.Iterable) or isinstance(searchpath, str):
+             searchpath = [searchpath]
+ 
+-        self.searchpath = [os.fspath(p) for p in searchpath]
++        pairs: t.List[t.Tuple[str, int]] = []
++
++        for entry in searchpath:
++            if isinstance(entry, tuple) and len(entry) == 2:
++                path, priority = entry
++                pairs.append((os.fspath(path), priority))
++            else:
++                pairs.append((os.fspath(entry), 0))
++
++        pairs.sort(key=lambda pair: pair[1], reverse=True)
++
++        self.searchpath = [path for path, _ in pairs]
+         self.encoding = encoding
+         self.followlinks = followlinks
++        self._path_cache: t.Dict[str, t.Optional[str]] = {}
+ 
+     def get_source(
+         self, environment: "Environment", template: str
+     ) -> t.Tuple[str, str, t.Callable[[], bool]]:
+         pieces = split_template_path(template)
++
++        if template in self._path_cache:
++            cached = self._path_cache[template]
++
++            if cached is None:
++                raise TemplateNotFound(template)
++
++            f = open_if_exists(cached)
++
++            if f is not None:
++                filename = cached
++                try:
++                    contents = f.read().decode(self.encoding)
++                finally:
++                    f.close()
++
++                mtime = os.path.getmtime(filename)
++
++                def uptodate() -> bool:
++                    try:
++                        return os.path.getmtime(filename) == mtime
++                    except OSError:
++                        return False
++
++                return contents, filename, uptodate
++
++            del self._path_cache[template]
++
+         for searchpath in self.searchpath:
+             filename = os.path.join(searchpath, *pieces)
+             f = open_if_exists(filename)
+@@ -210,7 +273,10 @@ class FileSystemLoader(BaseLoader):
+                 except OSError:
+                     return False
+ 
++            self._path_cache[template] = filename
+             return contents, filename, uptodate
++
++        self._path_cache[template] = None
+         raise TemplateNotFound(template)
+ 
+     def list_templates(self) -> t.List[str]:
