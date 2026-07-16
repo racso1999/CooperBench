@@ -1,0 +1,124 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..6cdffe8 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -1209,6 +1209,44 @@ class Command:
+         ctx._opt_prefixes.update(parser._opt_prefixes)
+         return args
+ 
++    def _resolve_dynamic_defaults(self, ctx: Context) -> None:
++        """Resolve options whose ``default`` is a dynamic-default mapping
++        (``{"--source-option": {value: default, ...}}``) now that every
++        option has been parsed. Only applies to options whose value still
++        comes from :attr:`ParameterSource.DEFAULT`.
++        """
++        params = self.get_params(ctx)
++
++        for param in params:
++            if not isinstance(param, Option) or not isinstance(param.default, dict):
++                continue
++
++            if ctx.get_parameter_source(param.name) is not ParameterSource.DEFAULT:  # type: ignore[arg-type]
++                continue
++
++            resolved = None
++
++            for source_opt, mapping in param.default.items():
++                source_param = next(
++                    (
++                        p
++                        for p in params
++                        if isinstance(p, Option) and source_opt in p.opts
++                    ),
++                    None,
++                )
++
++                if source_param is None:
++                    continue
++
++                source_value = ctx.params.get(source_param.name)
++
++                if str(source_value) in mapping:
++                    resolved = mapping[str(source_value)]
++
++            if resolved is not None:
++                ctx.params[param.name] = param.type_cast_value(ctx, resolved)
++
+     def invoke(self, ctx: Context) -> t.Any:
+         """Given a context, this invokes the attached callback (if it exists)
+         in the right way.
+@@ -1360,6 +1398,7 @@ class Command:
+         try:
+             try:
+                 with self.make_context(prog_name, args, **extra) as ctx:
++                    self._resolve_dynamic_defaults(ctx)
+                     rv = self.invoke(ctx)
+                     if not standalone_mode:
+                         return rv
+@@ -2542,6 +2581,7 @@ class Option(Parameter):
+         flag_value: t.Any | None = None,
+         multiple: bool = False,
+         count: bool = False,
++        batch_size: int | None = None,
+         allow_from_autoenv: bool = True,
+         type: types.ParamType | t.Any | None = None,
+         help: str | None = None,
+@@ -2631,6 +2671,8 @@ class Option(Parameter):
+             if default_is_missing:
+                 self.default = 0
+ 
++        self.batch_size = batch_size
++
+         self.allow_from_autoenv = allow_from_autoenv
+         self.help = help
+         self.show_default = show_default
+@@ -2662,6 +2704,21 @@ class Option(Parameter):
+                 if self.is_flag:
+                     raise TypeError("'count' is not valid with 'is_flag'.")
+ 
++            if self.batch_size is not None:
++                if not self.multiple:
++                    raise TypeError("batch_size is only permitted when multiple=True.")
++
++                if self.batch_size < 0:
++                    raise ValueError("batch_size must be a non-negative integer.")
++
++            if isinstance(self.default, dict):
++                for key, value in self.default.items():
++                    if not isinstance(key, str):
++                        raise TypeError("Dynamic default keys must be strings")
++
++                    if not isinstance(value, dict):
++                        raise TypeError("Dynamic default values must be dictionaries")
++
+     def to_info_dict(self) -> dict[str, t.Any]:
+         info_dict = super().to_info_dict()
+         info_dict.update(
+@@ -2861,9 +2918,13 @@ class Option(Parameter):
+         elif ctx.show_default is not None:
+             show_default = ctx.show_default
+ 
+-        if show_default_is_str or (show_default and (default_value is not None)):
++        if show_default_is_str or (
++            show_default and (default_value is not None or isinstance(self.default, dict))
++        ):
+             if show_default_is_str:
+                 default_string = f"({self.show_default})"
++            elif isinstance(self.default, dict):
++                default_string = _("(dynamic)")
+             elif isinstance(default_value, (list, tuple)):
+                 default_string = ", ".join(str(d) for d in default_value)
+             elif inspect.isfunction(default_value):
+@@ -2923,6 +2984,12 @@ class Option(Parameter):
+ 
+             return None
+ 
++        # A dynamic default is resolved in a second pass once all other
++        # option values are known, not while consuming this option's own
++        # value.
++        if isinstance(self.default, dict):
++            return None
++
+         return super().get_default(ctx, call=call)
+ 
+     def prompt_for_value(self, ctx: Context) -> t.Any:

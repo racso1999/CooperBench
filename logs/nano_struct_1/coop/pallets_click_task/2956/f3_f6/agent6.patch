@@ -1,0 +1,120 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..ffc74b5 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -1209,6 +1209,49 @@ class Command:
+         ctx._opt_prefixes.update(parser._opt_prefixes)
+         return args
+ 
++    def _resolve_dynamic_defaults(self, ctx: Context) -> None:
++        """Resolve options whose ``default`` is a dynamic mapping keyed
++        by other options' values.
++
++        This runs as a second pass after command line arguments,
++        environment variables, and configuration files have all been
++        processed, so any option referenced by a dynamic default
++        mapping already holds its final value.
++        """
++        for param in self.get_params(ctx):
++            if not isinstance(param, Option) or param.dynamic_default is None:
++                continue
++
++            if param.name is None:
++                continue
++
++            if ctx.get_parameter_source(param.name) is not ParameterSource.DEFAULT:
++                continue
++
++            resolved = None
++
++            for opt_name, mapping in param.dynamic_default.items():
++                source_param = next(
++                    (
++                        p
++                        for p in self.get_params(ctx)
++                        if opt_name in p.opts or opt_name in p.secondary_opts
++                    ),
++                    None,
++                )
++
++                if source_param is None or source_param.name is None:
++                    continue
++
++                source_value = ctx.params.get(source_param.name)
++                key = str(source_value)
++
++                if key in mapping:
++                    resolved = mapping[key]
++
++            if resolved is not None:
++                ctx.params[param.name] = param.type_cast_value(ctx, resolved)
++
+     def invoke(self, ctx: Context) -> t.Any:
+         """Given a context, this invokes the attached callback (if it exists)
+         in the right way.
+@@ -1360,6 +1403,7 @@ class Command:
+         try:
+             try:
+                 with self.make_context(prog_name, args, **extra) as ctx:
++                    self._resolve_dynamic_defaults(ctx)
+                     rv = self.invoke(ctx)
+                     if not standalone_mode:
+                         return rv
+@@ -2637,6 +2681,15 @@ class Option(Parameter):
+         self.show_choices = show_choices
+         self.show_envvar = show_envvar
+ 
++        self.dynamic_default: dict[str, dict[str, t.Any]] | None = None
++        if isinstance(self.default, dict):
++            for key, mapping in self.default.items():
++                if not isinstance(key, str):
++                    raise TypeError("Dynamic default keys must be strings")
++                if not isinstance(mapping, dict):
++                    raise TypeError("Dynamic default values must be dictionaries")
++            self.dynamic_default = self.default
++
+         if __debug__:
+             if deprecated and prompt:
+                 raise ValueError("`deprecated` options cannot use `prompt`.")
+@@ -2864,6 +2917,8 @@ class Option(Parameter):
+         if show_default_is_str or (show_default and (default_value is not None)):
+             if show_default_is_str:
+                 default_string = f"({self.show_default})"
++            elif self.dynamic_default is not None:
++                default_string = _("(dynamic)")
+             elif isinstance(default_value, (list, tuple)):
+                 default_string = ", ".join(str(d) for d in default_value)
+             elif inspect.isfunction(default_value):
+@@ -2923,6 +2978,16 @@ class Option(Parameter):
+ 
+             return None
+ 
++        if self.dynamic_default is not None:
++            # The actual value is resolved in a second pass once all
++            # parameters have been parsed, see
++            # ``Command._resolve_dynamic_defaults``. Until then, this
++            # option has no usable default.
++            if call:
++                return None
++
++            return self.dynamic_default
++
+         return super().get_default(ctx, call=call)
+ 
+     def prompt_for_value(self, ctx: Context) -> t.Any:
+diff --git a/src/click/types.py b/src/click/types.py
+index 684cb3b..cb0f730 100644
+--- a/src/click/types.py
++++ b/src/click/types.py
+@@ -1073,6 +1073,11 @@ def convert_type(ty: t.Any | None, default: t.Any | None = None) -> ParamType:
+     guessed_type = False
+ 
+     if ty is None and default is not None:
++        if isinstance(default, dict):
++            # A dict default is a dynamic default mapping (see
++            # ``Option``'s dynamic default feature) rather than a
++            # concrete value, so it can't be used to guess a type.
++            return STRING
+         if isinstance(default, (tuple, list)):
+             # If the default is empty, ty will remain None and will
+             # return STRING.

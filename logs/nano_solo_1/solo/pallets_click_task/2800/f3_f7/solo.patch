@@ -1,0 +1,194 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index 666ad68..387302a 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -158,6 +158,18 @@ class ParameterSource(enum.Enum):
+     """Used a prompt to confirm a default or provide a value."""
+ 
+ 
++class _ResourceTracker:
++    """Tracks the number of resources registered across a :class:`Context`
++    hierarchy so a shared :attr:`Context.max_resources` limit can be
++    enforced.
++    """
++
++    __slots__ = ("count",)
++
++    def __init__(self) -> None:
++        self.count = 0
++
++
+ class Context:
+     """The context is a special internal object that holds state relevant
+     for the script execution at every single level.  It's normally invisible
+@@ -228,6 +240,19 @@ class Context:
+         value is not set, it defaults to the value from the parent
+         context. ``Command.show_default`` overrides this default for the
+         specific command.
++    :param max_resources: the maximum number of resources that can be
++                          registered with :meth:`with_resource` across
++                          this context and its children. If this is not
++                          set, it defaults to the value from the parent
++                          context. ``None`` means unlimited. Attempting
++                          to register a resource beyond the limit raises
++                          a ``RuntimeError``.
++    :param validate_nesting: if this is set to ``True`` then closing this
++                             context while any child contexts created
++                             through :meth:`_make_sub_context` are still
++                             open will raise a ``RuntimeError``. Child
++                             contexts created this way inherit this
++                             setting from their parent.
+ 
+     .. versionchanged:: 8.2
+         The ``protected_args`` attribute is deprecated and will be removed in
+@@ -280,6 +305,8 @@ class Context:
+         token_normalize_func: t.Callable[[str], str] | None = None,
+         color: bool | None = None,
+         show_default: bool | None = None,
++        max_resources: int | None = None,
++        validate_nesting: bool = False,
+     ) -> None:
+         #: the parent context or `None` if none exists.
+         self.parent = parent
+@@ -432,6 +459,35 @@ class Context:
+         self._parameter_source: dict[str, ParameterSource] = {}
+         self._exit_stack = ExitStack()
+ 
++        if max_resources is None and parent is not None:
++            max_resources = parent.max_resources
++
++        #: The maximum number of resources that can be registered with
++        #: :meth:`with_resource` across this context and its children.
++        #: ``None`` means unlimited.
++        #:
++        #: .. versionadded:: 8.3
++        self.max_resources: int | None = max_resources
++
++        #: Tracks the number of resources registered with
++        #: :meth:`with_resource`. Shared with the parent context so the
++        #: limit applies across the whole context hierarchy.
++        self._resource_tracker: _ResourceTracker = (
++            parent._resource_tracker if parent is not None else _ResourceTracker()
++        )
++
++        #: Indicates whether this context enforces that child contexts
++        #: created through :meth:`_make_sub_context` are closed before
++        #: this context is closed.
++        #:
++        #: .. versionadded:: 8.3
++        self.validate_nesting: bool = validate_nesting
++
++        #: Child contexts created through :meth:`_make_sub_context` that
++        #: are still open. Only tracked when ``validate_nesting`` is
++        #: enabled.
++        self._children: list[Context] = []
++
+     @property
+     def protected_args(self) -> list[str]:
+         import warnings
+@@ -587,8 +643,23 @@ class Context:
+         :return: Whatever ``context_manager.__enter__()`` returns.
+ 
+         .. versionadded:: 8.0
++
++        .. versionchanged:: 8.3
++            Raises a ``RuntimeError`` if :attr:`max_resources` is set and
++            the limit has already been reached.
+         """
+-        return self._exit_stack.enter_context(context_manager)
++        if (
++            self.max_resources is not None
++            and self._resource_tracker.count >= self.max_resources
++        ):
++            raise RuntimeError(
++                "Cannot register resource, the maximum number of resources"
++                f" ({self.max_resources}) has already been reached."
++            )
++
++        rv = self._exit_stack.enter_context(context_manager)
++        self._resource_tracker.count += 1
++        return rv
+ 
+     def call_on_close(self, f: t.Callable[..., t.Any]) -> t.Callable[..., t.Any]:
+         """Register a function to be called when the context tears down.
+@@ -606,11 +677,26 @@ class Context:
+         """Invoke all close callbacks registered with
+         :meth:`call_on_close`, and exit all context managers entered
+         with :meth:`with_resource`.
++
++        .. versionchanged:: 8.3
++            Raises a ``RuntimeError`` if ``validate_nesting`` is enabled
++            and any child contexts created through
++            :meth:`_make_sub_context` are still open.
+         """
++        if self.validate_nesting and self._children:
++            open_children = ", ".join(repr(c.info_name) for c in self._children)
++            raise RuntimeError(
++                f"Cannot close context {self.info_name!r} because the"
++                f" following child contexts are still open: {open_children}"
++            )
++
+         self._exit_stack.close()
+         # In case the context is reused, create a new exit stack.
+         self._exit_stack = ExitStack()
+ 
++        if self.parent is not None and self in self.parent._children:
++            self.parent._children.remove(self)
++
+     @property
+     def command_path(self) -> str:
+         """The computed command path.  This is used for the ``usage``
+@@ -728,7 +814,17 @@ class Context:
+ 
+         :meta private:
+         """
+-        return type(self)(command, info_name=command.name, parent=self)
++        ctx = type(self)(
++            command,
++            info_name=command.name,
++            parent=self,
++            validate_nesting=self.validate_nesting,
++        )
++
++        if self.validate_nesting:
++            self._children.append(ctx)
++
++        return ctx
+ 
+     @t.overload
+     def invoke(
+diff --git a/src/click/shell_completion.py b/src/click/shell_completion.py
+index 6fd9e54..25bdcad 100644
+--- a/src/click/shell_completion.py
++++ b/src/click/shell_completion.py
+@@ -544,6 +544,7 @@ def _resolve_context(
+     :param args: List of complete args before the incomplete value.
+     """
+     ctx_args["resilient_parsing"] = True
++    ctx_args["validate_nesting"] = False
+     ctx = cli.make_context(prog_name, args.copy(), **ctx_args)
+     args = ctx._protected_args + ctx.args
+ 
+@@ -557,7 +558,13 @@ def _resolve_context(
+                 if cmd is None:
+                     return ctx
+ 
+-                ctx = cmd.make_context(name, args, parent=ctx, resilient_parsing=True)
++                ctx = cmd.make_context(
++                    name,
++                    args,
++                    parent=ctx,
++                    resilient_parsing=True,
++                    validate_nesting=False,
++                )
+                 args = ctx._protected_args + ctx.args
+             else:
+                 sub_ctx = ctx
+@@ -575,6 +582,7 @@ def _resolve_context(
+                         allow_extra_args=True,
+                         allow_interspersed_args=False,
+                         resilient_parsing=True,
++                        validate_nesting=False,
+                     )
+                     args = sub_ctx.args
+ 

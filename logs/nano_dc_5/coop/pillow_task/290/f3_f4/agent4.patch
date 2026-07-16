@@ -1,0 +1,144 @@
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..2bff0e88a 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -1048,7 +1048,16 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        error_threshold=0,
++        sort_palette=None,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1082,18 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param error_threshold: The maximum tolerable mean square error (MSE)
++           between the original image and the quantized image, measured across
++           the RGB channels. If greater than 0, and no ``palette`` is given,
++           quantization will use as few colors as possible (down to a minimum
++           of 2) while keeping the MSE at or below this threshold. If the
++           threshold cannot be met even when using ``colors``, then ``colors``
++           will be used. Default: 0 (disabled; ``colors`` is used as given).
++        :param sort_palette: If given, sorts the resulting palette (and remaps
++           pixel indices accordingly). Accepted values are ``"luminosity"``
++           (ascending perceived brightness) or ``"rgb"`` (ascending by
++           (R, G, B) tuple). Default: None (palette order is left as returned
++           by the quantization method).
+         :returns: A new image
+ 
+         """
+@@ -1106,15 +1127,101 @@ class Image:
+             new_im.palette = palette.palette.copy()
+             return new_im
+ 
+-        im = self._new(self.im.quantize(colors, method, kmeans))
++        if error_threshold and error_threshold > 0:
++            core_im = self._quantize_with_error_threshold(
++                colors, method, kmeans, error_threshold
++            )
++        else:
++            core_im = self.im.quantize(colors, method, kmeans)
++        im = self._new(core_im)
+ 
+         from . import ImagePalette
+ 
+         mode = im.im.getpalettemode()
+         im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
+ 
++        if sort_palette:
++            im = self._sort_quantized_palette(im, sort_palette)
++
+         return im
+ 
++    def _quantize_mse(self, core_im):
++        # Computes the mean square error, across the RGB channels, between
++        # this image and a quantized core image (as returned by
++        # ``self.im.quantize``).
++        from . import ImageChops, ImageStat
++
++        quantized = self._new(core_im)
++        diff = ImageChops.difference(self.convert("RGB"), quantized.convert("RGB"))
++        stat = ImageStat.Stat(diff)
++        return sum(stat.sum2) / sum(stat.count)
++
++    def _quantize_with_error_threshold(self, colors, method, kmeans, error_threshold):
++        # Quantizes using as few colors as possible (down to a minimum of 2)
++        # while keeping the resulting mean square error at or below
++        # ``error_threshold``. Falls back to ``colors`` if the threshold
++        # cannot be met.
++        max_im = self.im.quantize(colors, method, kmeans)
++        if colors <= 2 or self._quantize_mse(max_im) > error_threshold:
++            return max_im
++
++        best = max_im
++        lo, hi = 2, colors
++        while lo < hi:
++            mid = (lo + hi) // 2
++            mid_im = self.im.quantize(mid, method, kmeans)
++            if self._quantize_mse(mid_im) <= error_threshold:
++                best = mid_im
++                hi = mid
++            else:
++                lo = mid + 1
++        return best
++
++    def _sort_quantized_palette(self, im, sort_palette):
++        if sort_palette not in ("luminosity", "rgb"):
++            raise ValueError("sort_palette must be 'luminosity' or 'rgb'")
++
++        mode = im.palette.mode
++        channels = len(mode)
++        palette_bytes = bytes(im.palette.palette)
++        num_entries = len(palette_bytes) // channels
++        colors = [
++            tuple(palette_bytes[i * channels : i * channels + channels])
++            for i in range(num_entries)
++        ]
++
++        # Only the palette entries actually referenced by a pixel need to be
++        # sorted; unused entries are left in their original slots.
++        used_indices = [i for i, count in enumerate(im.histogram()) if count > 0]
++
++        if sort_palette == "luminosity":
++
++            def sort_key(color):
++                r, g, b = color[:3]
++                return 0.299 * r + 0.587 * g + 0.114 * b
++
++        else:
++
++            def sort_key(color):
++                return color
++
++        sorted_used_indices = sorted(used_indices, key=lambda i: sort_key(colors[i]))
++
++        new_colors = list(colors)
++        lut = list(range(256))
++        for old_index, new_index in zip(used_indices, sorted_used_indices):
++            new_colors[old_index] = colors[new_index]
++            lut[new_index] = old_index
++
++        new_palette_bytes = bytearray()
++        for color in new_colors:
++            new_palette_bytes.extend(color)
++
++        new_core = im.im.point(lut, im.im.mode)
++        new_im = im._new(new_core)
++        new_im.putpalette(bytes(new_palette_bytes), mode)
++        return new_im
++
+     def copy(self):
+         """
+         Copies this image. Use this method if you wish to paste things

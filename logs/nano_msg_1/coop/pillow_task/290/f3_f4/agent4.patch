@@ -1,0 +1,116 @@
+diff --git a/Tests/test_image_quantize.py b/Tests/test_image_quantize.py
+index bd9db362c..d747d323d 100644
+--- a/Tests/test_image_quantize.py
++++ b/Tests/test_image_quantize.py
+@@ -77,6 +77,25 @@ def test_quantize_dither_diff():
+     assert dither.tobytes() != nodither.tobytes()
+ 
+ 
++def test_quantize_error_threshold():
++    image = hopper()
++
++    high_threshold = image.quantize(256, error_threshold=100000)
++    assert len(high_threshold.getcolors()) < 256
++
++    full_colors = image.quantize(256, error_threshold=0)
++    assert len(full_colors.getcolors()) == 256
++
++
++def test_quantize_error_threshold_with_palette():
++    image = hopper()
++    with Image.open("Tests/images/caption_6_33_22.png") as palette:
++        palette = palette.convert("P")
++
++    with pytest.raises(ValueError):
++        image.quantize(palette=palette, error_threshold=10)
++
++
+ def test_transparent_colors_equal():
+     im = Image.new("RGBA", (1, 2), (0, 0, 0, 0))
+     px = im.load()
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..0b816db68 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -1048,7 +1048,15 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        error_threshold=None,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1081,14 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param error_threshold: The maximum acceptable mean square error (MSE)
++           between the original image and the quantized version. If given, the
++           number of colors used is increased one at a time starting from 2,
++           stopping as soon as the error drops to or below this threshold, so
++           fewer than ``colors`` colors may end up being used. If the threshold
++           can't be reached within the ``colors`` limit, ``colors`` colors will
++           be used. Cannot be used together with ``palette``.
++           Default: ``None`` (disabled).
+         :returns: A new image
+ 
+         """
+@@ -1093,6 +1109,11 @@ class Image:
+             )
+ 
+         if palette:
++            if error_threshold is not None:
++                raise ValueError(
++                    "palette and error_threshold arguments are mutually exclusive"
++                )
++
+             # use palette from reference image
+             palette.load()
+             if palette.mode != "P":
+@@ -1106,10 +1127,35 @@ class Image:
+             new_im.palette = palette.palette.copy()
+             return new_im
+ 
+-        im = self._new(self.im.quantize(colors, method, kmeans))
+-
+         from . import ImagePalette
+ 
++        if error_threshold is not None:
++            from . import ImageChops, ImageStat
++
++            original = self.convert("RGB") if self.mode != "RGB" else self
++
++            im = None
++            for num_colors in range(2, colors + 1):
++                candidate = self._new(self.im.quantize(num_colors, method, kmeans))
++
++                mode = candidate.im.getpalettemode()
++                candidate.palette = ImagePalette.ImagePalette(
++                    mode, candidate.im.getpalette(mode, mode)
++                )
++
++                diff = ImageChops.difference(candidate.convert("RGB"), original)
++                stat = ImageStat.Stat(diff)
++                mse = sum(stat.sum2) / sum(stat.count)
++
++                im = candidate
++                if mse <= error_threshold:
++                    break
++
++            if im is not None:
++                return im
++
++        im = self._new(self.im.quantize(colors, method, kmeans))
++
+         mode = im.im.getpalettemode()
+         im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
+ 

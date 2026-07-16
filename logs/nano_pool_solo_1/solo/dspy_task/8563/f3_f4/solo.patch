@@ -1,0 +1,144 @@
+diff --git a/dspy/adapters/types/tool.py b/dspy/adapters/types/tool.py
+index 843eceed..ea9116dc 100644
+--- a/dspy/adapters/types/tool.py
++++ b/dspy/adapters/types/tool.py
+@@ -1,5 +1,8 @@
+ import asyncio
++import hashlib
+ import inspect
++import json
++import re
+ from typing import TYPE_CHECKING, Any, Callable, Type, get_origin, get_type_hints
+ 
+ from jsonschema import ValidationError, validate
+@@ -15,6 +18,78 @@ if TYPE_CHECKING:
+ 
+ _TYPE_MAPPING = {"string": str, "integer": int, "number": float, "boolean": bool, "array": list, "object": dict}
+ 
++_DURATION_UNIT_SECONDS = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
++_SIZE_UNIT_BYTES = {"KB": 1_000, "MB": 1_000_000, "GB": 1_000_000_000}
++_DURATION_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*(ms|s|m|h)$")
++_SIZE_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*(KB|MB|GB)$")
++
++
++def _coerce_scalar(value: str, field_schema: dict[str, Any]) -> Any:
++    """Best-effort coercion of a single LM-emitted string into the type implied by its json schema.
++
++    Returns the original string unchanged if it doesn't match a supported pattern, so that
++    `jsonschema.validate` can raise a clear error downstream.
++    """
++    type_str = field_schema.get("type")
++    format_str = field_schema.get("format")
++    stripped = value.strip()
++
++    if type_str == "boolean":
++        lowered = stripped.lower()
++        if lowered == "true":
++            return True
++        if lowered == "false":
++            return False
++        return value
++
++    numeric_target = type_str in ("integer", "number") or format_str in ("duration", "bytes")
++    if not numeric_target:
++        return value
++
++    if format_str == "duration" or type_str in ("integer", "number"):
++        match = _DURATION_RE.match(stripped)
++        if match:
++            amount, unit = match.groups()
++            return float(amount) * _DURATION_UNIT_SECONDS[unit]
++
++    if format_str == "bytes" or type_str in ("integer", "number"):
++        match = _SIZE_RE.match(stripped)
++        if match:
++            amount, unit = match.groups()
++            return int(float(amount) * _SIZE_UNIT_BYTES[unit])
++
++    try:
++        return int(stripped)
++    except ValueError:
++        pass
++    try:
++        return float(stripped)
++    except ValueError:
++        return value
++
++
++def coerce_args(kwargs: dict[str, Any], schema: dict[str, Any] | None) -> dict[str, Any]:
++    """Coerce common LM-emitted string values (booleans, numbers, durations, sizes) into the types
++    implied by `schema`, before json schema validation runs.
++
++    Only string values are considered, and only when the corresponding field's schema type is
++    `integer`, `number`, or `boolean`, or declares an explicit `format` of `duration`/`bytes`. Values
++    that don't match a supported pattern are left untouched so schema validation can surface a clear
++    error message.
++    """
++    if not schema:
++        return dict(kwargs)
++
++    coerced = dict(kwargs)
++    for key, value in kwargs.items():
++        if not isinstance(value, str):
++            continue
++        field_schema = schema.get(key)
++        if not isinstance(field_schema, dict):
++            continue
++        coerced[key] = _coerce_scalar(value, field_schema)
++    return coerced
++
+ 
+ class Tool(Type):
+     """Tool class.
+@@ -116,6 +191,10 @@ class Tool(Type):
+         self.has_kwargs = any(param.kind == param.VAR_KEYWORD for param in sig.parameters.values())
+ 
+     def _validate_and_parse_args(self, **kwargs):
++        # Coerce common LM-emitted strings (e.g. "42", "true", "750ms", "3MB") into the types implied
++        # by the schema before validation, so that minor formatting differences don't fail validation.
++        kwargs = coerce_args(kwargs, schema=self.args)
++
+         # Validate the args value comply to the json schema.
+         for k, v in kwargs.items():
+             if k not in self.args:
+@@ -254,10 +333,40 @@ class Tool(Type):
+         return f"{self.name}{desc} {arg_desc}"
+ 
+ 
++def _canonicalize_for_fingerprint(value: Any) -> Any:
++    """Recursively canonicalize a value for stable fingerprinting.
++
++    Sorts dict keys, converts tuples to lists, and trims whitespace from strings. Numeric and
++    boolean values are preserved as-is, so no semantic coercion happens here.
++    """
++    if isinstance(value, dict):
++        return {k: _canonicalize_for_fingerprint(value[k]) for k in sorted(value.keys())}
++    if isinstance(value, (list, tuple)):
++        return [_canonicalize_for_fingerprint(item) for item in value]
++    if isinstance(value, str):
++        return value.strip()
++    return value
++
++
+ class ToolCalls(Type):
+     class ToolCall(BaseModel):
+         name: str
+         args: dict[str, Any]
++        fingerprint: str | None = None
++        id: str | None = None
++
++        def __init__(self, **data):
++            data.pop("fingerprint", None)
++            data.pop("id", None)
++            super().__init__(**data)
++            canonical = {
++                "name": self.name,
++                "args": _canonicalize_for_fingerprint(self.args),
++            }
++            serialized = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
++            fingerprint = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
++            object.__setattr__(self, "fingerprint", fingerprint)
++            object.__setattr__(self, "id", fingerprint[:8])
+ 
+     tool_calls: list[ToolCall]
+ 

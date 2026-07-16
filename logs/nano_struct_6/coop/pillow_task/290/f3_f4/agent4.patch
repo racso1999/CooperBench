@@ -1,0 +1,122 @@
+diff --git a/Tests/test_image_quantize.py b/Tests/test_image_quantize.py
+index bd9db362c..fd2fb9135 100644
+--- a/Tests/test_image_quantize.py
++++ b/Tests/test_image_quantize.py
+@@ -77,6 +77,26 @@ def test_quantize_dither_diff():
+     assert dither.tobytes() != nodither.tobytes()
+ 
+ 
++def test_quantize_error_threshold():
++    image = hopper()
++
++    # A very high threshold should be satisfied with far fewer colors
++    # than requested.
++    low_quality = image.quantize(colors=256, error_threshold=10000)
++    assert_image(low_quality, "P", low_quality.size)
++    assert len(low_quality.getcolors()) < 256
++
++    # An unreachable (very low) threshold should fall back to using the
++    # maximum number of colors allowed.
++    high_quality = image.quantize(colors=100, error_threshold=0.0001)
++    assert_image(high_quality, "P", high_quality.size)
++    assert len(high_quality.getcolors()) == 100
++
++    # Without a threshold, behaviour should be unaffected.
++    default = image.quantize(colors=100)
++    assert len(default.getcolors()) == 100
++
++
+ def test_transparent_colors_equal():
+     im = Image.new("RGBA", (1, 2), (0, 0, 0, 0))
+     px = im.load()
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..8b370d289 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -1048,7 +1048,15 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        error_threshold=None,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1081,13 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param error_threshold: The maximum acceptable mean square error
++           between the original image and the quantized image. If this is
++           given, the number of colors used may be fewer than ``colors``,
++           stopping as soon as the error drops to or below this threshold.
++           If the threshold cannot be reached using at most ``colors``
++           colors, ``colors`` colors are used. Has no effect if ``palette``
++           is given. Default: ``None`` (disabled).
+         :returns: A new image
+ 
+         """
+@@ -1106,7 +1121,12 @@ class Image:
+             new_im.palette = palette.palette.copy()
+             return new_im
+ 
+-        im = self._new(self.im.quantize(colors, method, kmeans))
++        if error_threshold is not None:
++            im = self._quantize_to_error_threshold(
++                colors, method, kmeans, error_threshold
++            )
++        else:
++            im = self._new(self.im.quantize(colors, method, kmeans))
+ 
+         from . import ImagePalette
+ 
+@@ -1115,6 +1135,41 @@ class Image:
+ 
+         return im
+ 
++    def _quantize_error(self, quantized_im):
++        """
++        Returns the mean square error between this image and a quantized
++        (mode "P") version of it, averaged across bands.
++        """
++        from . import ImageChops, ImageStat
++
++        comparison = quantized_im.convert(self.mode)
++        diff = ImageChops.difference(self, comparison)
++        stat = ImageStat.Stat(diff)
++        return sum(rms ** 2 for rms in stat.rms) / len(stat.rms)
++
++    def _quantize_to_error_threshold(self, colors, method, kmeans, error_threshold):
++        """
++        Quantizes the image using as few colors as possible, up to
++        ``colors``, such that the mean square error against the original
++        image is at most ``error_threshold``. If that is not achievable
++        within ``colors`` colors, quantizes using ``colors`` colors.
++        """
++        low, high = 1, colors
++        best = self._new(self.im.quantize(high, method, kmeans))
++        if self._quantize_error(best) > error_threshold:
++            return best
++
++        while low < high:
++            mid = (low + high) // 2
++            candidate = self._new(self.im.quantize(mid, method, kmeans))
++            if self._quantize_error(candidate) <= error_threshold:
++                best = candidate
++                high = mid
++            else:
++                low = mid + 1
++
++        return best
++
+     def copy(self):
+         """
+         Copies this image. Use this method if you wish to paste things

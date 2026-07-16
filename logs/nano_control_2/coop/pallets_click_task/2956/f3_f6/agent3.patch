@@ -1,0 +1,92 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..d6bde92 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -15,6 +15,7 @@ from contextlib import ExitStack
+ from functools import update_wrapper
+ from gettext import gettext as _
+ from gettext import ngettext
++from itertools import islice
+ from itertools import repeat
+ from types import TracebackType
+ 
+@@ -2332,6 +2333,20 @@ class Parameter:
+                 return tuple(self.type(x, self, ctx) for x in value)
+ 
+         if self.multiple:
++            batch_size = getattr(self, "batch_size", None)
++
++            if batch_size:
++                if not value:
++                    return ()
++
++                def iter_batches() -> cabc.Iterator[tuple[t.Any, ...]]:
++                    it = check_iter(value)
++
++                    while chunk := tuple(convert(x) for x in islice(it, batch_size)):
++                        yield chunk
++
++                return iter_batches()
++
+             return tuple(convert(x) for x in check_iter(value))
+ 
+         return convert(value)
+@@ -2499,6 +2514,10 @@ class Option(Parameter):
+                      multiple times and recorded.  This is similar to ``nargs``
+                      in how it works but supports arbitrary number of
+                      arguments.
++    :param batch_size: if this is set, and ``multiple`` is ``True``, the
++                       collected values are yielded in chunks containing up
++                       to ``batch_size`` items each, instead of a single
++                       tuple. Only valid together with ``multiple``.
+     :param count: this flag makes an option increment an integer.
+     :param allow_from_autoenv: if this is enabled then the value of this
+                                parameter will be pulled from an environment
+@@ -2508,6 +2527,9 @@ class Option(Parameter):
+     :param hidden: hide this option from help outputs.
+     :param attrs: Other command arguments described in :class:`Parameter`.
+ 
++    .. versionadded:: 8.3
++        Added the ``batch_size`` parameter.
++
+     .. versionchanged:: 8.2
+         ``envvar`` used with ``flag_value`` will always use the ``flag_value``,
+         previously it would use the value of the environment variable.
+@@ -2541,6 +2563,7 @@ class Option(Parameter):
+         is_flag: bool | None = None,
+         flag_value: t.Any | None = None,
+         multiple: bool = False,
++        batch_size: int | None = None,
+         count: bool = False,
+         allow_from_autoenv: bool = True,
+         type: types.ParamType | t.Any | None = None,
+@@ -2577,6 +2600,7 @@ class Option(Parameter):
+             )
+             help = help + deprecated_message if help is not None else deprecated_message
+ 
++        self.batch_size = batch_size
+         self.prompt = prompt_text
+         self.confirmation_prompt = confirmation_prompt
+         self.prompt_required = prompt_required
+@@ -2650,6 +2674,13 @@ class Option(Parameter):
+             if not self.is_bool_flag and self.secondary_opts:
+                 raise TypeError("Secondary flag is not valid for non-boolean flag.")
+ 
++            if self.batch_size is not None:
++                if not self.multiple:
++                    raise TypeError("'batch_size' is only valid with 'multiple'.")
++
++                if self.batch_size < 0:
++                    raise ValueError("'batch_size' must be a positive integer.")
++
+             if self.is_bool_flag and self.hide_input and self.prompt is not None:
+                 raise TypeError(
+                     "'prompt' with 'hide_input' is not valid for boolean flag."
+@@ -2671,6 +2702,7 @@ class Option(Parameter):
+             flag_value=self.flag_value,
+             count=self.count,
+             hidden=self.hidden,
++            batch_size=self.batch_size,
+         )
+         return info_dict
+ 

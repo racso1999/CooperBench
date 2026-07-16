@@ -1,0 +1,149 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..bca3fbc 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -1196,6 +1196,8 @@ class Command:
+         for param in iter_params_for_processing(param_order, self.get_params(ctx)):
+             value, args = param.handle_parse_result(ctx, opts, args)
+ 
++        self._resolve_dynamic_defaults(ctx)
++
+         if args and not ctx.allow_extra_args and not ctx.resilient_parsing:
+             ctx.fail(
+                 ngettext(
+@@ -1209,6 +1211,41 @@ class Command:
+         ctx._opt_prefixes.update(parser._opt_prefixes)
+         return args
+ 
++    def _resolve_dynamic_defaults(self, ctx: Context) -> None:
++        """Fill in values for options with a dynamic (dict-based) default
++        that were not given an explicit value, by looking up the resolved
++        value of one or more other options in the dynamic default's mapping.
++        """
++        params = self.get_params(ctx)
++
++        for param in params:
++            dynamic_default = getattr(param, "_dynamic_default", None)
++
++            if not dynamic_default:
++                continue
++
++            if ctx.get_parameter_source(param.name) is not ParameterSource.DEFAULT:  # type: ignore[arg-type]
++                continue
++
++            resolved = None
++
++            for source_opt_name, value_map in dynamic_default.items():
++                source_param = next(
++                    (p for p in params if source_opt_name in p.opts), None
++                )
++
++                if source_param is None or source_param.name is None:
++                    continue
++
++                source_value = ctx.params.get(source_param.name)
++                key = str(source_value)
++
++                if key in value_map:
++                    resolved = value_map[key]
++
++            if resolved is not None:
++                ctx.params[param.name] = resolved  # type: ignore[index]
++
+     def invoke(self, ctx: Context) -> t.Any:
+         """Given a context, this invokes the attached callback (if it exists)
+         in the right way.
+@@ -2499,6 +2536,10 @@ class Option(Parameter):
+                      multiple times and recorded.  This is similar to ``nargs``
+                      in how it works but supports arbitrary number of
+                      arguments.
++    :param batch_size: if set (requires ``multiple=True``), values are grouped
++                       into batches of up to this many items instead of a
++                       single flat tuple, so the command receives an iterable
++                       of value-batches. Must be a non-negative integer.
+     :param count: this flag makes an option increment an integer.
+     :param allow_from_autoenv: if this is enabled then the value of this
+                                parameter will be pulled from an environment
+@@ -2549,16 +2590,44 @@ class Option(Parameter):
+         show_choices: bool = True,
+         show_envvar: bool = False,
+         deprecated: bool | str = False,
++        batch_size: int | None = None,
+         **attrs: t.Any,
+     ) -> None:
+         if help:
+             help = inspect.cleandoc(help)
+ 
++        # Detect a dynamic default: a mapping of "source option declaration"
++        # to a value-lookup table, instead of a plain static default.
++        raw_default = attrs.get("default")
++        self._dynamic_default: dict[str, dict[str, t.Any]] | None = None
++
++        if isinstance(raw_default, dict):
++            for key, value in raw_default.items():
++                if not isinstance(key, str):
++                    raise TypeError("Dynamic default keys must be strings.")
++
++                if not isinstance(value, dict):
++                    raise TypeError("Dynamic default values must be dictionaries.")
++
++            self._dynamic_default = raw_default
++            attrs["default"] = None
++
+         default_is_missing = "default" not in attrs
+         super().__init__(
+             param_decls, type=type, multiple=multiple, deprecated=deprecated, **attrs
+         )
+ 
++        self.batch_size = batch_size
++
++        if self.batch_size is not None:
++            if not self.multiple:
++                raise TypeError(
++                    "'batch_size' is only permitted when 'multiple' is true."
++                )
++
++            if self.batch_size < 0:
++                raise ValueError("'batch_size' must be a non-negative integer.")
++
+         if prompt is True:
+             if self.name is None:
+                 raise TypeError("'name' is required with 'prompt=True'.")
+@@ -2671,6 +2740,7 @@ class Option(Parameter):
+             flag_value=self.flag_value,
+             count=self.count,
+             hidden=self.hidden,
++            batch_size=self.batch_size,
+         )
+         return info_dict
+ 
+@@ -2680,6 +2750,17 @@ class Option(Parameter):
+             result += f" (env var: '{self.envvar}')"
+         return result
+ 
++    def type_cast_value(self, ctx: Context, value: t.Any) -> t.Any:
++        value = super().type_cast_value(ctx, value)
++
++        if self.multiple and self.batch_size is not None and value:
++            return tuple(
++                value[i : i + self.batch_size]
++                for i in range(0, len(value), self.batch_size)
++            )
++
++        return value
++
+     def _parse_decls(
+         self, decls: cabc.Sequence[str], expose_value: bool
+     ) -> tuple[str | None, list[str], list[str]]:
+@@ -2861,7 +2942,10 @@ class Option(Parameter):
+         elif ctx.show_default is not None:
+             show_default = ctx.show_default
+ 
+-        if show_default_is_str or (show_default and (default_value is not None)):
++        if self._dynamic_default:
++            if show_default:
++                extra["default"] = _("(dynamic)")
++        elif show_default_is_str or (show_default and (default_value is not None)):
+             if show_default_is_str:
+                 default_string = f"({self.show_default})"
+             elif isinstance(default_value, (list, tuple)):

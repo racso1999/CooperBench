@@ -1,0 +1,155 @@
+diff --git a/outlines/backends/xgrammar.py b/outlines/backends/xgrammar.py
+index fcb1672d..413d7f86 100644
+--- a/outlines/backends/xgrammar.py
++++ b/outlines/backends/xgrammar.py
+@@ -1,6 +1,8 @@
+ """Backend class for XGrammar."""
+ 
+-from typing import TYPE_CHECKING
++import hashlib
++import threading
++from typing import TYPE_CHECKING, Optional
+ 
+ from outlines.backends.base import BaseBackend
+ from outlines.models import SteerableModel
+@@ -22,18 +24,23 @@ class XGrammarLogitsProcessor(OutlinesLogitsProcessor):
+ 
+     """
+ 
+-    def __init__(self, compiled_grammar: str):
++    def __init__(
++        self, compiled_grammar: str, max_batch_size: Optional[int] = None
++    ):
+         """
+         Parameters
+         ----------
+         compiled_grammar: str
+             The compiled grammar to use to create the logits processor.
++        max_batch_size: int, optional
++            Maximum allowed batch size. If None, no limit is enforced.
+ 
+         """
+         import xgrammar as xgr
+ 
+         self.xgr = xgr
+         self.compiled_grammar = compiled_grammar
++        self.max_batch_size = max_batch_size
+         self.xgrammar_logits_processor = None
+         super().__init__("torch")
+ 
+@@ -44,6 +51,13 @@ class XGrammarLogitsProcessor(OutlinesLogitsProcessor):
+     def process_logits(self, input_ids: TensorType, logits: TensorType) -> TensorType:
+         """Bias the logits."""
+         if self.xgrammar_logits_processor is None:
++            if self.max_batch_size is not None:
++                batch_size = self.tensor_adapter.shape(logits)[0]
++                if batch_size > self.max_batch_size:
++                    raise ValueError(
++                        f"Batch size {batch_size} exceeds maximum allowed "
++                        f"batch size {self.max_batch_size}"
++                    )
+             self.xgrammar_logits_processor = self.xgr.contrib.hf.LogitsProcessor(
+                 self.compiled_grammar
+             )
+@@ -53,12 +67,18 @@ class XGrammarLogitsProcessor(OutlinesLogitsProcessor):
+ class XGrammarBackend(BaseBackend):
+     """Backend for XGRammar."""
+ 
+-    def __init__(self, model: SteerableModel):
++    def __init__(
++        self, model: SteerableModel, cache_compiled_grammars: bool = False
++    ):
+         """
+         Parameters
+         ----------
+         model
+             The Outlines model of the user.
++        cache_compiled_grammars
++            Whether to cache compiled grammars in memory so that
++            recompiling the same grammar string reuses the cached
++            result. Defaults to False.
+ 
+         """
+         import xgrammar as xgr
+@@ -78,6 +98,47 @@ class XGrammarBackend(BaseBackend):
+         )
+         self.grammar_compiler = xgr.GrammarCompiler(tokenizer_info)
+ 
++        self.cache_compiled_grammars = cache_compiled_grammars
++        self._grammar_cache: dict = {}
++        self._grammar_cache_lock = threading.Lock()
++
++    def _get_cache_key(self, grammar_str: str) -> str:
++        """Compute the cache key for a grammar string."""
++        return hashlib.sha256(grammar_str.encode("utf-8")).hexdigest()
++
++    def _compile_with_cache(self, grammar_str: str, compile_fn):
++        """Compile a grammar, using the cache if enabled.
++
++        Parameters
++        ----------
++        grammar_str
++            The raw grammar string used to compute the cache key.
++        compile_fn
++            A callable that performs the actual compilation when the
++            grammar is not already cached.
++
++        Returns
++        -------
++        The compiled grammar object.
++
++        """
++        if not self.cache_compiled_grammars:
++            return compile_fn()
++
++        cache_key = self._get_cache_key(grammar_str)
++
++        with self._grammar_cache_lock:
++            cached = self._grammar_cache.get(cache_key)
++            if cached is not None:
++                return cached
++
++        compiled_grammar = compile_fn()
++
++        with self._grammar_cache_lock:
++            self._grammar_cache[cache_key] = compiled_grammar
++
++        return compiled_grammar
++
+     def get_json_schema_logits_processor(
+         self, json_schema: str
+     ) -> "LogitsProcessor":
+@@ -94,8 +155,9 @@ class XGrammarBackend(BaseBackend):
+             The logits processor to use to constrain the generation.
+ 
+         """
+-        compiled_grammar = self.grammar_compiler.compile_json_schema(
+-            json_schema
++        compiled_grammar = self._compile_with_cache(
++            json_schema,
++            lambda: self.grammar_compiler.compile_json_schema(json_schema),
+         )
+         return XGrammarLogitsProcessor(compiled_grammar)
+ 
+@@ -113,7 +175,10 @@ class XGrammarBackend(BaseBackend):
+             The logits processor to use to constrain the generation.
+ 
+         """
+-        compiled_grammar = self.grammar_compiler.compile_regex(regex)
++        compiled_grammar = self._compile_with_cache(
++            regex,
++            lambda: self.grammar_compiler.compile_regex(regex),
++        )
+         return XGrammarLogitsProcessor(compiled_grammar)
+ 
+     def get_cfg_logits_processor(self, grammar: str) -> "LogitsProcessor":
+@@ -130,5 +195,8 @@ class XGrammarBackend(BaseBackend):
+             The logits processor to use to constrain the generation.
+ 
+         """
+-        compiled_grammar = self.grammar_compiler.compile_grammar(grammar)
++        compiled_grammar = self._compile_with_cache(
++            grammar,
++            lambda: self.grammar_compiler.compile_grammar(grammar),
++        )
+         return XGrammarLogitsProcessor(compiled_grammar)

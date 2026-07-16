@@ -1,0 +1,70 @@
+diff --git a/llama-index-core/llama_index/core/base/llms/types.py b/llama-index-core/llama_index/core/base/llms/types.py
+index 00e30cf23..5e43918f6 100644
+--- a/llama-index-core/llama_index/core/base/llms/types.py
++++ b/llama-index-core/llama_index/core/base/llms/types.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import base64
++import binascii
+ from enum import Enum
+ from io import BytesIO
+ from typing import (
+@@ -43,6 +44,22 @@ class MessageRole(str, Enum):
+     MODEL = "model"
+ 
+ 
++def normalize_image_bytes(image: bytes) -> tuple[bytes, bytes]:
++    """Normalize image bytes to a base64-encoded form, regardless of input encoding.
++
++    Returns a tuple of (base64-encoded image bytes, raw/decoded image bytes),
++    the latter being suitable for mimetype guessing.
++    """
++    try:
++        decoded_for_guessing = base64.b64decode(image, validate=True)
++        encoded_image = image
++    except binascii.Error:
++        decoded_for_guessing = image
++        encoded_image = base64.b64encode(image)
++
++    return encoded_image, decoded_for_guessing
++
++
+ class TextBlock(BaseModel):
+     block_type: Literal["text"] = "text"
+     text: str
+@@ -75,14 +92,31 @@ class ImageBlock(BaseModel):
+         if not self.image:
+             return self
+ 
++        self.image, decoded_for_guessing = normalize_image_bytes(self.image)
+         if not self.image_mimetype:
+-            guess = filetype.guess(self.image)
++            guess = filetype.guess(decoded_for_guessing)
+             self.image_mimetype = guess.mime if guess else None
+ 
+-        self.image = base64.b64encode(self.image)
+-
+         return self
+ 
++    def get_image_mimetype(self) -> str | None:
++        """Lazily resolve and cache the image mimetype.
++
++        If the mimetype is already known, it's returned as-is. Otherwise, it's
++        guessed from `self.image` (decoding it from base64 first, since by the
++        time this is called `image_to_base64` has already run) and the result
++        is cached on `self.image_mimetype` for future accesses.
++        """
++        if self.image_mimetype:
++            return self.image_mimetype
++
++        if self.image:
++            _, decoded_for_guessing = normalize_image_bytes(self.image)
++            guess = filetype.guess(decoded_for_guessing)
++            self.image_mimetype = guess.mime if guess else None
++
++        return self.image_mimetype
++
+     def resolve_image(self, as_base64: bool = False) -> BytesIO:
+         """Resolve an image such that PIL can read it.
+ 

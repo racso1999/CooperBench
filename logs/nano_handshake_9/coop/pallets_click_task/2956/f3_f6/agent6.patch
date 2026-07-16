@@ -1,0 +1,98 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..2458a05 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -1360,6 +1360,7 @@ class Command:
+         try:
+             try:
+                 with self.make_context(prog_name, args, **extra) as ctx:
++                    self._resolve_dynamic_defaults(ctx)
+                     rv = self.invoke(ctx)
+                     if not standalone_mode:
+                         return rv
+@@ -1405,6 +1406,48 @@ class Command:
+             echo(_("Aborted!"), file=sys.stderr)
+             sys.exit(1)
+ 
++    def _resolve_dynamic_defaults(self, ctx: Context) -> None:
++        """Resolve dict-based dynamic defaults now that every parameter
++        has been parsed.
++
++        A dynamic default maps another option's declaration name (e.g.
++        ``"--protocol"``) to a ``{stringified value: default}`` mapping.
++        It only overrides an option's value when that option's value
++        source is still :attr:`ParameterSource.DEFAULT`. If multiple
++        source options are given, later entries take precedence. If
++        nothing matches, the option is left as ``None``.
++        """
++        params = self.get_params(ctx)
++        opt_lookup: dict[str, Parameter] = {}
++
++        for param in params:
++            for opt in (*param.opts, *param.secondary_opts):
++                opt_lookup[opt] = param
++
++        for param in params:
++            if not isinstance(param, Option) or not isinstance(param.default, dict):
++                continue
++
++            if ctx.get_parameter_source(param.name) is not ParameterSource.DEFAULT:  # type: ignore[arg-type]
++                continue
++
++            resolved = None
++
++            for source_opt, mapping in param.default.items():
++                source_param = opt_lookup.get(source_opt)
++
++                if source_param is None:
++                    continue
++
++                source_value = ctx.params.get(source_param.name)
++                key = str(source_value)
++
++                if key in mapping:
++                    resolved = mapping[key]
++
++            if resolved is not None:
++                ctx.params[param.name] = param.type_cast_value(ctx, resolved)  # type: ignore[arg-type]
++
+     def _main_shell_completion(
+         self,
+         ctx_args: cabc.MutableMapping[str, t.Any],
+@@ -2257,6 +2300,12 @@ class Parameter:
+         if value is None:
+             value = self.default
+ 
++        if isinstance(value, dict):
++            # Dynamic default: the mapping is resolved from other
++            # option values after all parameters have been parsed, so
++            # there's no single static value to return here yet.
++            return value if not call else None
++
+         if call and callable(value):
+             value = value()
+ 
+@@ -2662,6 +2711,14 @@ class Option(Parameter):
+                 if self.is_flag:
+                     raise TypeError("'count' is not valid with 'is_flag'.")
+ 
++            if isinstance(self.default, dict):
++                for key, mapping in self.default.items():
++                    if not isinstance(key, str):
++                        raise TypeError("Dynamic default keys must be strings")
++
++                    if not isinstance(mapping, dict):
++                        raise TypeError("Dynamic default values must be dictionaries")
++
+     def to_info_dict(self) -> dict[str, t.Any]:
+         info_dict = super().to_info_dict()
+         info_dict.update(
+@@ -2866,7 +2923,7 @@ class Option(Parameter):
+                 default_string = f"({self.show_default})"
+             elif isinstance(default_value, (list, tuple)):
+                 default_string = ", ".join(str(d) for d in default_value)
+-            elif inspect.isfunction(default_value):
++            elif inspect.isfunction(default_value) or isinstance(default_value, dict):
+                 default_string = _("(dynamic)")
+             elif self.is_bool_flag and self.secondary_opts:
+                 # For boolean flags that have distinct True/False opts,

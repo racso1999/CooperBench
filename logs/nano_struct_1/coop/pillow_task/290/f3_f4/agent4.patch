@@ -1,0 +1,96 @@
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..ddd700c02 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -1048,7 +1048,15 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        error_threshold=None,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1081,14 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param error_threshold: The maximum acceptable mean squared error (MSE),
++           calculated in RGB space, between this image and the quantized result.
++           When given, quantization uses as few colors as possible, up to
++           ``colors``, so that the resulting error is at or below this
++           threshold. If ``colors`` is not enough to reach the threshold, the
++           result quantized to ``colors`` is returned instead. Has no effect
++           when ``palette`` is given. By default, no error threshold is
++           applied and exactly ``colors`` colors are used.
+         :returns: A new image
+ 
+         """
+@@ -1106,15 +1122,55 @@ class Image:
+             new_im.palette = palette.palette.copy()
+             return new_im
+ 
+-        im = self._new(self.im.quantize(colors, method, kmeans))
++        def quantize_to(n):
++            quantized_im = self._new(self.im.quantize(n, method, kmeans))
+ 
+-        from . import ImagePalette
++            from . import ImagePalette
++
++            mode = quantized_im.im.getpalettemode()
++            quantized_im.palette = ImagePalette.ImagePalette(
++                mode, quantized_im.im.getpalette(mode, mode)
++            )
++            return quantized_im
++
++        if not error_threshold or error_threshold <= 0:
++            return quantize_to(colors)
+ 
+-        mode = im.im.getpalettemode()
+-        im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
++        im = quantize_to(colors)
++        if self._mean_squared_error(im) > error_threshold:
++            # Even the maximum number of colors can't meet the threshold.
++            return im
++
++        # Binary search for the fewest colors that still satisfy the
++        # threshold. MSE decreases monotonically (or stays the same) as
++        # the number of colors increases, since colors are only ever
++        # added, never removed, from the palette.
++        low, high = 1, colors
++        while low < high:
++            mid = (low + high) // 2
++            candidate = quantize_to(mid)
++            if self._mean_squared_error(candidate) <= error_threshold:
++                high = mid
++                im = candidate
++            else:
++                low = mid + 1
+ 
+         return im
+ 
++    def _mean_squared_error(self, other):
++        from . import ImageChops
++
++        a = self.convert("RGB")
++        b = other.convert("RGB")
++        diff = ImageChops.difference(a, b)
++
++        total = 0
++        for channel in diff.split():
++            total += sum(i * i * n for i, n in enumerate(channel.histogram()))
++
++        pixels = a.size[0] * a.size[1] * len(diff.getbands())
++        return total / pixels if pixels else 0
++
+     def copy(self):
+         """
+         Copies this image. Use this method if you wish to paste things

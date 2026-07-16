@@ -1,0 +1,200 @@
+diff --git a/dspy/streaming/streaming_listener.py b/dspy/streaming/streaming_listener.py
+index 98fd4aca..55ad7b53 100644
+--- a/dspy/streaming/streaming_listener.py
++++ b/dspy/streaming/streaming_listener.py
+@@ -1,4 +1,6 @@
++import logging
+ import re
++import time
+ from collections import defaultdict
+ from queue import Queue
+ from typing import TYPE_CHECKING, Any
+@@ -26,6 +28,9 @@ class StreamListener:
+         predict: Any = None,
+         predict_name: str | None = None,
+         allow_reuse: bool = False,
++        debug: bool = False,
++        debug_logger: logging.Logger | None = None,
++        idle_timeout_s: float | None = None,
+     ):
+         """
+         Args:
+@@ -36,6 +41,14 @@ class StreamListener:
+                 automatically look for the predictor that has the `signature_field_name` in its signature.
+             allow_reuse: If True, the stream listener can be reused for multiple streams. Please note that this could
+                 hurt the performance because the same stream chunk is sent to multiple listeners.
++            debug: If True, emit structured DEBUG-level trace logs for key state transitions (start detection, end
++                detection, flush, and state reset) to help diagnose streaming boundary issues. Disabled by default
++                and does not change runtime behavior.
++            debug_logger: Optional logger to use for debug trace logs. Defaults to
++                `logging.getLogger("dspy.streaming.listener")`.
++            idle_timeout_s: If set, and no chunk has been received for this many seconds since the stream started,
++                `tick()` will emit a final empty chunk and terminate the stream. This guards against upstream stalls
++                that would otherwise leave the listener stuck waiting indefinitely.
+         """
+         self.signature_field_name = signature_field_name
+         self.predict = predict
+@@ -47,6 +60,10 @@ class StreamListener:
+         self.stream_end = False
+         self.cache_hit = False
+         self.allow_reuse = allow_reuse
++        self.debug = debug
++        self._logger = debug_logger or logging.getLogger("dspy.streaming.listener")
++        self.idle_timeout_s = idle_timeout_s
++        self._last_chunk_ts: float | None = None
+ 
+         self.adapter_identifiers = {
+             "ChatAdapter": {
+@@ -72,6 +89,14 @@ class StreamListener:
+                 return True
+         return False
+ 
++    def _truncate_for_log(self, text: str, max_len: int = 80) -> str:
++        """Truncate a preview string for debug logging, appending `...` when content is cut off."""
++        if text is None:
++            return ""
++        if len(text) <= max_len:
++            return text
++        return text[:max_len] + "..."
++
+     def receive(self, chunk: ModelResponseStream):
+         adapter_name = settings.adapter.__class__.__name__ if settings.adapter else "ChatAdapter"
+         if adapter_name not in self.adapter_identifiers:
+@@ -91,6 +116,8 @@ class StreamListener:
+                 self.field_start_queue = []
+                 self.field_end_queue = Queue()
+                 self.stream_start = False
++                if self.debug and self._logger.isEnabledFor(logging.DEBUG):
++                    self._logger.debug("State reset for field %r (allow_reuse=True)", self.signature_field_name)
+             else:
+                 return
+ 
+@@ -101,6 +128,9 @@ class StreamListener:
+         except Exception:
+             return
+ 
++        if chunk_message:
++            self._last_chunk_ts = time.time()
++
+         if chunk_message and start_identifier in chunk_message:
+             # If the cache is hit, the chunk_message could be the full response. When it happens we can
+             # directly end the stream listening. In some models like gemini, each stream chunk can be multiple
+@@ -133,11 +163,19 @@ class StreamListener:
+                 self.field_start_queue = []
+                 # Keep the part after the start_identifier from the concat_message, we need to write it to the buffer.
+                 value_start_index = concat_message.find(start_identifier) + len(start_identifier)
+-                chunk_message = concat_message[value_start_index:].lstrip()
++                buffer_after_identifier = concat_message[value_start_index:]
++                chunk_message = buffer_after_identifier.lstrip()
+                 if isinstance(settings.adapter, JSONAdapter) and chunk_message.startswith('"'):
+                     # For JSONAdapter, we need to remove the leading ". We cannot do this with the start_identifier
+                     # because there could be a few splitters between ':' and '"', e.g., '"name": "value"'.
+                     chunk_message = chunk_message[1:]
++                if self.debug and self._logger.isEnabledFor(logging.DEBUG):
++                    self._logger.debug(
++                        "Start detection: adapter=%s, field=%r, stream_start=True, buffer_preview=%r",
++                        adapter_name,
++                        self.signature_field_name,
++                        self._truncate_for_log(buffer_after_identifier),
++                    )
+ 
+             elif self._buffered_message_end_with_start_identifier(concat_message.strip(), start_identifier):
+                 # If the buffered message ends with part of the start_identifier, we keep looking for the
+@@ -160,14 +198,62 @@ class StreamListener:
+             concat_message = "".join(self.field_end_queue.queue).strip()
+             if re.search(end_identifier, concat_message):
+                 # The next field is identified, we can end the stream and flush out all tokens in the buffer.
++                if self.debug and self._logger.isEnabledFor(logging.DEBUG):
++                    self._logger.debug(
++                        "Rolling end check: adapter=%s, field=%r, reason='regex_match', buffered_size=%d",
++                        adapter_name,
++                        self.signature_field_name,
++                        len(concat_message),
++                    )
+                 self.stream_end = True
+                 last_token = self.flush()
+                 token = token + last_token if token else last_token
+                 token = token.rstrip()  # Remove the trailing \n\n
+ 
+             if token:
++                if self.debug and self._logger.isEnabledFor(logging.DEBUG):
++                    self._logger.debug(
++                        "Emit chunk: len(token)=%d, queue_size=%d, is_last_chunk=%s",
++                        len(token),
++                        self.field_end_queue.qsize(),
++                        self.stream_end,
++                    )
+                 return StreamResponse(self.predict_name, self.signature_field_name, token)
+ 
++    def tick(self, now_ts: float | None = None) -> "StreamResponse | None":
++        """Check whether the stream has gone idle for longer than `idle_timeout_s`.
++
++        This should be called periodically by the streaming system (independent of chunk arrival) so that a
++        stalled upstream doesn't leave a consumer waiting indefinitely. If the idle window has elapsed while
++        the stream had started but not yet ended, this emits a final `StreamResponse` with an empty `chunk` and
++        resets the listener's state so it doesn't keep firing the timeout on every subsequent tick.
++
++        Args:
++            now_ts: The current timestamp to check against. Defaults to `time.time()`.
++
++        Returns:
++            A `StreamResponse` with an empty `chunk` if the stream timed out due to inactivity, otherwise `None`.
++        """
++        if self.idle_timeout_s is None or not self.stream_start or self.stream_end:
++            return None
++
++        now_ts = now_ts if now_ts is not None else time.time()
++        if self._last_chunk_ts is None or now_ts - self._last_chunk_ts < self.idle_timeout_s:
++            return None
++
++        response = StreamResponse(self.predict_name, self.signature_field_name, "")
++
++        # Reset the listener state unconditionally, even if `allow_reuse` is False, so that the listener isn't
++        # left stuck in a started state after the stream has been terminated by the idle timeout.
++        self.stream_end = False
++        self.stream_start = False
++        self.cache_hit = False
++        self.field_start_queue = []
++        self.field_end_queue = Queue()
++        self._last_chunk_ts = None
++
++        return response
++
+     def flush(self) -> str:
+         """Flush all tokens in the field end queue.
+ 
+@@ -183,21 +269,31 @@ class StreamListener:
+                 boundary_index = match.start()
+             else:
+                 boundary_index = len(last_tokens)
+-            return last_tokens[:boundary_index]
++            truncated_buffer = last_tokens[:boundary_index]
+         elif isinstance(settings.adapter, XMLAdapter):
+             boundary_index = last_tokens.find(f"</{self.signature_field_name}>")
+             if boundary_index == -1:
+                 boundary_index = len(last_tokens)
+-            return last_tokens[:boundary_index]
++            truncated_buffer = last_tokens[:boundary_index]
+         elif isinstance(settings.adapter, ChatAdapter) or settings.adapter is None:
+             boundary_index = last_tokens.find("[[")
+-            return last_tokens[:boundary_index]
++            truncated_buffer = last_tokens[:boundary_index]
+         else:
+             raise ValueError(
+                 f"Unsupported adapter for streaming: {settings.adapter}, please use one of the following adapters: "
+                 f"{', '.join([a.__name__ for a in ADAPTER_SUPPORT_STREAMING])}"
+             )
+ 
++        if self.debug and self._logger.isEnabledFor(logging.DEBUG):
++            adapter_name = settings.adapter.__class__.__name__ if settings.adapter else "ChatAdapter"
++            self._logger.debug(
++                "Flush: adapter=%s, field=%r, truncated_buffer_length=%d",
++                adapter_name,
++                self.signature_field_name,
++                len(truncated_buffer),
++            )
++        return truncated_buffer
++
+ 
+ def find_predictor_for_stream_listeners(program: "Module", stream_listeners: list[StreamListener]):
+     """Find the predictor for each stream listener.

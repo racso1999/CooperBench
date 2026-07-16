@@ -1,0 +1,148 @@
+diff --git a/src/click/_termui_impl.py b/src/click/_termui_impl.py
+index 7b97bfb..cfd4a7c 100644
+--- a/src/click/_termui_impl.py
++++ b/src/click/_termui_impl.py
+@@ -485,11 +485,13 @@ class Editor:
+         env: cabc.Mapping[str, str] | None = None,
+         require_save: bool = True,
+         extension: str = ".txt",
++        process_priority: str | None = None,
+     ) -> None:
+         self.editor = editor
+         self.env = env
+         self.require_save = require_save
+         self.extension = extension
++        self.process_priority = process_priority
+ 
+     def get_editor(self) -> str:
+         if self.editor is not None:
+@@ -505,9 +507,52 @@ class Editor:
+                 return editor
+         return "vi"
+ 
+-    def edit_file(self, filename: str) -> None:
++    def _popen_kwargs(self) -> dict[str, t.Any]:
++        kwargs: dict[str, t.Any] = {}
++
++        if self.process_priority is None:
++            return kwargs
++
++        if WIN:
++            priority_classes = {
++                "low": 0x00000040,  # IDLE_PRIORITY_CLASS
++                "below_normal": 0x00004000,  # BELOW_NORMAL_PRIORITY_CLASS
++                "normal": 0x00000020,  # NORMAL_PRIORITY_CLASS
++                "above_normal": 0x00008000,  # ABOVE_NORMAL_PRIORITY_CLASS
++                "high": 0x00000080,  # HIGH_PRIORITY_CLASS
++            }
++            creationflags = priority_classes.get(self.process_priority)
++
++            if creationflags is not None:
++                kwargs["creationflags"] = creationflags
++        else:
++            nice_values = {
++                "low": 10,
++                "below_normal": 5,
++                "normal": 0,
++                "above_normal": -5,
++                "high": -10,
++            }
++            nice_value = nice_values.get(self.process_priority)
++
++            if nice_value is not None:
++
++                def _preexec_fn(nice_value: int = nice_value) -> None:
++                    try:
++                        os.nice(nice_value)
++                    except OSError:
++                        pass
++
++                kwargs["preexec_fn"] = _preexec_fn
++
++        return kwargs
++
++    def edit_files(self, filenames: str | cabc.Iterable[str]) -> None:
+         import subprocess
+ 
++        if isinstance(filenames, str):
++            filenames = (filenames,)
++
+         editor = self.get_editor()
+         environ: dict[str, str] | None = None
+ 
+@@ -515,8 +560,15 @@ class Editor:
+             environ = os.environ.copy()
+             environ.update(self.env)
+ 
++        exe_filenames = [f'"{filename}"' for filename in filenames]
++
+         try:
+-            c = subprocess.Popen(f'{editor} "{filename}"', env=environ, shell=True)
++            c = subprocess.Popen(
++                f"{editor} {' '.join(exe_filenames)}",
++                env=environ,
++                shell=True,
++                **self._popen_kwargs(),
++            )
+             exit_code = c.wait()
+             if exit_code != 0:
+                 raise ClickException(
+@@ -559,7 +611,7 @@ class Editor:
+             # recorded, so get the new recorded value.
+             timestamp = os.path.getmtime(name)
+ 
+-            self.edit_file(name)
++            self.edit_files(name)
+ 
+             if self.require_save and os.path.getmtime(name) == timestamp:
+                 return None
+diff --git a/src/click/termui.py b/src/click/termui.py
+index e14e670..073f638 100644
+--- a/src/click/termui.py
++++ b/src/click/termui.py
+@@ -649,7 +649,8 @@ def edit(
+     env: cabc.Mapping[str, str] | None = None,
+     require_save: bool = True,
+     extension: str = ".txt",
+-    filename: str | None = None,
++    filename: str | cabc.Iterable[str] | None = None,
++    process_priority: str | None = None,
+ ) -> t.AnyStr | None:
+     r"""Edits the given text in the defined editor.  If an editor is given
+     (should be the full path to the executable but the regular operating
+@@ -674,18 +675,30 @@ def edit(
+     :param extension: the extension to tell the editor about.  This defaults
+                       to `.txt` but changing this might change syntax
+                       highlighting.
+-    :param filename: if provided it will edit this file instead of the
+-                     provided text contents.  It will not use a temporary
+-                     file as an indirection in that case.
++    :param filename: if provided it will edit this file (or files, if given
++                     an iterable of filenames) instead of the provided text
++                     contents.  It will not use a temporary file as an
++                     indirection in that case.
++    :param process_priority: optionally set the CPU priority of the editor
++                             process.  One of ``"low"``, ``"below_normal"``,
++                             ``"normal"``, ``"above_normal"``, ``"high"``.
++                             If not supported or setting it fails, the
++                             editor is still launched at default priority.
+     """
+     from ._termui_impl import Editor
+ 
+-    ed = Editor(editor=editor, env=env, require_save=require_save, extension=extension)
++    ed = Editor(
++        editor=editor,
++        env=env,
++        require_save=require_save,
++        extension=extension,
++        process_priority=process_priority,
++    )
+ 
+     if filename is None:
+         return ed.edit(text)
+ 
+-    ed.edit_file(filename)
++    ed.edit_files(filename)
+     return None
+ 
+ 

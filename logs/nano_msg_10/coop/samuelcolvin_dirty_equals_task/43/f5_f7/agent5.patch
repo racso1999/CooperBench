@@ -1,0 +1,116 @@
+diff --git a/dirty_equals/__init__.py b/dirty_equals/__init__.py
+index ba8214e..cea2b25 100644
+--- a/dirty_equals/__init__.py
++++ b/dirty_equals/__init__.py
+@@ -18,7 +18,7 @@ from ._numeric import (
+     IsPositiveFloat,
+     IsPositiveInt,
+ )
+-from ._other import FunctionCheck, IsJson, IsUUID
++from ._other import FunctionCheck, IsJson, IsPhoneNumber, IsUUID
+ from ._sequence import Contains, HasLen, IsList, IsListOrTuple, IsTuple
+ from ._strings import IsAnyStr, IsBytes, IsStr
+ 
+@@ -69,6 +69,7 @@ __all__ = (
+     'FunctionCheck',
+     'IsJson',
+     'IsUUID',
++    'IsPhoneNumber',
+     # strings
+     'IsStr',
+     'IsBytes',
+diff --git a/dirty_equals/_other.py b/dirty_equals/_other.py
+index b2b8379..1933f36 100644
+--- a/dirty_equals/_other.py
++++ b/dirty_equals/_other.py
+@@ -1,5 +1,6 @@
+ import json
+-from typing import Any, Callable, TypeVar, overload
++import re
++from typing import Any, Callable, Optional, TypeVar, overload
+ from uuid import UUID
+ 
+ from ._base import DirtyEquals
+@@ -51,6 +52,82 @@ class IsUUID(DirtyEquals[UUID]):
+             return True
+ 
+ 
++_ALLOWED_PHONE_CHARS_RE = re.compile(r'^[+()\-.\s\d]+$')
++
++
++class IsPhoneNumber(DirtyEquals[str]):
++    """
++    A class that checks if a value is a valid phone number, optionally restricted to a specific country's format.
++    """
++
++    _US_NATIONAL_RE = re.compile(r'^\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}$')
++    _US_INTL_RE = re.compile(r'^\+1[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}$')
++    _GB_NATIONAL_RE = re.compile(r'^0\d{2,4}[-.\s]?\d{3,4}[-.\s]?\d{3,4}$')
++    _GB_INTL_RE = re.compile(r'^\+44[-.\s]?\d{2,4}[-.\s]?\d{3,4}[-.\s]?\d{3,4}$')
++
++    _COUNTRY_PATTERNS = {
++        'US': (_US_NATIONAL_RE, _US_INTL_RE),
++        'GB': (_GB_NATIONAL_RE, _GB_INTL_RE),
++    }
++
++    def __init__(self, country_code: Optional[str] = None):
++        """
++        Args:
++            country_code: optional ISO 3166-1 alpha-2 country code (e.g. `'US'`, `'GB'`) to restrict validation to
++                that country's phone number format. If omitted, generic phone number validation is performed.
++
++        Numbers may include or omit the international dialing code, and may use spaces, dashes, dots or
++        parentheses as delimiters. Only strings are accepted.
++
++        ```py title="IsPhoneNumber"
++        from dirty_equals import IsPhoneNumber
++
++        assert '+1-555-123-4567' == IsPhoneNumber
++        assert '555-123-4567' == IsPhoneNumber('US')
++        assert '+1-555-123-4567' == IsPhoneNumber('US')
++        assert '555-123-4567' != IsPhoneNumber('GB')
++        assert '020 7946 0958' == IsPhoneNumber('GB')
++        assert '+44 20 7946 0958' == IsPhoneNumber('GB')
++        assert '020 7946 0958' != IsPhoneNumber('US')
++        assert 123 != IsPhoneNumber
++        ```
++        """
++        self.country_code = country_code.upper() if country_code else None
++        super().__init__(plain_repr('*') if self.country_code is None else self.country_code)
++
++    def equals(self, other: Any) -> bool:
++        if not isinstance(other, str):
++            return False
++
++        number = other.strip()
++        if not number or not _ALLOWED_PHONE_CHARS_RE.match(number):
++            return False
++        if number.count('+') > 1 or ('+' in number and not number.startswith('+')):
++            return False
++
++        if self.country_code is None:
++            return self._is_valid_generic(number)
++        elif self.country_code in self._COUNTRY_PATTERNS:
++            national_re, intl_re = self._COUNTRY_PATTERNS[self.country_code]
++            return bool(national_re.match(number) or intl_re.match(number))
++        else:
++            return self._is_valid_unknown_country(number)
++
++    @staticmethod
++    def _is_valid_generic(number: str) -> bool:
++        digits = re.sub(r'\D', '', number)
++        if number.startswith('+'):
++            return 8 <= len(digits) <= 15
++        return 7 <= len(digits) <= 15
++
++    @staticmethod
++    def _is_valid_unknown_country(number: str) -> bool:
++        if not number.startswith('+'):
++            return False
++        digits = re.sub(r'\D', '', number)
++        return 8 <= len(digits) <= 18
++
++
+ AnyJson = object
+ JsonType = TypeVar('JsonType', AnyJson, Any)
+ 

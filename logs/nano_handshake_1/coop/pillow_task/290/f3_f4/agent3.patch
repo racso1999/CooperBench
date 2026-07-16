@@ -1,0 +1,160 @@
+diff --git a/Tests/test_image_quantize.py b/Tests/test_image_quantize.py
+index bd9db362c..334f39304 100644
+--- a/Tests/test_image_quantize.py
++++ b/Tests/test_image_quantize.py
+@@ -85,3 +85,55 @@ def test_transparent_colors_equal():
+     converted = im.quantize()
+     converted_px = converted.load()
+     assert converted_px[0, 0] == converted_px[0, 1]
++
++
++def test_sort_palette_luminance():
++    image = hopper()
++    converted = image.quantize(32, sort_palette="luminance")
++    assert_image(converted, "P", converted.size)
++
++    palette = converted.im.getpalette("RGB", "RGB")
++    num_colors = len(converted.getcolors())
++    luminances = [
++        0.299 * palette[i * 3]
++        + 0.587 * palette[i * 3 + 1]
++        + 0.114 * palette[i * 3 + 2]
++        for i in range(num_colors)
++    ]
++    assert luminances == sorted(luminances)
++
++    # Sorting the palette should not change the visible image
++    unsorted = image.quantize(32)
++    assert converted.convert("RGB").tobytes() == unsorted.convert("RGB").tobytes()
++
++
++def test_sort_palette_rgb():
++    image = hopper()
++    converted = image.quantize(32, sort_palette="rgb")
++    assert_image(converted, "P", converted.size)
++
++    palette = converted.im.getpalette("RGB", "RGB")
++    num_colors = len(converted.getcolors())
++    colors = [tuple(palette[i * 3 : i * 3 + 3]) for i in range(num_colors)]
++    assert colors == sorted(colors)
++
++    unsorted = image.quantize(32)
++    assert converted.convert("RGB").tobytes() == unsorted.convert("RGB").tobytes()
++
++
++def test_sort_palette_with_reference_palette():
++    image = hopper()
++    with Image.open("Tests/images/caption_6_33_22.png") as palette_im:
++        palette_im = palette_im.convert("P")
++
++    converted = image.quantize(palette=palette_im, sort_palette="rgb")
++    assert_image(converted, "P", converted.size)
++
++    unsorted = image.quantize(palette=palette_im)
++    assert converted.convert("RGB").tobytes() == unsorted.convert("RGB").tobytes()
++
++
++def test_sort_palette_invalid():
++    image = hopper()
++    with pytest.raises(ValueError):
++        image.quantize(32, sort_palette="not-a-real-method")
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..e6acb6843 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -1048,7 +1048,15 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        sort_palette=None,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1081,17 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param sort_palette: Reorders the palette after quantization, remapping
++           the image data to match. This can produce more predictable palette
++           orderings, which is useful e.g. for keeping palettes consistent
++           between animation frames, or ordering colors for palette cycling
++           effects. Accepts:
++
++           * ``None`` (default): the palette order chosen by the quantizer is
++             left unchanged.
++           * ``"luminance"``: colors are ordered from darkest to lightest,
++             based on perceptual luminance.
++           * ``"rgb"``: colors are ordered by their ``(R, G, B)`` value.
+         :returns: A new image
+ 
+         """
+@@ -1104,6 +1123,8 @@ class Image:
+             im = self.im.convert("P", dither, palette.im)
+             new_im = self._new(im)
+             new_im.palette = palette.palette.copy()
++            if sort_palette:
++                new_im = new_im._sort_palette(sort_palette)
+             return new_im
+ 
+         im = self._new(self.im.quantize(colors, method, kmeans))
+@@ -1113,8 +1134,51 @@ class Image:
+         mode = im.im.getpalettemode()
+         im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
+ 
++        if sort_palette:
++            im = im._sort_palette(sort_palette)
++
+         return im
+ 
++    def _sort_palette(self, sort_palette):
++        """
++        Reorders this image's palette according to ``sort_palette`` and remaps
++        the image data to match. See :py:meth:`~PIL.Image.Image.quantize` for
++        the accepted values of ``sort_palette``.
++
++        :param sort_palette: ``"luminance"`` or ``"rgb"``.
++        :returns: A new image.
++        """
++        palette = self.im.getpalette("RGB", "RGB")
++
++        if sort_palette == "luminance":
++
++            def sort_key(index):
++                r, g, b = palette[index * 3 : index * 3 + 3]
++                return 0.299 * r + 0.587 * g + 0.114 * b
++
++        elif sort_palette == "rgb":
++
++            def sort_key(index):
++                return tuple(palette[index * 3 : index * 3 + 3])
++
++        else:
++            raise ValueError(
++                "sort_palette must be None, 'luminance' or 'rgb', "
++                "not " + repr(sort_palette)
++            )
++
++        # The palette indices actually referenced by the image data are not
++        # guaranteed to be contiguous from 0 (e.g. when quantizing to a
++        # reference image's palette), so use the histogram to tell used
++        # entries apart from unused ones. Used colors are sorted to the front;
++        # unused entries are kept after them, in their original order.
++        histogram = self.histogram()
++        num_colors = len(palette) // 3
++        used = sorted((i for i in range(num_colors) if histogram[i]), key=sort_key)
++        unused = [i for i in range(num_colors) if not histogram[i]]
++
++        return self.remap_palette(used + unused)
++
+     def copy(self):
+         """
+         Copies this image. Use this method if you wish to paste things

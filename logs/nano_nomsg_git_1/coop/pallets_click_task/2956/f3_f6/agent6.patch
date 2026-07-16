@@ -1,0 +1,116 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..b5a60e5 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -1196,6 +1196,8 @@ class Command:
+         for param in iter_params_for_processing(param_order, self.get_params(ctx)):
+             value, args = param.handle_parse_result(ctx, opts, args)
+ 
++        self._resolve_dynamic_defaults(ctx)
++
+         if args and not ctx.allow_extra_args and not ctx.resilient_parsing:
+             ctx.fail(
+                 ngettext(
+@@ -1209,6 +1211,60 @@ class Command:
+         ctx._opt_prefixes.update(parser._opt_prefixes)
+         return args
+ 
++    def _resolve_dynamic_defaults(self, ctx: Context) -> None:
++        """Resolve options whose ``default`` is a mapping of other
++        option declarations to value maps (dynamic defaults). This runs
++        after every parameter has consumed its command line, environment
++        variable, and default map value, so the values being depended on
++        are final.
++        """
++        params = self.get_params(ctx)
++
++        for param in params:
++            if not isinstance(param, Option) or not isinstance(param.default, dict):
++                continue
++
++            if param.name is None:
++                continue
++
++            if ctx.get_parameter_source(param.name) is not ParameterSource.DEFAULT:
++                continue
++
++            resolved = None
++
++            for decl, value_map in param.default.items():
++                source_param = next(
++                    (
++                        p
++                        for p in params
++                        if decl in p.opts or decl in getattr(p, "secondary_opts", ())
++                    ),
++                    None,
++                )
++
++                if source_param is None or source_param.name is None:
++                    continue
++
++                key = str(ctx.params.get(source_param.name))
++
++                if key in value_map:
++                    resolved = value_map[key]
++
++            if resolved is None:
++                continue
++
++            with augment_usage_errors(ctx, param=param):
++                try:
++                    value = param.process_value(ctx, resolved)
++                except Exception:
++                    if not ctx.resilient_parsing:
++                        raise
++
++                    value = None
++
++            if param.expose_value:
++                ctx.params[param.name] = value
++
+     def invoke(self, ctx: Context) -> t.Any:
+         """Given a context, this invokes the attached callback (if it exists)
+         in the right way.
+@@ -2637,6 +2693,14 @@ class Option(Parameter):
+         self.show_choices = show_choices
+         self.show_envvar = show_envvar
+ 
++        if isinstance(self.default, dict):
++            for key, mapping in self.default.items():
++                if not isinstance(key, str):
++                    raise TypeError("Dynamic default keys must be strings")
++
++                if not isinstance(mapping, dict):
++                    raise TypeError("Dynamic default values must be dictionaries")
++
+         if __debug__:
+             if deprecated and prompt:
+                 raise ValueError("`deprecated` options cannot use `prompt`.")
+@@ -2866,7 +2930,7 @@ class Option(Parameter):
+                 default_string = f"({self.show_default})"
+             elif isinstance(default_value, (list, tuple)):
+                 default_string = ", ".join(str(d) for d in default_value)
+-            elif inspect.isfunction(default_value):
++            elif inspect.isfunction(default_value) or isinstance(default_value, dict):
+                 default_string = _("(dynamic)")
+             elif self.is_bool_flag and self.secondary_opts:
+                 # For boolean flags that have distinct True/False opts,
+@@ -2923,7 +2987,16 @@ class Option(Parameter):
+ 
+             return None
+ 
+-        return super().get_default(ctx, call=call)
++        value = super().get_default(ctx, call=call)
++
++        if call and isinstance(value, dict):
++            # Dynamic defaults (a mapping of other option names to
++            # value maps) are resolved in a second pass after all
++            # parameters have been parsed, once the values they depend
++            # on are known. Until then, treat the option as unset.
++            return None
++
++        return value
+ 
+     def prompt_for_value(self, ctx: Context) -> t.Any:
+         """This is an alternative flow that can be activated in the full

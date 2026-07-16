@@ -1,0 +1,98 @@
+diff --git a/Tests/test_image.py b/Tests/test_image.py
+index c2e850c36..8c3c0746f 100644
+--- a/Tests/test_image.py
++++ b/Tests/test_image.py
+@@ -182,6 +182,34 @@ class TestImage:
+         with Image.open(out) as reloaded:
+             assert_image_equal(im, reloaded)
+ 
++    def test_dry_run_no_file_created(self, tmp_path: Path) -> None:
++        out = tmp_path / "temp.png"
++        im = hopper()
++        im.save(out, dry_run=True)
++        assert not out.exists()
++
++    def test_dry_run_does_not_modify_existing_file(self, tmp_path: Path) -> None:
++        out = tmp_path / "temp.png"
++        im = hopper()
++        im.save(out)
++        original = out.read_bytes()
++
++        other = Image.new("RGB", (5, 5), "#0f0")
++        other.save(out, dry_run=True)
++
++        assert out.read_bytes() == original
++
++    def test_dry_run_raises_errors(self, tmp_path: Path) -> None:
++        im = Image.new("RGBA", (10, 10))
++        with pytest.raises(OSError):
++            im.save(tmp_path / "temp.jpg", dry_run=True)
++
++    def test_dry_run_with_file_object(self) -> None:
++        im = hopper()
++        fp = io.BytesIO()
++        im.save(fp, format="PNG", dry_run=True)
++        assert fp.getvalue() == b""
++
+     def test_pathlib(self, tmp_path: Path) -> None:
+         with Image.open(Path("Tests/images/multipage-mmap.tiff")) as im:
+             assert im.mode == "P"
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 233df592c..e5a59f172 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -2467,7 +2467,11 @@ class Image:
+         )
+ 
+     def save(
+-        self, fp: StrOrBytesPath | IO[bytes], format: str | None = None, **params: Any
++        self,
++        fp: StrOrBytesPath | IO[bytes],
++        format: str | None = None,
++        dry_run: bool = False,
++        **params: Any,
+     ) -> None:
+         """
+         Saves this image under the given filename.  If no format is
+@@ -2490,6 +2494,10 @@ class Image:
+            format to use is determined from the filename extension.
+            If a file object was used instead of a filename, this
+            parameter should always be used.
++        :param dry_run: If set to ``True``, the image will be processed as
++           though it were being saved, so that any errors that would occur
++           during saving are still raised, but no file will actually be
++           written to disk and any existing file will be left untouched.
+         :param params: Extra parameters to the image writer. These can also be
+            set on the image itself through ``encoderinfo``. This is useful when
+            saving multiple images::
+@@ -2559,7 +2567,11 @@ class Image:
+             save_handler = SAVE[format.upper()]
+ 
+         created = False
+-        if open_fp:
++        if dry_run:
++            # process the image as though it were being saved, without
++            # writing to disk or touching any existing file or file object
++            fp = io.BytesIO()
++        elif open_fp:
+             created = not os.path.exists(filename)
+             if params.get("append", False):
+                 # Open also for reading ("+"), because TIFF save_all
+@@ -2573,7 +2585,7 @@ class Image:
+         try:
+             save_handler(self, fp, filename)
+         except Exception:
+-            if open_fp:
++            if open_fp and not dry_run:
+                 fp.close()
+             if created:
+                 try:
+@@ -2586,7 +2598,7 @@ class Image:
+                 del self.encoderinfo
+             except AttributeError:
+                 pass
+-        if open_fp:
++        if open_fp and not dry_run:
+             fp.close()
+ 
+     def seek(self, frame: int) -> None:

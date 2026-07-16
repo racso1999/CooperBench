@@ -1,0 +1,115 @@
+diff --git a/dirty_equals/__init__.py b/dirty_equals/__init__.py
+index ba8214e..cea2b25 100644
+--- a/dirty_equals/__init__.py
++++ b/dirty_equals/__init__.py
+@@ -18,7 +18,7 @@ from ._numeric import (
+     IsPositiveFloat,
+     IsPositiveInt,
+ )
+-from ._other import FunctionCheck, IsJson, IsUUID
++from ._other import FunctionCheck, IsJson, IsPhoneNumber, IsUUID
+ from ._sequence import Contains, HasLen, IsList, IsListOrTuple, IsTuple
+ from ._strings import IsAnyStr, IsBytes, IsStr
+ 
+@@ -69,6 +69,7 @@ __all__ = (
+     'FunctionCheck',
+     'IsJson',
+     'IsUUID',
++    'IsPhoneNumber',
+     # strings
+     'IsStr',
+     'IsBytes',
+diff --git a/dirty_equals/_other.py b/dirty_equals/_other.py
+index b2b8379..7a9a0bd 100644
+--- a/dirty_equals/_other.py
++++ b/dirty_equals/_other.py
+@@ -1,5 +1,6 @@
+ import json
+-from typing import Any, Callable, TypeVar, overload
++import re
++from typing import Any, Callable, Optional, TypeVar, overload
+ from uuid import UUID
+ 
+ from ._base import DirtyEquals
+@@ -145,3 +146,81 @@ class FunctionCheck(DirtyEquals[Any]):
+ 
+     def equals(self, other: Any) -> bool:
+         return self.func(other)
++
++
++class IsPhoneNumber(DirtyEquals[str]):
++    """
++    A class that checks if a value is a valid phone number, optionally restricted to a specific country.
++
++    This provides pragmatic, not exhaustive, phone number validation - it's not a replacement for a
++    dedicated phone number validation library.
++    """
++
++    _strip_chars_re = re.compile(r'[\s.()-]')
++    _allowed_chars_re = re.compile(r'\+?\d+')
++
++    def __init__(self, country: Optional[str] = None):
++        """
++        Args:
++            country: ISO 3166-1 alpha-2 country code to restrict validation to, if omitted, generic
++                international validation is used. Currently `'US'` and `'GB'` have dedicated rules, any
++                other country falls back to generic international validation.
++
++        ```py title="IsPhoneNumber"
++        from dirty_equals import IsPhoneNumber
++
++        assert '+1-555-123-4567' == IsPhoneNumber()
++        assert '555-123-4567' == IsPhoneNumber()
++        assert 'not a phone number' != IsPhoneNumber()
++
++        assert '555-123-4567' == IsPhoneNumber('US')
++        assert '+1-555-123-4567' == IsPhoneNumber('US')
++        assert '555-123-4567' != IsPhoneNumber('GB')
++
++        assert '020 7946 0958' == IsPhoneNumber('GB')
++        assert '+44 20 7946 0958' == IsPhoneNumber('GB')
++        ```
++        """
++        self.country = country.upper() if country else None
++        super().__init__(self.country if self.country else plain_repr('*'))
++
++    def equals(self, other: Any) -> bool:
++        if not isinstance(other, str):
++            return False
++
++        cleaned = self._strip_chars_re.sub('', other)
++        if not self._allowed_chars_re.fullmatch(cleaned):
++            return False
++
++        has_plus = cleaned.startswith('+')
++        digits = cleaned[1:] if has_plus else cleaned
++
++        if self.country == 'US':
++            return self._is_valid_us(digits, has_plus)
++        elif self.country == 'GB':
++            return self._is_valid_gb(digits, has_plus)
++        elif self.country is None:
++            return self._is_valid_generic(digits, has_plus, require_plus=False)
++        else:
++            # unsupported country, fall back to generic international validation
++            return self._is_valid_generic(digits, has_plus, require_plus=True)
++
++    @staticmethod
++    def _is_valid_us(digits: str, has_plus: bool) -> bool:
++        if has_plus:
++            return len(digits) == 11 and digits.startswith('1')
++        else:
++            return len(digits) == 10
++
++    @staticmethod
++    def _is_valid_gb(digits: str, has_plus: bool) -> bool:
++        if has_plus:
++            return digits.startswith('44') and len(digits) - 2 in (9, 10)
++        else:
++            return digits.startswith('0') and len(digits) in (10, 11)
++
++    @staticmethod
++    def _is_valid_generic(digits: str, has_plus: bool, require_plus: bool) -> bool:
++        if require_plus and not has_plus:
++            return False
++        return 7 <= len(digits) <= 15

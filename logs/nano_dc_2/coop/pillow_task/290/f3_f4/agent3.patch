@@ -1,0 +1,109 @@
+diff --git a/Tests/test_image_quantize.py b/Tests/test_image_quantize.py
+index bd9db362c..dca4b6268 100644
+--- a/Tests/test_image_quantize.py
++++ b/Tests/test_image_quantize.py
+@@ -85,3 +85,44 @@ def test_transparent_colors_equal():
+     converted = im.quantize()
+     converted_px = converted.load()
+     assert converted_px[0, 0] == converted_px[0, 1]
++
++
++def _palette_luminance(im):
++    palette = im.getpalette()
++    used = sorted({index for _, index in im.getcolors(maxcolors=256)})
++    return [
++        palette[i * 3] * 299 + palette[i * 3 + 1] * 587 + palette[i * 3 + 2] * 114
++        for i in used
++    ]
++
++
++def test_quantize_sort_palette_default_unaffected():
++    image = hopper()
++    converted = image.quantize(100, Image.FASTOCTREE)
++    unsorted = image.quantize(100, Image.FASTOCTREE, sort_palette=False)
++    assert converted.tobytes() == unsorted.tobytes()
++    assert converted.palette.palette == unsorted.palette.palette
++
++
++def test_quantize_sort_palette_luminance():
++    image = hopper()
++    converted = image.quantize(100, Image.FASTOCTREE, sort_palette=True)
++    assert_image(converted, "P", converted.size)
++
++    luminance = _palette_luminance(converted)
++    assert luminance == sorted(luminance)
++
++    # Pixel data should be visually unaffected by the palette reordering
++    unsorted = image.quantize(100, Image.FASTOCTREE)
++    assert_image_similar(converted.convert("RGB"), unsorted.convert("RGB"), 1)
++
++
++def test_quantize_sort_palette_rgb():
++    image = hopper()
++    converted = image.quantize(100, Image.FASTOCTREE, sort_palette="rgb")
++    assert_image(converted, "P", converted.size)
++
++    palette = converted.getpalette()
++    used = sorted({index for _, index in converted.getcolors(maxcolors=256)})
++    triples = [tuple(palette[i * 3 : i * 3 + 3]) for i in used]
++    assert triples == sorted(triples)
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..999874221 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -1048,7 +1048,15 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        sort_palette=False,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1081,11 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param sort_palette: If set, the palette entries of the resulting
++           image are sorted after quantization. Use ``True`` or
++           ``"luminance"`` to sort by perceptual brightness, or ``"rgb"`` to
++           sort by raw RGB value. Default: ``False`` (palette order is left
++           as produced by the quantization method).
+         :returns: A new image
+ 
+         """
+@@ -1113,6 +1126,26 @@ class Image:
+         mode = im.im.getpalettemode()
+         im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
+ 
++        if sort_palette:
++            im.load()
++            palette_rgb = im.im.getpalette("RGB", "RGB")
++            palette_size = len(palette_rgb) // 3
++
++            def luminance_key(i):
++                r, g, b = palette_rgb[i * 3 : i * 3 + 3]
++                return r * 299 + g * 587 + b * 114
++
++            def rgb_key(i):
++                return tuple(palette_rgb[i * 3 : i * 3 + 3])
++
++            key = rgb_key if sort_palette == "rgb" else luminance_key
++
++            used = {index for _, index in im.getcolors(maxcolors=palette_size)}
++            unused = [i for i in range(palette_size) if i not in used]
++            dest_map = sorted(used, key=key) + unused
++
++            im = im.remap_palette(dest_map)
++
+         return im
+ 
+     def copy(self):

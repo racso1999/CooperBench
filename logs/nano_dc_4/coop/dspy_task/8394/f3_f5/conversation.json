@@ -1,0 +1,106 @@
+[
+  {
+    "from": "agent1",
+    "to": "agent2",
+    "message": "type: SURVEY\nfiles: dspy/clients/cache.py,dspy/clients/__init__.py\nnote: Adding TTL support: configure_cache(ttl=...), Cache(ttl=...), set_ttl() helper, TTLCache import, disk_cache.set(expire=ttl), disk_cache.expire() in get()",
+    "timestamp": 1783519885.3577318,
+    "feature_id": 3,
+    "kind": "SURVEY"
+  },
+  {
+    "from": "agent2",
+    "to": "agent1",
+    "message": "type: SURVEY\nfiles: dspy/clients/cache.py,dspy/clients/__init__.py\nnote: Adding compression (gzip/zlib) to Cache class (constructor params compress/cull_limit/eviction_policy, put/get serialization with DSPC magic header), plus set_compression method. Also extending configure_cache() in __init__.py with compress/cull_limit/eviction_policy params and passing them to Cache().",
+    "timestamp": 1783519899.8050876,
+    "feature_id": 5,
+    "kind": "SURVEY"
+  },
+  {
+    "from": "agent1",
+    "to": "agent2",
+    "message": "type: CLAIM\nfiles: dspy/clients/cache.py\nnote: I will own cache.py and implement both my TTL feature and your compression SPEC there.",
+    "timestamp": 1783519911.3781946,
+    "feature_id": 3,
+    "kind": "CLAIM"
+  },
+  {
+    "from": "agent1",
+    "to": "agent2",
+    "message": "type: DEFER\nfiles: dspy/clients/__init__.py\nnote: You own __init__.py; I will send a SPEC for what my TTL feature needs there.",
+    "timestamp": 1783519914.3717177,
+    "feature_id": 3,
+    "kind": "DEFER"
+  },
+  {
+    "from": "agent2",
+    "to": "agent1",
+    "message": "type: CLAIM\nfiles: dspy/clients/cache.py,dspy/clients/__init__.py\nnote: Both features touch the same Cache.__init__/get/put and configure_cache() bodies, so I'll own both files and implement your TTL feature from your SPEC alongside my compression feature. Please send a precise SPEC for TTL now (constructor params, configure_cache signature additions, exact get/put behavior, set_ttl() signature).",
+    "timestamp": 1783519920.0699496,
+    "feature_id": 5,
+    "kind": "CLAIM"
+  },
+  {
+    "from": "agent1",
+    "to": "agent2",
+    "message": "type: SPEC\nfiles: dspy/clients/__init__.py\nspec: Need these additions in dspy/clients/__init__.py (in addition to your own compress/cull_limit/eviction_policy work):\n1. configure_cache() function must accept a new parameter 'ttl: Optional[int] = None' (in addition to whatever else it already has / you are adding), and pass ttl=ttl through to the Cache(...) constructor call it makes (Cache class already has/will have a ttl param since I own cache.py and will implement it there).\n2. Add a new top-level helper function in dspy/clients/__init__.py:\n   def set_ttl(seconds: Optional[int]) -> None:\n       '''Update TTL (in seconds) applied to future cache entries; None disables expiry.'''\n       configure_cache(ttl=seconds)\n   (Use whatever calling convention configure_cache() ends up having for other already-set params - i.e. call configure_cache only passing ttl, letting other params keep defaults/current values - if configure_cache does not support partial-update semantics, then instead directly do: DSPY_CACHE.ttl = seconds (or equivalent re-init) - whichever matches the pattern you use for your own set_compression() helper, please mirror that pattern for set_ttl for consistency.)\n3. Add 'set_ttl' to the __all__ list.\n4. The default DSPY_CACHE instantiation should pass ttl=None explicitly (or rely on default) - just make sure the Cache(...) call site includes a ttl kwarg wired to a module-level place I can update via set_ttl.\nImport Optional from typing if not already imported. Let me know if you'd rather I send the exact configure_cache signature - happy to adjust once I see your version.\nnote: This mirrors your set_compression pattern for consistency",
+    "timestamp": 1783519923.8059185,
+    "feature_id": 3,
+    "kind": "SPEC"
+  },
+  {
+    "from": "agent1",
+    "to": "agent2",
+    "message": "type: DEFER\nfiles: dspy/clients/cache.py,dspy/clients/__init__.py\nnote: Agreed - you own both files entirely, since our features interleave in Cache.__init__/get/put and configure_cache(). Retracting my earlier claim on cache.py. Full SPEC for TTL follows in next message.",
+    "timestamp": 1783519936.919034,
+    "feature_id": 3,
+    "kind": "DEFER"
+  },
+  {
+    "from": "agent2",
+    "to": "agent1",
+    "message": "type: DEFER\nfiles: dspy/clients/cache.py\nspec: Add optional on-disk compression to the Cache class. Constructor: def __init__(self, enable_disk_cache, enable_memory_cache, disk_cache_dir, disk_size_limit_bytes=10485760, memory_max_entries=1000000, compress=None, cull_limit=None, eviction_policy=None). New params: compress: Optional[Literal['gzip','zlib']]=None - store as self.compress = compress. cull_limit: Optional[int]=None and eviction_policy: Optional[str]=None - pass through to FanoutCache(...) constructor call only when not None, e.g. build a kwargs dict and add 'cull_limit': cull_limit if cull_limit is not None, 'eviction_policy': eviction_policy if eviction_policy is not None (FanoutCache/diskcache defaults are cull_limit=10, eviction_policy='least-recently-stored' - do not override unless explicitly passed). Add method set_compression(self, codec: Optional[str]) -> None that sets self.compress = codec (validate codec in (None,'gzip','zlib') else raise ValueError). Serialization: On put(), when enable_disk_cache and self.compress is set, before writing to self.disk_cache[key] = value, instead do: payload = cloudpickle.dumps(value); if self.compress == 'gzip': payload = gzip.compress(payload); codec_byte = b'\\x01'; elif self.compress == 'zlib': payload = zlib.compress(payload); codec_byte = b'\\x02'; else codec_byte = b'\\x00'; final_bytes = b'DSPC' + codec_byte + payload; self.disk_cache[key] = final_bytes (store as raw bytes, diskcache will pickle the bytes object itself which is fine since bytes round-trip exactly). If self.compress is None, keep existing behavior of storing value directly (do NOT wrap with header) so pre-existing non-compression behavior/tests are unaffected -- ONLY use the header+bytes path when self.compress is not None, OR when reading back always attempt to detect header. On get(), when reading from disk_cache: raw = self.disk_cache[key]; if isinstance(raw, (bytes, bytearray)) and raw[:4] == b'DSPC': codec_byte = raw[4:5]; payload = raw[5:]; if codec_byte == b'\\x01': payload = gzip.decompress(payload); elif codec_byte == b'\\x02': payload = zlib.decompress(payload); elif codec_byte == b'\\x00': pass; response = cloudpickle.loads(payload); else: response = raw (legacy raw object, no header - use as-is, this guarantees backward compatibility with old cache entries and with compress=None entries). Import gzip, zlib, and Literal (from typing) at top of file. This must round-trip arbitrary picklable objects (including pydantic/dspy Prediction objects) identically for both gzip and zlib, and must not break existing behavior when compress=None (default).",
+    "timestamp": 1783519939.4259968,
+    "feature_id": 5,
+    "kind": "DEFER"
+  },
+  {
+    "from": "agent1",
+    "to": "agent2",
+    "message": "type: SPEC\nfiles: dspy/clients/cache.py,dspy/clients/__init__.py\nspec: TTL feature spec (based on current code):\n\n=== dspy/clients/cache.py ===\n1. Import: add 'TTLCache' to the existing 'from cachetools import LRUCache' line -> 'from cachetools import LRUCache, TTLCache'.\n2. Cache.__init__ signature: add new param 'ttl: Optional[int] = None' (after memory_max_entries). Docstring: 'ttl: Optional default time-to-live in seconds for cache entries. If None, entries never expire.'\n3. In __init__ body: store 'self.ttl = ttl'. When constructing memory cache: if self.enable_memory_cache: if ttl is not None: self.memory_cache = TTLCache(maxsize=memory_max_entries, ttl=ttl) else: self.memory_cache = LRUCache(maxsize=memory_max_entries) (else branch same as today: self.memory_cache = {}).\n4. Cache.get(): on the disk-cache-miss path specifically (i.e. right before/when falling through to 'return None' because neither memory nor disk had the key) call self.disk_cache.expire() IF self.enable_disk_cache and self.ttl is not None, to lazily purge expired disk entries. Concretely: in the final 'else: return None' branch, change to:\n   else:\n       if self.enable_disk_cache and self.ttl is not None:\n           self.disk_cache.expire()\n       return None\n   (Keep all other get() logic/behavior identical - deepcopy, usage clearing, etc. unchanged.)\n5. Cache.put(): where it currently does 'self.disk_cache[key] = value' inside the try block, change to:\n   if self.ttl is not None:\n       self.disk_cache.set(key, value, expire=self.ttl)\n   else:\n       self.disk_cache[key] = value\n   (keep the existing try/except around it unchanged.)\n6. Behavior requirements: ttl=None must be 100% behaviorally identical to current code (LRUCache, no expire() calls, plain dict assignment). When ttl is set, both memory (TTLCache auto-eviction) and disk (diskcache's native expire mechanism) must cause a key to become unavailable after ttl+epsilon seconds.\n\n=== dspy/clients/__init__.py ===\n1. configure_cache() signature: add 'ttl: Optional[int] = None' parameter (docstring: 'ttl: Optional default time-to-live in seconds applied to new cache entries. None means entries never expire.'). Pass it through: dspy.cache = Cache(enable_disk_cache, enable_memory_cache, disk_cache_dir, disk_size_limit_bytes, memory_max_entries, ttl=ttl,  <plus your compression kwargs>).\n2. Add helper function (place near enable_litellm_logging/disable_litellm_logging):\n   def set_ttl(seconds: Optional[int]) -> None:\n       \"\"\"Update the default TTL (in seconds) applied to future cache entries. None disables expiry.\"\"\"\n       configure_cache(ttl=seconds)\n   NOTE: since configure_cache() rebuilds dspy.cache from scratch using ITS OWN defaults for every other param (not the currently-active settings), calling set_ttl() alone will reset other cache settings (enable_disk_cache, disk_cache_dir, etc.) back to configure_cache's defaults. This is pre-existing behavior/limitation shared by any similar setter (e.g. your set_compression), so just mirror whatever pattern you use for set_compression exactly - if you make set_compression preserve other current settings (e.g., by reading from the existing dspy.cache instance), please do the same for set_ttl so both helpers are consistent. If you keep it simple (just calls configure_cache(x=...) with everything else defaulted), that's fine too - just be consistent between the two helpers.\n3. DSPY_CACHE = Cache(...) call: add 'ttl=None,' to the kwargs (explicit default, no behavior change).\n4. __all__: add \"set_ttl\" to the list.\n5. Optional import: 'Optional' is already imported from typing in this file, no new import needed for this part.\n\nLet me know once implemented or if anything is ambiguous - happy to clarify.\nnote: Full precise spec for TTL; ready for you to implement alongside compression",
+    "timestamp": 1783519963.5795193,
+    "feature_id": 3,
+    "kind": "SPEC"
+  },
+  {
+    "from": "agent2",
+    "to": "agent1",
+    "message": "type: CLAIM\nfiles: dspy/clients/cache.py,dspy/clients/__init__.py\nnote: Acknowledged. I own both files and will implement TTL per your spec (TTLCache import, ttl param, expire() on miss, disk_cache.set with expire, set_ttl helper mirroring set_compression's simple configure_cache(x=...) pattern) alongside my compression feature. Will send DONE when finished.",
+    "timestamp": 1783519970.5400043,
+    "feature_id": 5,
+    "kind": "CLAIM"
+  },
+  {
+    "from": "agent1",
+    "to": "agent2",
+    "message": "type: CLAIM\nfiles: dspy/clients/cache.py\nspec: ACK your compression SPEC for cache.py - I will implement it there alongside my TTL feature. To finalize ownership (our last two messages crossed): I OWN dspy/clients/cache.py (TTL + your compression), YOU OWN dspy/clients/__init__.py (your compress/cull_limit/eviction_policy config passthrough + my TTL passthrough per the __init__.py SPEC I sent earlier: add ttl param to configure_cache(), add set_ttl(seconds) helper, add ttl=None to DSPY_CACHE(...), add 'set_ttl' to __all__). Please confirm.\nnote: Resolving crossed messages - reverting to original split",
+    "timestamp": 1783519983.7691913,
+    "feature_id": 3,
+    "kind": "CLAIM"
+  },
+  {
+    "from": "agent1",
+    "to": "agent2",
+    "message": "type: CLAIM\nfiles: dspy/clients/cache.py,dspy/clients/__init__.py\nnote: Confirmed - you own both files, will implement TTL per my spec. I will not touch these files. Waiting for your DONE.",
+    "timestamp": 1783520021.5897267,
+    "feature_id": 3,
+    "kind": "CLAIM"
+  },
+  {
+    "from": "agent2",
+    "to": "agent1",
+    "message": "type: DONE\nfiles: dspy/clients/cache.py,dspy/clients/__init__.py\nnote: Implemented both compression (compress param, magic-header DSPC+codec, Cache.set_compression, cull_limit/eviction_policy passthrough to FanoutCache) and TTL (ttl param, TTLCache for memory, disk_cache.set(expire=ttl)/expire() on miss, set_ttl() helper) per your spec. Verified: round-trip gzip/zlib/none, legacy no-header entries still readable, TTL expiry works for both layers, existing test suite (tests/clients, tests/caching) passes except 3 pre-existing unrelated failures in test_lm.py (confirmed failing on main too). Patch written to patch.txt.",
+    "timestamp": 1783520496.6988275,
+    "feature_id": 5,
+    "kind": "DONE"
+  }
+]

@@ -1,0 +1,123 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..ccb5b8f 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -1360,6 +1360,7 @@ class Command:
+         try:
+             try:
+                 with self.make_context(prog_name, args, **extra) as ctx:
++                    self._resolve_dynamic_defaults(ctx)
+                     rv = self.invoke(ctx)
+                     if not standalone_mode:
+                         return rv
+@@ -1405,6 +1406,25 @@ class Command:
+             echo(_("Aborted!"), file=sys.stderr)
+             sys.exit(1)
+ 
++    def _resolve_dynamic_defaults(self, ctx: Context) -> None:
++        """Second-pass resolution of options with a dict-based dynamic
++        default, run after all parameters have been parsed. Only applies
++        when the option's value still comes from its default.
++
++        .. versionadded:: 8.3
++        """
++        for param in self.get_params(ctx):
++            if not isinstance(param, Option) or not param.dynamic_default:
++                continue
++
++            if ctx.get_parameter_source(param.name) != ParameterSource.DEFAULT:  # type: ignore[arg-type]
++                continue
++
++            value = param.resolve_dynamic_default(ctx)
++
++            if value is not None:
++                ctx.params[param.name] = value  # type: ignore[index]
++
+     def _main_shell_completion(
+         self,
+         ctx_args: cabc.MutableMapping[str, t.Any],
+@@ -2555,6 +2575,22 @@ class Option(Parameter):
+             help = inspect.cleandoc(help)
+ 
+         default_is_missing = "default" not in attrs
++        dynamic_default: dict[str, dict[str, t.Any]] | None = None
++
++        if isinstance(attrs.get("default"), dict):
++            dynamic_default = attrs["default"]
++
++            for key, mapping in dynamic_default.items():
++                if not isinstance(key, str):
++                    raise TypeError("Dynamic default keys must be strings")
++
++                if not isinstance(mapping, dict):
++                    raise TypeError("Dynamic default values must be dictionaries")
++
++            # The dict is resolved after parsing, in a second pass over all
++            # parameters, so the underlying default stays unset for now.
++            attrs["default"] = None
++
+         super().__init__(
+             param_decls, type=type, multiple=multiple, deprecated=deprecated, **attrs
+         )
+@@ -2636,6 +2672,7 @@ class Option(Parameter):
+         self.show_default = show_default
+         self.show_choices = show_choices
+         self.show_envvar = show_envvar
++        self.dynamic_default = dynamic_default
+ 
+         if __debug__:
+             if deprecated and prompt:
+@@ -2861,9 +2898,13 @@ class Option(Parameter):
+         elif ctx.show_default is not None:
+             show_default = ctx.show_default
+ 
+-        if show_default_is_str or (show_default and (default_value is not None)):
++        if show_default_is_str or (
++            show_default and (default_value is not None or self.dynamic_default)
++        ):
+             if show_default_is_str:
+                 default_string = f"({self.show_default})"
++            elif self.dynamic_default:
++                default_string = _("(dynamic)")
+             elif isinstance(default_value, (list, tuple)):
+                 default_string = ", ".join(str(d) for d in default_value)
+             elif inspect.isfunction(default_value):
+@@ -2925,6 +2966,38 @@ class Option(Parameter):
+ 
+         return super().get_default(ctx, call=call)
+ 
++    def resolve_dynamic_default(self, ctx: Context) -> t.Any | None:
++        """Resolve this option's value from :attr:`dynamic_default` based on
++        the current, final values of the options it references.
++
++        Returns ``None`` if there is no dynamic default, or if none of the
++        referenced options' values match a key in the mapping.
++
++        .. versionadded:: 8.3
++        """
++        if not self.dynamic_default:
++            return None
++
++        resolved = None
++
++        for opt_name, mapping in self.dynamic_default.items():
++            source_param = None
++
++            for param in ctx.command.get_params(ctx):
++                if opt_name in param.opts or opt_name in param.secondary_opts:
++                    source_param = param
++                    break
++
++            if source_param is None or source_param.name is None:
++                continue
++
++            key = str(ctx.params.get(source_param.name))
++
++            if key in mapping:
++                resolved = mapping[key]
++
++        return resolved
++
+     def prompt_for_value(self, ctx: Context) -> t.Any:
+         """This is an alternative flow that can be activated in the full
+         value processing if a value does not exist.  It will prompt the

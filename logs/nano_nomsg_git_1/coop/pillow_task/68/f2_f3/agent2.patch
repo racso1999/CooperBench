@@ -1,0 +1,95 @@
+diff --git a/Tests/test_imageops.py b/Tests/test_imageops.py
+index 3621aa50f..1f704d434 100644
+--- a/Tests/test_imageops.py
++++ b/Tests/test_imageops.py
+@@ -470,6 +470,39 @@ def test_exif_transpose_in_place() -> None:
+         assert_image_equal(im, expected)
+ 
+ 
++def test_exif_transpose_strip_metadata() -> None:
++    with Image.open("Tests/images/hopper_orientation_6.jpg") as im:
++        assert "exif" in im.info
++        assert 0x0112 in im.getexif()
++
++        transposed_im = ImageOps.exif_transpose(im, strip_metadata=True)
++        assert transposed_im.info == {}
++        assert dict(transposed_im.getexif()) == {}
++
++        # Original image is untouched
++        assert "exif" in im.info
++
++    # No orientation tag, so no transposition, but metadata is still removed
++    with Image.open("Tests/images/hopper.jpg") as im:
++        assert im.info
++        transposed_im = ImageOps.exif_transpose(im, strip_metadata=True)
++        assert transposed_im.info == {}
++
++    # Default behaviour keeps other metadata
++    with Image.open("Tests/images/hopper_orientation_6.jpg") as im:
++        transposed_im = ImageOps.exif_transpose(im)
++        assert "exif" in transposed_im.info
++
++
++def test_exif_transpose_strip_metadata_in_place() -> None:
++    with Image.open("Tests/images/orientation_rectangle.jpg") as im:
++        assert "exif" in im.info
++
++        ImageOps.exif_transpose(im, in_place=True, strip_metadata=True)
++        assert im.info == {}
++        assert dict(im.getexif()) == {}
++
++
+ def test_autocontrast_unsupported_mode() -> None:
+     im = Image.new("RGBA", (1, 1))
+     with pytest.raises(OSError):
+diff --git a/src/PIL/ImageOps.py b/src/PIL/ImageOps.py
+index fef1d7328..f82584162 100644
+--- a/src/PIL/ImageOps.py
++++ b/src/PIL/ImageOps.py
+@@ -683,7 +683,9 @@ def exif_transpose(
+ ) -> Image.Image: ...
+ 
+ 
+-def exif_transpose(image: Image.Image, *, in_place: bool = False) -> Image.Image | None:
++def exif_transpose(
++    image: Image.Image, *, in_place: bool = False, strip_metadata: bool = False
++) -> Image.Image | None:
+     """
+     If an image has an EXIF Orientation tag, other than 1, transpose the image
+     accordingly, and remove the orientation data.
+@@ -694,6 +696,11 @@ def exif_transpose(image: Image.Image, *, in_place: bool = False) -> Image.Image
+         If ``False`` (default), a new :py:class:`~PIL.Image.Image` object is returned
+         with the transposition applied. If there is no transposition, a copy of the
+         image will be returned.
++    :param strip_metadata: Boolean. Keyword-only argument.
++        If ``True``, all metadata (including EXIF, XMP and ICC profile data) is
++        removed from the image, in addition to correcting its orientation.
++        If ``False`` (default), only the orientation data is removed, and all
++        other metadata is preserved.
+     """
+     image.load()
+     image_exif = image.getexif()
+@@ -734,8 +741,22 @@ def exif_transpose(image: Image.Image, *, in_place: bool = False) -> Image.Image
+                             if isinstance(value, str)
+                             else re.sub(pattern.encode(), b"", value)
+                         )
++        if strip_metadata:
++            _remove_all_metadata(exif_image)
+         if not in_place:
+             return transposed_image
+     elif not in_place:
+-        return image.copy()
++        result_image = image.copy()
++        if strip_metadata:
++            _remove_all_metadata(result_image)
++        return result_image
++    elif strip_metadata:
++        _remove_all_metadata(image)
+     return None
++
++
++def _remove_all_metadata(image: Image.Image) -> None:
++    exif = image.getexif()
++    for tag in list(exif.keys()):
++        del exif[tag]
++    image.info.clear()

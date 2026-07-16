@@ -1,0 +1,102 @@
+diff --git a/tiktoken/core.py b/tiktoken/core.py
+index 6bc9736..8ff40ad 100644
+--- a/tiktoken/core.py
++++ b/tiktoken/core.py
+@@ -82,7 +82,8 @@ class Encoding:
+         *,
+         allowed_special: Literal["all"] | AbstractSet[str] = set(),  # noqa: B006
+         disallowed_special: Literal["all"] | Collection[str] = "all",
+-    ) -> list[int]:
++        return_positions: bool = False,
++    ) -> list[int] | tuple[list[int], list[int]]:
+         """Encodes a string into tokens.
+ 
+         Special tokens are artificial tokens used to unlock capabilities from a model,
+@@ -97,6 +98,9 @@ class Encoding:
+         - Setting `allowed_special` to "all" will cause this function to treat all text
+           corresponding to special tokens to be encoded as special tokens.
+ 
++        If `return_positions` is True, this also returns a list containing the starting
++        character position of each token in `text`.
++
+         ```
+         >>> enc.encode("hello world")
+         [31373, 995]
+@@ -108,6 +112,8 @@ class Encoding:
+         # Raises ValueError
+         >>> enc.encode("<|endoftext|>", disallowed_special=())
+         [27, 91, 437, 1659, 5239, 91, 29]
++        >>> enc.encode("hello world", return_positions=True)
++        ([31373, 995], [0, 5])
+         ```
+         """
+         if allowed_special == "all":
+@@ -120,6 +126,14 @@ class Encoding:
+             if match := _special_token_regex(disallowed_special).search(text):
+                 raise_disallowed_special_token(match.group())
+ 
++        if return_positions:
++            try:
++                return self._encode_with_positions(text, allowed_special)
++            except UnicodeEncodeError:
++                # See comment below for why we do this.
++                text = text.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
++                return self._encode_with_positions(text, allowed_special)
++
+         try:
+             return self._core_bpe.encode(text, allowed_special)
+         except UnicodeEncodeError:
+@@ -400,6 +414,53 @@ class Encoding:
+     def _encode_bytes(self, text: bytes) -> list[int]:
+         return self._core_bpe._encode_bytes(text)
+ 
++    def _encode_with_positions(
++        self, text: str, allowed_special: AbstractSet[str]
++    ) -> tuple[list[int], list[int]]:
++        """Encodes a string into tokens, also returning each token's starting
++        character position in `text`.
++
++        Splits `text` around any allowed special tokens (which are themselves single
++        tokens), then runs the ordinary regex + BPE pipeline over each in-between chunk,
++        tracking character offsets as it goes.
++        """
++        special_pat = _special_token_regex(frozenset(allowed_special)) if allowed_special else None
++        ordinary_pat = regex.compile(self._pat_str)
++
++        tokens: list[int] = []
++        positions: list[int] = []
++
++        start = 0
++        text_len = len(text)
++        while True:
++            special_match = special_pat.search(text, start) if special_pat else None
++            end = special_match.start() if special_match else text_len
++
++            for piece_match in ordinary_pat.finditer(text, start, end):
++                piece = piece_match.group()
++                piece_start = piece_match.start()
++                piece_tokens = self._core_bpe.encode_single_piece(piece.encode("utf-8"))
++
++                # A single regex piece can be split into several tokens by BPE merges;
++                # walk the decoded bytes of each token to recover its char offset.
++                chars_seen = 0
++                for token in piece_tokens:
++                    token_bytes = self._core_bpe.decode_single_token_bytes(token)
++                    offset = max(0, chars_seen - (0x80 <= token_bytes[0] < 0xC0))
++                    tokens.append(token)
++                    positions.append(piece_start + offset)
++                    chars_seen += sum(1 for b in token_bytes if not 0x80 <= b < 0xC0)
++
++            if special_match is None:
++                break
++
++            special_text = special_match.group()
++            tokens.append(self._special_tokens[special_text])
++            positions.append(special_match.start())
++            start = special_match.end()
++
++        return tokens, positions
++
+     def __getstate__(self) -> object:
+         import tiktoken.registry
+ 

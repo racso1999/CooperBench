@@ -1,0 +1,114 @@
+diff --git a/tiktoken/core.py b/tiktoken/core.py
+index 6bc9736..3757ea2 100644
+--- a/tiktoken/core.py
++++ b/tiktoken/core.py
+@@ -2,7 +2,7 @@ from __future__ import annotations
+ 
+ import functools
+ from concurrent.futures import ThreadPoolExecutor
+-from typing import TYPE_CHECKING, AbstractSet, Collection, Literal, NoReturn, Sequence
++from typing import TYPE_CHECKING, AbstractSet, Callable, Collection, Literal, NoReturn, Sequence
+ 
+ import regex
+ 
+@@ -82,7 +82,9 @@ class Encoding:
+         *,
+         allowed_special: Literal["all"] | AbstractSet[str] = set(),  # noqa: B006
+         disallowed_special: Literal["all"] | Collection[str] = "all",
+-    ) -> list[int]:
++        transformers: Callable[[str], str] | Sequence[Callable[[str], str]] | None = None,
++        return_positions: bool = False,
++    ) -> list[int] | tuple[list[int], list[int]]:
+         """Encodes a string into tokens.
+ 
+         Special tokens are artificial tokens used to unlock capabilities from a model,
+@@ -97,6 +99,13 @@ class Encoding:
+         - Setting `allowed_special` to "all" will cause this function to treat all text
+           corresponding to special tokens to be encoded as special tokens.
+ 
++        `transformers` allows one or more `str -> str` functions to be applied to `text` before
++        encoding. A single callable or a sequence of callables can be passed; when a sequence is
++        given, they are applied in order, each receiving the output of the previous one.
++
++        `return_positions`, when set to `True`, additionally returns a list containing the
++        starting character position (in the possibly-transformed text) of each returned token.
++
+         ```
+         >>> enc.encode("hello world")
+         [31373, 995]
+@@ -108,8 +117,17 @@ class Encoding:
+         # Raises ValueError
+         >>> enc.encode("<|endoftext|>", disallowed_special=())
+         [27, 91, 437, 1659, 5239, 91, 29]
++        >>> enc.encode("hello world", return_positions=True)
++        ([31373, 995], [0, 5])
+         ```
+         """
++        if transformers is not None:
++            if callable(transformers):
++                text = transformers(text)
++            else:
++                for transformer in transformers:
++                    text = transformer(text)
++
+         if allowed_special == "all":
+             allowed_special = self.special_tokens_set
+         if disallowed_special == "all":
+@@ -120,6 +138,9 @@ class Encoding:
+             if match := _special_token_regex(disallowed_special).search(text):
+                 raise_disallowed_special_token(match.group())
+ 
++        if return_positions:
++            return self._encode_with_positions(text, allowed_special)
++
+         try:
+             return self._core_bpe.encode(text, allowed_special)
+         except UnicodeEncodeError:
+@@ -132,6 +153,47 @@ class Encoding:
+             text = text.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+             return self._core_bpe.encode(text, allowed_special)
+ 
++    def _encode_with_positions(
++        self, text: str, allowed_special: AbstractSet[str]
++    ) -> tuple[list[int], list[int]]:
++        """Encodes `text`, additionally tracking the starting character position of each token.
++
++        `allowed_special` is expected to have already been resolved (i.e. it is a concrete set of
++        special token strings, not the literal "all").
++        """
++        special_regex = _special_token_regex(frozenset(allowed_special)) if allowed_special else None
++        pat = regex.compile(self._pat_str)
++
++        tokens: list[int] = []
++        positions: list[int] = []
++
++        pos = 0
++        text_len = len(text)
++        while pos < text_len:
++            match = special_regex.search(text, pos) if special_regex else None
++            end = match.start() if match else text_len
++
++            segment = text[pos:end]
++            for piece_match in pat.finditer(segment):
++                piece = piece_match.group()
++                piece_start = pos + piece_match.start()
++                piece_tokens = self._core_bpe.encode_single_piece(piece.encode("utf-8"))
++                token_pos = piece_start
++                for token in piece_tokens:
++                    tokens.append(token)
++                    positions.append(token_pos)
++                    token_bytes = self._core_bpe.decode_single_token_bytes(token)
++                    token_pos += sum(1 for b in token_bytes if not 0x80 <= b < 0xC0)
++
++            if match:
++                tokens.append(self._special_tokens[match.group()])
++                positions.append(match.start())
++                pos = match.end()
++            else:
++                pos = text_len
++
++        return tokens, positions
++
+     def encode_to_numpy(
+         self,
+         text: str,

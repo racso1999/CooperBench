@@ -1,0 +1,112 @@
+diff --git a/src/datasets/features/features.py b/src/datasets/features/features.py
+index 6a0da6401..be43ab758 100644
+--- a/src/datasets/features/features.py
++++ b/src/datasets/features/features.py
+@@ -20,7 +20,7 @@ import re
+ import sys
+ from collections.abc import Iterable
+ from dataclasses import InitVar, _asdict_inner, dataclass, field, fields
+-from functools import reduce
++from functools import reduce, wraps
+ from operator import mul
+ from typing import Any, ClassVar, Dict, List, Optional
+ from typing import Sequence as Sequence_
+@@ -1198,6 +1198,38 @@ def require_decoding(feature: FeatureType, ignore_decode_attribute: bool = False
+         return hasattr(feature, "decode_example") and (feature.decode if not ignore_decode_attribute else True)
+ 
+ 
++def keep_features_dicts_synced(func):
++    """
++    Wrapper to keep the secondary dictionary, `_column_requires_decoding`, of the `Features` class synced
++    with the main dictionary `Features`, on all operations that modify the latter.
++    """
++
++    @wraps(func)
++    def wrapper(*args, **kwargs):
++        if args:
++            self: "Features" = args[0]
++            args = args[1:]
++        else:
++            self: "Features" = kwargs.pop("self")
++        out = func(self, *args, **kwargs)
++        assert hasattr(self, "_column_requires_decoding")
++        self._column_requires_decoding = {col: require_decoding(feature) for col, feature in self.items()}
++        return out
++
++    wrapper.__name__ = func.__name__
++    return wrapper
++
++
++def _deep_merge_dicts(old: dict, new: dict) -> dict:
++    """Recursively merge ``new`` into ``old`` in place, merging nested dicts and overwriting other values."""
++    for key, value in new.items():
++        if key in old and isinstance(old[key], dict) and isinstance(value, dict):
++            _deep_merge_dicts(old[key], value)
++        else:
++            old[key] = value
++    return old
++
++
+ class Features(dict):
+     """A special dictionary that defines the internal structure of a dataset.
+ 
+@@ -1237,23 +1269,54 @@ class Features(dict):
+             col: require_decoding(feature) for col, feature in self.items()
+         }
+ 
++    @keep_features_dicts_synced
+     def __setitem__(self, column_name: str, feature: FeatureType):
+         super().__setitem__(column_name, feature)
+-        self._column_requires_decoding[column_name] = require_decoding(feature)
+ 
++    @keep_features_dicts_synced
+     def __delitem__(self, column_name: str):
+         super().__delitem__(column_name)
+-        del self._column_requires_decoding[column_name]
+ 
++    @keep_features_dicts_synced
+     def update(self, iterable, **kwds):
+         if hasattr(iterable, "keys"):
+             for key in iterable.keys():
+-                self[key] = iterable[key]
++                self._update_value(key, iterable[key])
+         else:
+             for key, value in iterable:
+-                self[key] = value
++                self._update_value(key, value)
+         for key in kwds:
+-            self[key] = kwds[key]
++            self._update_value(key, kwds[key])
++
++    def _update_value(self, key, value):
++        if key in self and isinstance(self[key], dict) and isinstance(value, dict):
++            super(Features, self).__setitem__(key, _deep_merge_dicts(self[key], value))
++        else:
++            super(Features, self).__setitem__(key, value)
++
++    @keep_features_dicts_synced
++    def setdefault(self, key, default=None):
++        return super().setdefault(key, default)
++
++    @keep_features_dicts_synced
++    def pop(self, key, default=None):
++        return super().pop(key, default)
++
++    @keep_features_dicts_synced
++    def popitem(self):
++        return super().popitem()
++
++    @keep_features_dicts_synced
++    def clear(self):
++        return super().clear()
++
++    @keep_features_dicts_synced
++    def __ior__(self, other):
++        return super().__ior__(other)
++
++    @keep_features_dicts_synced
++    def __or__(self, other):
++        return super().__or__(other)
+ 
+     def __reduce__(self):
+         return Features, (dict(self),)

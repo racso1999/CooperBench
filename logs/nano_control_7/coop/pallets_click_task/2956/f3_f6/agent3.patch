@@ -1,0 +1,97 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..baae3f8 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -15,6 +15,7 @@ from contextlib import ExitStack
+ from functools import update_wrapper
+ from gettext import gettext as _
+ from gettext import ngettext
++from itertools import islice
+ from itertools import repeat
+ from types import TracebackType
+ 
+@@ -93,6 +94,18 @@ def batch(iterable: cabc.Iterable[V], batch_size: int) -> list[tuple[V, ...]]:
+     return list(zip(*repeat(iter(iterable), batch_size), strict=False))
+ 
+ 
++def _batched(
++    iterable: cabc.Iterable[V], batch_size: int
++) -> cabc.Iterator[tuple[V, ...]]:
++    """Like :func:`batch`, but returns an iterator and does not drop a
++    trailing partial batch.
++    """
++    it = iter(iterable)
++
++    while chunk := tuple(islice(it, batch_size)):
++        yield chunk
++
++
+ @contextmanager
+ def augment_usage_errors(
+     ctx: Context, param: Parameter | None = None
+@@ -2332,7 +2345,13 @@ class Parameter:
+                 return tuple(self.type(x, self, ctx) for x in value)
+ 
+         if self.multiple:
+-            return tuple(convert(x) for x in check_iter(value))
++            converted = (convert(x) for x in check_iter(value))
++            batch_size = getattr(self, "batch_size", None)
++
++            if batch_size:
++                return _batched(converted, batch_size)
++
++            return tuple(converted)
+ 
+         return convert(value)
+ 
+@@ -2499,6 +2518,12 @@ class Option(Parameter):
+                      multiple times and recorded.  This is similar to ``nargs``
+                      in how it works but supports arbitrary number of
+                      arguments.
++    :param batch_size: if ``multiple`` is `True`, group the collected
++                       values into tuples of at most this many items
++                       instead of returning them all as a single tuple.
++                       The value passed to the command callback becomes
++                       an iterator of these batches. Only valid when
++                       ``multiple`` is `True`.
+     :param count: this flag makes an option increment an integer.
+     :param allow_from_autoenv: if this is enabled then the value of this
+                                parameter will be pulled from an environment
+@@ -2541,6 +2566,7 @@ class Option(Parameter):
+         is_flag: bool | None = None,
+         flag_value: t.Any | None = None,
+         multiple: bool = False,
++        batch_size: int | None = None,
+         count: bool = False,
+         allow_from_autoenv: bool = True,
+         type: types.ParamType | t.Any | None = None,
+@@ -2636,11 +2662,21 @@ class Option(Parameter):
+         self.show_default = show_default
+         self.show_choices = show_choices
+         self.show_envvar = show_envvar
++        self.batch_size = batch_size
+ 
+         if __debug__:
+             if deprecated and prompt:
+                 raise ValueError("`deprecated` options cannot use `prompt`.")
+ 
++            if self.batch_size is not None:
++                if not self.multiple:
++                    raise TypeError(
++                        "'batch_size' is only valid when 'multiple' is true."
++                    )
++
++                if self.batch_size < 0:
++                    raise ValueError("'batch_size' must be a positive integer.")
++
+             if self.nargs == -1:
+                 raise TypeError("nargs=-1 is not supported for options.")
+ 
+@@ -2671,6 +2707,7 @@ class Option(Parameter):
+             flag_value=self.flag_value,
+             count=self.count,
+             hidden=self.hidden,
++            batch_size=self.batch_size,
+         )
+         return info_dict
+ 

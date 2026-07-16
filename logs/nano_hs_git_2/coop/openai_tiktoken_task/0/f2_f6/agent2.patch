@@ -1,0 +1,88 @@
+diff --git a/tiktoken/core.py b/tiktoken/core.py
+index 6bc9736..a520f33 100644
+--- a/tiktoken/core.py
++++ b/tiktoken/core.py
+@@ -2,7 +2,7 @@ from __future__ import annotations
+ 
+ import functools
+ from concurrent.futures import ThreadPoolExecutor
+-from typing import TYPE_CHECKING, AbstractSet, Collection, Literal, NoReturn, Sequence
++from typing import TYPE_CHECKING, AbstractSet, Callable, Collection, Literal, NoReturn, Sequence
+ 
+ import regex
+ 
+@@ -80,9 +80,11 @@ class Encoding:
+         self,
+         text: str,
+         *,
++        transformers: Callable[[str], str] | Sequence[Callable[[str], str]] | None = None,
+         allowed_special: Literal["all"] | AbstractSet[str] = set(),  # noqa: B006
+         disallowed_special: Literal["all"] | Collection[str] = "all",
+-    ) -> list[int]:
++        return_positions: bool = False,
++    ) -> list[int] | tuple[list[int], list[int]]:
+         """Encodes a string into tokens.
+ 
+         Special tokens are artificial tokens used to unlock capabilities from a model,
+@@ -97,6 +99,14 @@ class Encoding:
+         - Setting `allowed_special` to "all" will cause this function to treat all text
+           corresponding to special tokens to be encoded as special tokens.
+ 
++        `transformers` allows one or more functions to be applied to `text` before it is
++        encoded. Each transformer must accept a string and return a string. If a sequence of
++        transformers is given, they are applied in order, each receiving the output of the
++        previous one.
++
++        If `return_positions` is True, this also returns the starting character index of each
++        token within `text`, so tokens can be aligned back to the source text.
++
+         ```
+         >>> enc.encode("hello world")
+         [31373, 995]
+@@ -108,8 +118,18 @@ class Encoding:
+         # Raises ValueError
+         >>> enc.encode("<|endoftext|>", disallowed_special=())
+         [27, 91, 437, 1659, 5239, 91, 29]
++        >>> enc.encode("HELLO WORLD", transformers=lambda s: s.lower())
++        [31373, 995]
++        >>> enc.encode("hello world", return_positions=True)
++        ([31373, 995], [0, 5])
+         ```
+         """
++        if transformers is not None:
++            if callable(transformers):
++                transformers = [transformers]
++            for transformer in transformers:
++                text = transformer(text)
++
+         if allowed_special == "all":
+             allowed_special = self.special_tokens_set
+         if disallowed_special == "all":
+@@ -121,7 +141,7 @@ class Encoding:
+                 raise_disallowed_special_token(match.group())
+ 
+         try:
+-            return self._core_bpe.encode(text, allowed_special)
++            tokens = self._core_bpe.encode(text, allowed_special)
+         except UnicodeEncodeError:
+             # BPE operates on bytes, but the regex operates on unicode. If we pass a str that is
+             # invalid UTF-8 to Rust, it will rightfully complain. Here we do a quick and dirty
+@@ -130,7 +150,17 @@ class Encoding:
+             # string, but given that this is input we want to support, maybe that's okay.
+             # Also we use errors="replace" to handle weird things like lone surrogates.
+             text = text.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+-            return self._core_bpe.encode(text, allowed_special)
++            tokens = self._core_bpe.encode(text, allowed_special)
++
++        if not return_positions:
++            return tokens
++
++        positions = []
++        char_index = 0
++        for token_bytes in self.decode_tokens_bytes(tokens):
++            positions.append(max(0, char_index - (0x80 <= token_bytes[0] < 0xC0)))
++            char_index += sum(1 for b in token_bytes if not 0x80 <= b < 0xC0)
++        return tokens, positions
+ 
+     def encode_to_numpy(
+         self,

@@ -1,0 +1,67 @@
+diff --git a/llama-index-core/llama_index/core/evaluation/retrieval/metrics.py b/llama-index-core/llama_index/core/evaluation/retrieval/metrics.py
+index 612e547ce..5a53fd6e4 100644
+--- a/llama-index-core/llama_index/core/evaluation/retrieval/metrics.py
++++ b/llama-index-core/llama_index/core/evaluation/retrieval/metrics.py
+@@ -323,9 +323,12 @@ class NDCG(BaseRetrievalMetric):
+     The position `p` is taken as the size of the query results (which is usually
+     `top_k` of the retriever).
+ 
+-    Currently only supports binary relevance
++    Supports both binary relevance
+     (``rel=1`` if document is in ``expected_ids``, otherwise ``rel=0``)
+-    since we assume that ``expected_ids`` is unordered.
++    and graded relevance, where a ``relevance_scores`` mapping of
++    ``expected_id`` to a float relevance score can be supplied to `compute`.
++    Since we assume that ``expected_ids`` is unordered, the ideal ranking is
++    computed by sorting the relevance scores in descending order.
+ 
+     Attributes:
+         metric_name (str): The name of the metric.
+@@ -342,6 +345,7 @@ class NDCG(BaseRetrievalMetric):
+         retrieved_ids: Optional[List[str]] = None,
+         expected_texts: Optional[List[str]] = None,
+         retrieved_texts: Optional[List[str]] = None,
++        relevance_scores: Optional[Dict[str, float]] = None,
+         **kwargs: Any,
+     ) -> RetrievalMetricResult:
+         """Compute NDCG based on the provided inputs and selected method.
+@@ -352,6 +356,9 @@ class NDCG(BaseRetrievalMetric):
+             retrieved_ids (Optional[List[str]]): Retrieved document IDs, ordered by relevance from highest to lowest.
+             expected_texts (Optional[List[str]]): Expected texts (not used in the current implementation).
+             retrieved_texts (Optional[List[str]]): Retrieved texts (not used in the current implementation).
++            relevance_scores (Optional[Dict[str, float]]): Optional mapping of `expected_id` to a
++                float relevance score, allowing for graded (non-binary) relevance. If not provided,
++                every id in `expected_ids` defaults to a relevance score of 1.0.
+ 
+         Raises:
+             ValueError: If the necessary IDs are not provided.
+@@ -370,18 +377,27 @@ class NDCG(BaseRetrievalMetric):
+ 
+         mode = self.mode
+         expected_set = set(expected_ids)
++        relevance_scores = relevance_scores or {}
++
++        def get_relevance(docid: str) -> float:
++            if docid not in expected_set:
++                return 0.0
++            return relevance_scores.get(docid, 1.0)
+ 
+         # Calculate DCG
+         dcg = sum(
+-            discounted_gain(rel=docid in expected_set, i=i, mode=mode)
++            discounted_gain(rel=get_relevance(docid), i=i, mode=mode)
+             for i, docid in enumerate(retrieved_ids, start=1)
+         )
+ 
+         # Calculate IDCG using min(len(retrieved_ids), len(expected_ids))
+         # Since we can't achieve better than perfect ranking of all relevant docs
+         ideal_length = min(len(retrieved_ids), len(expected_ids))
++        ideal_relevances = sorted(
++            (get_relevance(docid) for docid in expected_set), reverse=True
++        )
+         idcg = sum(
+-            discounted_gain(rel=True, i=i, mode=mode)
++            discounted_gain(rel=ideal_relevances[i - 1], i=i, mode=mode)
+             for i in range(1, ideal_length + 1)
+         )
+ 

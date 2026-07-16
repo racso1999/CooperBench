@@ -1,0 +1,151 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..7148fbe 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -1225,6 +1225,52 @@ class Command:
+         if self.callback is not None:
+             return ctx.invoke(self.callback, **ctx.params)
+ 
++    def _resolve_dynamic_defaults(self, ctx: Context) -> None:
++        """Resolve any options whose default is a dynamic default
++        mapping, now that every parameter has been parsed. Only
++        parameters that were not given a value from another source
++        (i.e. their source is still :attr:`ParameterSource.DEFAULT`)
++        are affected.
++        """
++        params = self.get_params(ctx)
++        opt_to_param = {
++            opt: param
++            for param in params
++            for opt in (*param.opts, *getattr(param, "secondary_opts", ()))
++        }
++
++        for param in params:
++            dynamic_default = getattr(param, "_dynamic_default", None)
++
++            if dynamic_default is None:
++                continue
++
++            if ctx.get_parameter_source(param.name) is not ParameterSource.DEFAULT:  # type: ignore[arg-type]
++                continue
++
++            value = None
++
++            for opt_name, mapping in dynamic_default.items():
++                source_param = opt_to_param.get(opt_name)
++
++                if source_param is None:
++                    continue
++
++                source_value = ctx.params.get(source_param.name)
++                match = mapping.get(str(source_value))
++
++                if match is not None:
++                    value = match
++
++            if value is not None:
++                value = param.type_cast_value(ctx, value)
++
++                if param.callback is not None:
++                    value = param.callback(ctx, param, value)
++
++            if param.expose_value:
++                ctx.params[param.name] = value  # type: ignore[index]
++
+     def shell_complete(self, ctx: Context, incomplete: str) -> list[CompletionItem]:
+         """Return a list of completions for the incomplete value. Looks
+         at the names of options and chained multi-commands.
+@@ -1360,6 +1406,7 @@ class Command:
+         try:
+             try:
+                 with self.make_context(prog_name, args, **extra) as ctx:
++                    self._resolve_dynamic_defaults(ctx)
+                     rv = self.invoke(ctx)
+                     if not standalone_mode:
+                         return rv
+@@ -2542,6 +2589,7 @@ class Option(Parameter):
+         flag_value: t.Any | None = None,
+         multiple: bool = False,
+         count: bool = False,
++        batch_size: int | None = None,
+         allow_from_autoenv: bool = True,
+         type: types.ParamType | t.Any | None = None,
+         help: str | None = None,
+@@ -2559,6 +2607,18 @@ class Option(Parameter):
+             param_decls, type=type, multiple=multiple, deprecated=deprecated, **attrs
+         )
+ 
++        self._dynamic_default: dict[str, dict[str, t.Any]] | None = None
++
++        if isinstance(self.default, dict):
++            for key, mapping in self.default.items():
++                if not isinstance(key, str):
++                    raise TypeError("Dynamic default keys must be strings")
++
++                if not isinstance(mapping, dict):
++                    raise TypeError("Dynamic default values must be dictionaries")
++
++            self._dynamic_default = self.default
++
+         if prompt is True:
+             if self.name is None:
+                 raise TypeError("'name' is required with 'prompt=True'.")
+@@ -2631,6 +2691,14 @@ class Option(Parameter):
+             if default_is_missing:
+                 self.default = 0
+ 
++        self.batch_size = batch_size
++
++        if batch_size is not None:
++            if not self.multiple:
++                raise TypeError("'batch_size' is only valid when 'multiple' is true.")
++            if batch_size < 0:
++                raise ValueError("'batch_size' must be greater than or equal to 0.")
++
+         self.allow_from_autoenv = allow_from_autoenv
+         self.help = help
+         self.show_default = show_default
+@@ -2671,9 +2739,21 @@ class Option(Parameter):
+             flag_value=self.flag_value,
+             count=self.count,
+             hidden=self.hidden,
++            batch_size=self.batch_size,
+         )
+         return info_dict
+ 
++    def type_cast_value(self, ctx: Context, value: t.Any) -> t.Any:
++        result = super().type_cast_value(ctx, value)
++
++        if self.multiple and self.batch_size:
++            return tuple(
++                result[i : i + self.batch_size]
++                for i in range(0, len(result), self.batch_size)
++            )
++
++        return result
++
+     def get_error_hint(self, ctx: Context) -> str:
+         result = super().get_error_hint(ctx)
+         if self.show_envvar:
+@@ -2864,6 +2944,8 @@ class Option(Parameter):
+         if show_default_is_str or (show_default and (default_value is not None)):
+             if show_default_is_str:
+                 default_string = f"({self.show_default})"
++            elif self._dynamic_default is not None:
++                default_string = _("(dynamic)")
+             elif isinstance(default_value, (list, tuple)):
+                 default_string = ", ".join(str(d) for d in default_value)
+             elif inspect.isfunction(default_value):
+@@ -2912,6 +2994,12 @@ class Option(Parameter):
+     def get_default(
+         self, ctx: Context, call: bool = True
+     ) -> t.Any | t.Callable[[], t.Any] | None:
++        # A dynamic default is resolved in a second pass after all
++        # parameters have been parsed, see Command._resolve_dynamic_defaults.
++        # Until then it behaves as if there was no default at all.
++        if self._dynamic_default is not None:
++            return self._dynamic_default if not call else None
++
+         # If we're a non boolean flag our default is more complex because
+         # we need to look at all flags in the same group to figure out
+         # if we're the default one in which case we return the flag

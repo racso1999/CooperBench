@@ -1,0 +1,90 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..4c8bce2 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -15,6 +15,7 @@ from contextlib import ExitStack
+ from functools import update_wrapper
+ from gettext import gettext as _
+ from gettext import ngettext
++from itertools import islice
+ from itertools import repeat
+ from types import TracebackType
+ 
+@@ -93,6 +94,18 @@ def batch(iterable: cabc.Iterable[V], batch_size: int) -> list[tuple[V, ...]]:
+     return list(zip(*repeat(iter(iterable), batch_size), strict=False))
+ 
+ 
++def _batch_values(
++    values: cabc.Iterable[V], batch_size: int
++) -> cabc.Iterator[tuple[V, ...]]:
++    """Group ``values`` into tuples of at most ``batch_size`` items,
++    preserving a final partial batch instead of dropping it.
++    """
++    it = iter(values)
++
++    while chunk := tuple(islice(it, batch_size)):
++        yield chunk
++
++
+ @contextmanager
+ def augment_usage_errors(
+     ctx: Context, param: Parameter | None = None
+@@ -2506,6 +2519,10 @@ class Option(Parameter):
+                                context.
+     :param help: the help string.
+     :param hidden: hide this option from help outputs.
++    :param batch_size: if ``multiple`` is set, process the collected
++                       values in chunks of at most this many items
++                       instead of all at once. Must not be negative,
++                       and is only valid when ``multiple`` is ``True``.
+     :param attrs: Other command arguments described in :class:`Parameter`.
+ 
+     .. versionchanged:: 8.2
+@@ -2549,6 +2566,7 @@ class Option(Parameter):
+         show_choices: bool = True,
+         show_envvar: bool = False,
+         deprecated: bool | str = False,
++        batch_size: int | None = None,
+         **attrs: t.Any,
+     ) -> None:
+         if help:
+@@ -2636,6 +2654,10 @@ class Option(Parameter):
+         self.show_default = show_default
+         self.show_choices = show_choices
+         self.show_envvar = show_envvar
++        self.batch_size = batch_size
++
++        if batch_size is not None and batch_size < 0:
++            raise ValueError("'batch_size' must not be negative.")
+ 
+         if __debug__:
+             if deprecated and prompt:
+@@ -2662,6 +2684,9 @@ class Option(Parameter):
+                 if self.is_flag:
+                     raise TypeError("'count' is not valid with 'is_flag'.")
+ 
++            if self.batch_size is not None and not self.multiple:
++                raise TypeError("'batch_size' is only valid with 'multiple'.")
++
+     def to_info_dict(self) -> dict[str, t.Any]:
+         info_dict = super().to_info_dict()
+         info_dict.update(
+@@ -2671,9 +2696,18 @@ class Option(Parameter):
+             flag_value=self.flag_value,
+             count=self.count,
+             hidden=self.hidden,
++            batch_size=self.batch_size,
+         )
+         return info_dict
+ 
++    def process_value(self, ctx: Context, value: t.Any) -> t.Any:
++        value = super().process_value(ctx, value)
++
++        if self.multiple and self.batch_size and value:
++            return _batch_values(value, self.batch_size)
++
++        return value
++
+     def get_error_hint(self, ctx: Context) -> str:
+         result = super().get_error_hint(ctx)
+         if self.show_envvar:

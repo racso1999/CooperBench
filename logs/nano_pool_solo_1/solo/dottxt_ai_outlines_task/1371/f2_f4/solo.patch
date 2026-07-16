@@ -1,0 +1,277 @@
+diff --git a/outlines/__init__.py b/outlines/__init__.py
+index eeba78dc..a0523e9d 100644
+--- a/outlines/__init__.py
++++ b/outlines/__init__.py
+@@ -8,7 +8,7 @@ import outlines.types
+ from outlines.base import vectorize
+ from outlines.caching import clear_cache, disable_cache, get_cache
+ from outlines.function import Function
+-from outlines.prompts import Prompt, prompt
++from outlines.prompts import Prompt, prompt, register_filter, unregister_filter
+ 
+ __all__ = [
+     "clear_cache",
+@@ -17,6 +17,8 @@ __all__ = [
+     "Function",
+     "prompt",
+     "Prompt",
++    "register_filter",
++    "unregister_filter",
+     "vectorize",
+     "grammars",
+ ]
+diff --git a/outlines/prompts.py b/outlines/prompts.py
+index 86519ada..4a869bb5 100644
+--- a/outlines/prompts.py
++++ b/outlines/prompts.py
+@@ -1,4 +1,5 @@
+ import functools
++import html
+ import inspect
+ import json
+ import os
+@@ -6,11 +7,123 @@ import re
+ import textwrap
+ from dataclasses import dataclass
+ from pathlib import Path
+-from typing import Any, Callable, Dict, Optional, Type, cast
++from typing import Any, Callable, Dict, List, Optional, Type, cast
+ 
+ import jinja2
+ import pydantic
+ 
++# Global registry of custom filters, made available to every prompt
++# template in addition to any filters provided locally.
++_FILTER_REGISTRY: Dict[str, Callable] = {}
++
++
++def register_filter(name: str, func: Callable) -> None:
++    """Register a custom filter globally.
++
++    Once registered, the filter becomes available in every prompt template,
++    under the given `name`, without having to be passed explicitly.
++
++    Parameters
++    ----------
++    name
++        The name under which the filter will be available in templates.
++    func
++        The callable implementing the filter.
++
++    """
++    _FILTER_REGISTRY[name] = func
++
++
++def unregister_filter(name: str) -> None:
++    """Remove a globally registered filter.
++
++    Does nothing if no filter is registered under `name`.
++
++    Parameters
++    ----------
++    name
++        The name of the filter to remove from the global registry.
++
++    """
++    _FILTER_REGISTRY.pop(name, None)
++
++
++def _csv_filter(rows) -> str:
++    """Serialize a list of dicts or a list of lists to a CSV string."""
++    import csv
++    import io
++
++    rows = list(rows)
++    output = io.StringIO()
++    if not rows:
++        return ""
++
++    if isinstance(rows[0], dict):
++        writer = csv.DictWriter(output, fieldnames=list(rows[0].keys()))
++        writer.writeheader()
++        writer.writerows(rows)
++    else:
++        writer = csv.writer(output)
++        writer.writerows(rows)
++
++    return output.getvalue().rstrip("\r\n")
++
++
++# Predefined categories of built-in filters that can be selectively loaded
++# into a prompt's Jinja2 environment via the `builtin_filters` parameter.
++BUILTIN_FILTER_CATEGORIES: Dict[str, Dict[str, Callable]] = {
++    "string_utils": {
++        "upper": lambda s: s.upper(),
++        "lower": lambda s: s.lower(),
++        "title": lambda s: s.title(),
++        "reverse": lambda s: s[::-1],
++        "truncate": lambda s, length=255, end="...": (
++            s if len(s) <= length else s[:length] + end
++        ),
++        "pad_left": lambda s, width, fillchar=" ": str(s).rjust(width, fillchar),
++        "pad_right": lambda s, width, fillchar=" ": str(s).ljust(width, fillchar),
++    },
++    "math_utils": {
++        "add": lambda x, y: x + y,
++        "subtract": lambda x, y: x - y,
++        "multiply": lambda x, y: x * y,
++        "divide": lambda x, y: x / y,
++        "round": lambda x, ndigits=0: round(x, ndigits),
++        "abs": lambda x: abs(x),
++        "min": lambda x, y: min(x, y),
++        "max": lambda x, y: max(x, y),
++    },
++    "format_utils": {
++        "json": lambda obj, indent=None: json.dumps(obj, indent=indent),
++        "csv": _csv_filter,
++        "indent": lambda text, width=4: textwrap.indent(text, " " * width),
++        "wrap": lambda text, width=70: textwrap.fill(text, width),
++        "html_escape": lambda text: html.escape(text),
++        "html_unescape": lambda text: html.unescape(text),
++    },
++}
++
++
++def _get_builtin_filters(builtin_filters: Optional[List[str]]) -> Dict[str, Callable]:
++    """Resolve the `builtin_filters` categories into a flat filter mapping.
++
++    Raises
++    ------
++    ValueError
++        If a category name in `builtin_filters` is not recognized.
++
++    """
++    filters: Dict[str, Callable] = {}
++    if not builtin_filters:
++        return filters
++
++    for category in builtin_filters:
++        if category not in BUILTIN_FILTER_CATEGORIES:
++            raise ValueError(f"Unknown builtin filter category: {category}")
++        filters.update(BUILTIN_FILTER_CATEGORIES[category])
++
++    return filters
++
+ 
+ @dataclass
+ class Prompt:
+@@ -40,7 +153,7 @@ class Prompt:
+             return self.template.render(**kwargs)
+ 
+     @classmethod
+-    def from_str(cls, content: str):
++    def from_str(cls, content: str, builtin_filters: Optional[List[str]] = None):
+         """
+         Create an instance of the class from a string.
+ 
+@@ -48,15 +161,18 @@ class Prompt:
+         ----------
+         content : str
+             The string content to be converted into a template.
++        builtin_filters : Optional[List[str]]
++            Names of built-in filter categories (e.g. "string_utils",
++            "math_utils", "format_utils") to make available in the template.
+ 
+         Returns
+         -------
+         An instance of the class with the provided content as a template.
+         """
+-        return cls(cls._template_from_str(content), None)
++        return cls(cls._template_from_str(content, builtin_filters), None)
+ 
+     @classmethod
+-    def from_file(cls, path: Path):
++    def from_file(cls, path: Path, builtin_filters: Optional[List[str]] = None):
+         """
+         Create a Prompt instance from a file containing a Jinja template.
+ 
+@@ -67,6 +183,9 @@ class Prompt:
+         ----------
+         path : Path
+             The path to the file containing the Jinja template.
++        builtin_filters : Optional[List[str]]
++            Names of built-in filter categories (e.g. "string_utils",
++            "math_utils", "format_utils") to make available in the template.
+ 
+         Returns
+         -------
+@@ -75,10 +194,16 @@ class Prompt:
+         """
+         # We don't use a `Signature` here because it seems not feasible to infer one from a Jinja2 environment that is
+         # split across multiple files (since e.g. we support features like Jinja2 includes and template inheritance)
+-        return cls(cls._template_from_file(path), None)
++        return cls(cls._template_from_file(path, builtin_filters), None)
+ 
+     @classmethod
+-    def _template_from_str(_, content: str) -> jinja2.Template:
++    def _template_from_str(
++        _, content: str, builtin_filters: Optional[List[str]] = None
++    ) -> jinja2.Template:
++        # Validate the requested built-in filter categories before doing any
++        # template processing.
++        resolved_builtin_filters = _get_builtin_filters(builtin_filters)
++
+         # Dedent, and remove extra linebreak
+         cleaned_template = inspect.cleandoc(content)
+ 
+@@ -99,17 +224,18 @@ class Prompt:
+             keep_trailing_newline=True,
+             undefined=jinja2.StrictUndefined,
+         )
+-        env.filters["name"] = get_fn_name
+-        env.filters["description"] = get_fn_description
+-        env.filters["source"] = get_fn_source
+-        env.filters["signature"] = get_fn_signature
+-        env.filters["schema"] = get_schema
+-        env.filters["args"] = get_fn_args
++        _register_filters(env, resolved_builtin_filters)
+ 
+         return env.from_string(cleaned_template)
+ 
+     @classmethod
+-    def _template_from_file(_, path: Path) -> jinja2.Template:
++    def _template_from_file(
++        _, path: Path, builtin_filters: Optional[List[str]] = None
++    ) -> jinja2.Template:
++        # Validate the requested built-in filter categories before doing any
++        # template processing.
++        resolved_builtin_filters = _get_builtin_filters(builtin_filters)
++
+         file_directory = os.path.dirname(os.path.abspath(path))
+         env = jinja2.Environment(
+             loader=jinja2.FileSystemLoader(file_directory),
+@@ -118,9 +244,34 @@ class Prompt:
+             keep_trailing_newline=True,
+             undefined=jinja2.StrictUndefined,
+         )
++        _register_filters(env, resolved_builtin_filters)
++
+         return env.get_template(os.path.basename(path))
+ 
+ 
++def _register_filters(
++    env: jinja2.Environment, builtin_filters: Dict[str, Callable]
++) -> None:
++    """Populate a Jinja2 environment's filters.
++
++    Filters are applied in increasing order of precedence: globally
++    registered filters first, then the requested built-in filter
++    categories, and finally the prompt module's own built-in filters
++    (`name`, `description`, `source`, `signature`, `schema`, `args`),
++    which are never overridden.
++
++    """
++    env.filters.update(_FILTER_REGISTRY)
++    env.filters.update(builtin_filters)
++
++    env.filters["name"] = get_fn_name
++    env.filters["description"] = get_fn_description
++    env.filters["source"] = get_fn_source
++    env.filters["signature"] = get_fn_signature
++    env.filters["schema"] = get_schema
++    env.filters["args"] = get_fn_args
++
++
+ def prompt(fn: Callable) -> Prompt:
+     """Decorate a function that contains a prompt template.
+ 

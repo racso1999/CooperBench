@@ -1,0 +1,113 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..ad9ceb2 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -2499,6 +2499,12 @@ class Option(Parameter):
+                      multiple times and recorded.  This is similar to ``nargs``
+                      in how it works but supports arbitrary number of
+                      arguments.
++    :param batch_size: if ``multiple`` is set to ``True``, group the
++                       collected values into tuples of at most this many
++                       items instead of a single flat tuple. Useful for
++                       processing large numbers of values in memory
++                       efficient chunks. Must be a non-negative integer and
++                       is only valid together with ``multiple``.
+     :param count: this flag makes an option increment an integer.
+     :param allow_from_autoenv: if this is enabled then the value of this
+                                parameter will be pulled from an environment
+@@ -2508,6 +2514,9 @@ class Option(Parameter):
+     :param hidden: hide this option from help outputs.
+     :param attrs: Other command arguments described in :class:`Parameter`.
+ 
++    .. versionchanged:: 8.2
++        Added the ``batch_size`` parameter.
++
+     .. versionchanged:: 8.2
+         ``envvar`` used with ``flag_value`` will always use the ``flag_value``,
+         previously it would use the value of the environment variable.
+@@ -2542,6 +2551,7 @@ class Option(Parameter):
+         flag_value: t.Any | None = None,
+         multiple: bool = False,
+         count: bool = False,
++        batch_size: int | None = None,
+         allow_from_autoenv: bool = True,
+         type: types.ParamType | t.Any | None = None,
+         help: str | None = None,
+@@ -2631,6 +2641,11 @@ class Option(Parameter):
+             if default_is_missing:
+                 self.default = 0
+ 
++        if batch_size is not None and batch_size < 0:
++            raise ValueError("'batch_size' must be a non-negative integer.")
++
++        self.batch_size = batch_size
++
+         self.allow_from_autoenv = allow_from_autoenv
+         self.help = help
+         self.show_default = show_default
+@@ -2662,6 +2677,9 @@ class Option(Parameter):
+                 if self.is_flag:
+                     raise TypeError("'count' is not valid with 'is_flag'.")
+ 
++            if self.batch_size is not None and not self.multiple:
++                raise TypeError("'batch_size' is only valid with 'multiple'.")
++
+     def to_info_dict(self) -> dict[str, t.Any]:
+         info_dict = super().to_info_dict()
+         info_dict.update(
+@@ -2671,9 +2689,23 @@ class Option(Parameter):
+             flag_value=self.flag_value,
+             count=self.count,
+             hidden=self.hidden,
++            batch_size=self.batch_size,
+         )
+         return info_dict
+ 
++    def type_cast_value(self, ctx: Context, value: t.Any) -> t.Any:
++        """Convert and validate a value against the option's :attr:`type`,
++        :attr:`multiple`, and :attr:`nargs`, then, if :attr:`batch_size` is
++        set, group the resulting values into batches of at most
++        ``batch_size`` items instead of a single flat tuple.
++        """
++        result = super().type_cast_value(ctx, value)
++
++        if self.multiple and self.batch_size and result:
++            return tuple(types._batched(result, self.batch_size))
++
++        return result
++
+     def get_error_hint(self, ctx: Context) -> str:
+         result = super().get_error_hint(ctx)
+         if self.show_envvar:
+diff --git a/src/click/types.py b/src/click/types.py
+index 684cb3b..c38c775 100644
+--- a/src/click/types.py
++++ b/src/click/types.py
+@@ -2,6 +2,7 @@ from __future__ import annotations
+ 
+ import collections.abc as cabc
+ import enum
++import itertools
+ import os
+ import stat
+ import sys
+@@ -27,6 +28,19 @@ if t.TYPE_CHECKING:
+ ParamTypeValue = t.TypeVar("ParamTypeValue")
+ 
+ 
++def _batched(
++    iterable: cabc.Iterable[t.Any], batch_size: int
++) -> cabc.Iterator[tuple[t.Any, ...]]:
++    """Group items from ``iterable`` into tuples of up to ``batch_size``
++    items each. The final batch may be shorter if the number of items
++    is not evenly divisible by ``batch_size``.
++    """
++    iterator = iter(iterable)
++
++    while batch := tuple(itertools.islice(iterator, batch_size)):
++        yield batch
++
++
+ class ParamType:
+     """Represents the type of a parameter. Validates and converts values
+     from the command line or Python into the correct type.

@@ -1,0 +1,135 @@
+diff --git a/src/click/_termui_impl.py b/src/click/_termui_impl.py
+index 7b97bfb..0296dfb 100644
+--- a/src/click/_termui_impl.py
++++ b/src/click/_termui_impl.py
+@@ -478,6 +478,64 @@ def _nullpager(
+         stream.write(text)
+ 
+ 
++#: Maps a ``process_priority`` value to the ``niceness`` increment used on
++#: Unix-like systems via :func:`os.nice`.
++_UNIX_PRIORITY_NICE = {
++    "low": 10,
++    "below_normal": 5,
++    "normal": 0,
++    "above_normal": -5,
++    "high": -10,
++}
++
++#: Maps a ``process_priority`` value to a Windows priority class constant.
++#: See the ``SetPriorityClass`` Win32 API documentation.
++_WINDOWS_PRIORITY_CLASS = {
++    "low": 0x00000040,  # IDLE_PRIORITY_CLASS
++    "below_normal": 0x00004000,  # BELOW_NORMAL_PRIORITY_CLASS
++    "normal": 0x00000020,  # NORMAL_PRIORITY_CLASS
++    "above_normal": 0x00008000,  # ABOVE_NORMAL_PRIORITY_CLASS
++    "high": 0x00000080,  # HIGH_PRIORITY_CLASS
++}
++
++#: ``PROCESS_SET_INFORMATION`` access right, needed to open a process
++#: handle capable of changing its priority class.
++_WINDOWS_PROCESS_SET_INFORMATION = 0x0200
++
++
++def _set_process_priority(pid: int, process_priority: str) -> None:
++    """Best-effort attempt to set the priority of the process ``pid``.
++
++    Any failure (unsupported platform, missing permissions, process
++    having already exited, ...) is silently ignored so that the edit
++    operation never fails because of this.
++    """
++    if process_priority not in _UNIX_PRIORITY_NICE:
++        return
++
++    try:
++        if WIN:
++            import ctypes
++
++            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
++            handle = kernel32.OpenProcess(
++                _WINDOWS_PROCESS_SET_INFORMATION, False, pid
++            )
++            if handle:
++                try:
++                    kernel32.SetPriorityClass(
++                        handle, _WINDOWS_PRIORITY_CLASS[process_priority]
++                    )
++                finally:
++                    kernel32.CloseHandle(handle)
++        else:
++            os.setpriority(
++                os.PRIO_PROCESS, pid, _UNIX_PRIORITY_NICE[process_priority]
++            )
++    except Exception:
++        pass
++
++
+ class Editor:
+     def __init__(
+         self,
+@@ -485,11 +543,13 @@ class Editor:
+         env: cabc.Mapping[str, str] | None = None,
+         require_save: bool = True,
+         extension: str = ".txt",
++        process_priority: str | None = None,
+     ) -> None:
+         self.editor = editor
+         self.env = env
+         self.require_save = require_save
+         self.extension = extension
++        self.process_priority = process_priority
+ 
+     def get_editor(self) -> str:
+         if self.editor is not None:
+@@ -517,6 +577,10 @@ class Editor:
+ 
+         try:
+             c = subprocess.Popen(f'{editor} "{filename}"', env=environ, shell=True)
++
++            if self.process_priority is not None:
++                _set_process_priority(c.pid, self.process_priority)
++
+             exit_code = c.wait()
+             if exit_code != 0:
+                 raise ClickException(
+diff --git a/src/click/termui.py b/src/click/termui.py
+index e14e670..c911c15 100644
+--- a/src/click/termui.py
++++ b/src/click/termui.py
+@@ -650,6 +650,7 @@ def edit(
+     require_save: bool = True,
+     extension: str = ".txt",
+     filename: str | None = None,
++    process_priority: str | None = None,
+ ) -> t.AnyStr | None:
+     r"""Edits the given text in the defined editor.  If an editor is given
+     (should be the full path to the executable but the regular operating
+@@ -677,10 +678,27 @@ def edit(
+     :param filename: if provided it will edit this file instead of the
+                      provided text contents.  It will not use a temporary
+                      file as an indirection in that case.
++    :param process_priority: optionally set the CPU priority of the
++                     editor process.  One of ``"low"``,
++                     ``"below_normal"``, ``"normal"``, ``"above_normal"``
++                     or ``"high"``.  Defaults to `None`, which leaves the
++                     process at the normal system priority.  Unknown
++                     values are ignored, and failures to apply the
++                     requested priority never cause the edit operation
++                     itself to fail.
++
++    .. versionadded:: 8.3
++        Added the ``process_priority`` parameter.
+     """
+     from ._termui_impl import Editor
+ 
+-    ed = Editor(editor=editor, env=env, require_save=require_save, extension=extension)
++    ed = Editor(
++        editor=editor,
++        env=env,
++        require_save=require_save,
++        extension=extension,
++        process_priority=process_priority,
++    )
+ 
+     if filename is None:
+         return ed.edit(text)

@@ -1,0 +1,148 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..83b1362 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -1186,6 +1186,47 @@ class Command:
+             self.parse_args(ctx, args)
+         return ctx
+ 
++    def _resolve_dynamic_defaults(self, ctx: Context) -> None:
++        """Second-pass resolution for options whose ``default`` is a
++        dynamic default mapping (a ``dict`` keyed by other option
++        declarations). Runs after all parameters have been parsed from
++        the command line, environment variables, and the default map,
++        so it can look at the final values of the options it depends on.
++        """
++        if ctx.resilient_parsing:
++            return
++
++        params = self.get_params(ctx)
++        option_by_decl: dict[str, Option] = {}
++
++        for param in params:
++            if isinstance(param, Option):
++                for decl in (*param.opts, *param.secondary_opts):
++                    option_by_decl[decl] = param
++
++        for param in params:
++            if not isinstance(param, Option) or not param._dynamic_default:
++                continue
++
++            if ctx.get_parameter_source(param.name) != ParameterSource.DEFAULT:  # type: ignore[arg-type]
++                continue
++
++            resolved = None
++
++            for decl, mapping in param._dynamic_default.items():
++                source = option_by_decl.get(decl)
++
++                if source is None:
++                    continue
++
++                key = str(ctx.params.get(source.name))  # type: ignore[arg-type]
++
++                if key in mapping:
++                    resolved = mapping[key]
++
++            if resolved is not None:
++                ctx.params[param.name] = param.type_cast_value(ctx, resolved)  # type: ignore[index]
++
+     def parse_args(self, ctx: Context, args: list[str]) -> list[str]:
+         if not args and self.no_args_is_help and not ctx.resilient_parsing:
+             raise NoArgsIsHelpError(ctx)
+@@ -1196,6 +1237,8 @@ class Command:
+         for param in iter_params_for_processing(param_order, self.get_params(ctx)):
+             value, args = param.handle_parse_result(ctx, opts, args)
+ 
++        self._resolve_dynamic_defaults(ctx)
++
+         if args and not ctx.allow_extra_args and not ctx.resilient_parsing:
+             ctx.fail(
+                 ngettext(
+@@ -2468,6 +2511,18 @@ class Option(Parameter):
+ 
+     All other parameters are passed onwards to the parameter constructor.
+ 
++    The ``default`` can also be a dynamic default: a ``dict`` mapping the
++    declaration of another option (e.g. ``"--protocol"``) to a ``dict`` of
++    that option's possible values mapped to the default to use for this
++    option. Values are compared as strings. If multiple option
++    declarations are given, later entries take precedence. If none match,
++    the default is ``None``. This is only used when this option's value
++    is not otherwise provided, and is resolved once all other options
++    have been parsed, e.g.::
++
++        @click.option("--protocol", type=click.Choice(["http", "https"]), default="http")
++        @click.option("--port", default={"--protocol": {"http": 80, "https": 443}})
++
+     :param show_default: Show the default value for this option in its
+         help text. Values are not shown by default, unless
+         :attr:`Context.show_default` is ``True``. If this value is a
+@@ -2555,10 +2610,32 @@ class Option(Parameter):
+             help = inspect.cleandoc(help)
+ 
+         default_is_missing = "default" not in attrs
++        dynamic_default: dict[str, dict[str, t.Any]] | None = None
++
++        if not default_is_missing:
++            raw_default = attrs["default"]
++
++            if isinstance(raw_default, dict):
++                for key, mapping in raw_default.items():
++                    if not isinstance(key, str):
++                        raise TypeError("Dynamic default keys must be strings")
++
++                    if not isinstance(mapping, dict):
++                        raise TypeError("Dynamic default values must be dictionaries")
++
++                dynamic_default = raw_default
++
+         super().__init__(
+             param_decls, type=type, multiple=multiple, deprecated=deprecated, **attrs
+         )
+ 
++        if dynamic_default is not None:
++            # The dict was only used to resolve the default dynamically
++            # from other option values; it's not a literal default.
++            self.default = None
++
++        self._dynamic_default = dynamic_default
++
+         if prompt is True:
+             if self.name is None:
+                 raise TypeError("'name' is required with 'prompt=True'.")
+@@ -2861,9 +2938,13 @@ class Option(Parameter):
+         elif ctx.show_default is not None:
+             show_default = ctx.show_default
+ 
+-        if show_default_is_str or (show_default and (default_value is not None)):
++        if show_default_is_str or (
++            show_default and (default_value is not None or self._dynamic_default)
++        ):
+             if show_default_is_str:
+                 default_string = f"({self.show_default})"
++            elif self._dynamic_default is not None:
++                default_string = _("(dynamic)")
+             elif isinstance(default_value, (list, tuple)):
+                 default_string = ", ".join(str(d) for d in default_value)
+             elif inspect.isfunction(default_value):
+diff --git a/src/click/types.py b/src/click/types.py
+index 684cb3b..1f16ee2 100644
+--- a/src/click/types.py
++++ b/src/click/types.py
+@@ -1072,6 +1072,15 @@ def convert_type(ty: t.Any | None, default: t.Any | None = None) -> ParamType:
+     """
+     guessed_type = False
+ 
++    if isinstance(default, dict):
++        # A dynamic default (see ``Option``) maps other option values to
++        # the actual default value instead of being a literal default.
++        # Guess the type from one of the mapped values instead.
++        default = next(
++            (value for mapping in default.values() for value in mapping.values()),
++            None,
++        )
++
+     if ty is None and default is not None:
+         if isinstance(default, (tuple, list)):
+             # If the default is empty, ty will remain None and will

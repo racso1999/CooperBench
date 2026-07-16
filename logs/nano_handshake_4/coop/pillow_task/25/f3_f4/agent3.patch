@@ -1,0 +1,94 @@
+diff --git a/Tests/test_image.py b/Tests/test_image.py
+index c2e850c36..b9361eeb7 100644
+--- a/Tests/test_image.py
++++ b/Tests/test_image.py
+@@ -752,6 +752,36 @@ class TestImage:
+ 
+         assert not os.path.exists(temp_file)
+ 
++    def test_dry_run_save(self, tmp_path: Path) -> None:
++        temp_file = tmp_path / "temp.png"
++
++        im = Image.new("RGB", (10, 10))
++        im.save(temp_file, dry_run=True)
++
++        assert not os.path.exists(temp_file)
++
++    def test_dry_run_save_existing_file_not_modified(self, tmp_path: Path) -> None:
++        temp_file = tmp_path / "temp.png"
++
++        im = Image.new("RGB", (10, 10))
++        im.save(temp_file)
++        mtime = os.path.getmtime(temp_file)
++        contents = temp_file.read_bytes()
++
++        im.save(temp_file, dry_run=True)
++
++        assert os.path.getmtime(temp_file) == mtime
++        assert temp_file.read_bytes() == contents
++
++    def test_dry_run_save_raises_on_invalid_mode(self, tmp_path: Path) -> None:
++        temp_file = tmp_path / "temp.eps"
++
++        im = Image.new("RGBA", (10, 10))
++        with pytest.raises(ValueError):
++            im.save(temp_file, dry_run=True)
++
++        assert not os.path.exists(temp_file)
++
+     def test_load_on_nonexclusive_multiframe(self) -> None:
+         with open("Tests/images/frozenpond.mpo", "rb") as fp:
+ 
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 233df592c..296ea3a97 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -2505,6 +2505,10 @@ class Image:
+              red = Image.new("RGB", (1, 1), "#f00")
+              red.encoderinfo = {"xmp": b"test"}
+              black.save("out.mpo", save_all=True, append_images=[red])
++        :param dry_run: If true, the image will be fully processed for saving
++           (including format conversion and compression), but the result will
++           not be written to disk. This can be used to validate that an image
++           can be saved in a given format without the overhead of disk I/O.
+         :returns: None
+         :exception ValueError: If the output format could not be determined
+            from the file name.  Use the format option to solve this.
+@@ -2543,6 +2547,7 @@ class Image:
+         # may mutate self!
+         self._ensure_mutable()
+ 
++        dry_run = params.pop("dry_run", False)
+         save_all = params.pop("save_all", None)
+         self.encoderinfo = {**getattr(self, "encoderinfo", {}), **params}
+         self.encoderconfig: tuple[Any, ...] = ()
+@@ -2559,7 +2564,10 @@ class Image:
+             save_handler = SAVE[format.upper()]
+ 
+         created = False
+-        if open_fp:
++        if dry_run:
++            # process the image for saving, but don't write it to disk
++            fp = io.BytesIO()
++        elif open_fp:
+             created = not os.path.exists(filename)
+             if params.get("append", False):
+                 # Open also for reading ("+"), because TIFF save_all
+@@ -2573,7 +2581,7 @@ class Image:
+         try:
+             save_handler(self, fp, filename)
+         except Exception:
+-            if open_fp:
++            if open_fp and not dry_run:
+                 fp.close()
+             if created:
+                 try:
+@@ -2586,7 +2594,7 @@ class Image:
+                 del self.encoderinfo
+             except AttributeError:
+                 pass
+-        if open_fp:
++        if open_fp and not dry_run:
+             fp.close()
+ 
+     def seek(self, frame: int) -> None:

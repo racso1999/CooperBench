@@ -1,0 +1,98 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..d6c1f3e 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -15,6 +15,7 @@ from contextlib import ExitStack
+ from functools import update_wrapper
+ from gettext import gettext as _
+ from gettext import ngettext
++from itertools import islice
+ from itertools import repeat
+ from types import TracebackType
+ 
+@@ -93,6 +94,19 @@ def batch(iterable: cabc.Iterable[V], batch_size: int) -> list[tuple[V, ...]]:
+     return list(zip(*repeat(iter(iterable), batch_size), strict=False))
+ 
+ 
++def _batched(
++    iterable: cabc.Iterable[V], batch_size: int
++) -> cabc.Iterator[tuple[V, ...]]:
++    """Yield successive tuples of up to ``batch_size`` items from
++    ``iterable``, including a shorter final batch if the length of
++    ``iterable`` isn't an exact multiple of ``batch_size``.
++    """
++    iterator = iter(iterable)
++
++    while chunk := tuple(islice(iterator, batch_size)):
++        yield chunk
++
++
+ @contextmanager
+ def augment_usage_errors(
+     ctx: Context, param: Parameter | None = None
+@@ -2499,6 +2513,12 @@ class Option(Parameter):
+                      multiple times and recorded.  This is similar to ``nargs``
+                      in how it works but supports arbitrary number of
+                      arguments.
++    :param batch_size: if ``multiple`` is ``True`` and this is set, the
++                       value exposed to the command is an iterator that
++                       yields tuples of up to ``batch_size`` values
++                       instead of a single tuple containing every value.
++                       Only valid together with ``multiple=True``. Must
++                       not be negative.
+     :param count: this flag makes an option increment an integer.
+     :param allow_from_autoenv: if this is enabled then the value of this
+                                parameter will be pulled from an environment
+@@ -2541,6 +2561,7 @@ class Option(Parameter):
+         is_flag: bool | None = None,
+         flag_value: t.Any | None = None,
+         multiple: bool = False,
++        batch_size: int | None = None,
+         count: bool = False,
+         allow_from_autoenv: bool = True,
+         type: types.ParamType | t.Any | None = None,
+@@ -2637,6 +2658,11 @@ class Option(Parameter):
+         self.show_choices = show_choices
+         self.show_envvar = show_envvar
+ 
++        if batch_size is not None and batch_size < 0:
++            raise ValueError("'batch_size' must be greater than or equal to 0.")
++
++        self.batch_size = batch_size
++
+         if __debug__:
+             if deprecated and prompt:
+                 raise ValueError("`deprecated` options cannot use `prompt`.")
+@@ -2662,6 +2688,9 @@ class Option(Parameter):
+                 if self.is_flag:
+                     raise TypeError("'count' is not valid with 'is_flag'.")
+ 
++            if self.batch_size is not None and not self.multiple:
++                raise TypeError("'batch_size' is not valid without 'multiple'.")
++
+     def to_info_dict(self) -> dict[str, t.Any]:
+         info_dict = super().to_info_dict()
+         info_dict.update(
+@@ -2671,6 +2700,7 @@ class Option(Parameter):
+             flag_value=self.flag_value,
+             count=self.count,
+             hidden=self.hidden,
++            batch_size=self.batch_size,
+         )
+         return info_dict
+ 
+@@ -3032,6 +3062,14 @@ class Option(Parameter):
+ 
+         return value, source
+ 
++    def process_value(self, ctx: Context, value: t.Any) -> t.Any:
++        value = super().process_value(ctx, value)
++
++        if self.multiple and self.batch_size:
++            value = _batched(value, self.batch_size)
++
++        return value
++
+ 
+ class Argument(Parameter):
+     """Arguments are positional parameters to a command.  They generally

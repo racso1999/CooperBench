@@ -1,0 +1,95 @@
+diff --git a/Tests/test_image.py b/Tests/test_image.py
+index c2e850c36..7bdb93bad 100644
+--- a/Tests/test_image.py
++++ b/Tests/test_image.py
+@@ -752,6 +752,35 @@ class TestImage:
+ 
+         assert not os.path.exists(temp_file)
+ 
++    def test_dry_run(self, tmp_path: Path) -> None:
++        temp_file = tmp_path / "temp.png"
++
++        im = Image.new("RGB", (1, 1))
++        im.save(temp_file, dry_run=True)
++
++        assert not os.path.exists(temp_file)
++
++    def test_dry_run_existing_file_not_overwritten(self, tmp_path: Path) -> None:
++        temp_file = tmp_path / "temp.png"
++
++        im = Image.new("RGB", (1, 1), "#f00")
++        im.save(temp_file)
++        original_contents = temp_file.read_bytes()
++
++        im2 = Image.new("RGB", (1, 1), "#0f0")
++        im2.save(temp_file, dry_run=True)
++
++        assert temp_file.read_bytes() == original_contents
++
++    def test_dry_run_raises_errors(self, tmp_path: Path) -> None:
++        temp_file = tmp_path / "temp.jpg"
++
++        im = Image.new("RGB", (0, 0))
++        with pytest.raises(ValueError):
++            im.save(temp_file, dry_run=True)
++
++        assert not os.path.exists(temp_file)
++
+     def test_load_on_nonexclusive_multiframe(self) -> None:
+         with open("Tests/images/frozenpond.mpo", "rb") as fp:
+ 
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 233df592c..6bf0f11ca 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -2505,6 +2505,13 @@ class Image:
+              red = Image.new("RGB", (1, 1), "#f00")
+              red.encoderinfo = {"xmp": b"test"}
+              black.save("out.mpo", save_all=True, append_images=[red])
++
++           The ``dry_run`` option can be set to ``True`` to process the image
++           for saving, without actually writing the result to disk::
++
++             from PIL import Image
++             im = Image.new("RGB", (1, 1))
++             im.save("out.webp", dry_run=True)
+         :returns: None
+         :exception ValueError: If the output format could not be determined
+            from the file name.  Use the format option to solve this.
+@@ -2544,6 +2551,7 @@ class Image:
+         self._ensure_mutable()
+ 
+         save_all = params.pop("save_all", None)
++        dry_run = params.pop("dry_run", False)
+         self.encoderinfo = {**getattr(self, "encoderinfo", {}), **params}
+         self.encoderconfig: tuple[Any, ...] = ()
+ 
+@@ -2559,7 +2567,9 @@ class Image:
+             save_handler = SAVE[format.upper()]
+ 
+         created = False
+-        if open_fp:
++        if dry_run:
++            fp = io.BytesIO()
++        elif open_fp:
+             created = not os.path.exists(filename)
+             if params.get("append", False):
+                 # Open also for reading ("+"), because TIFF save_all
+@@ -2573,7 +2583,7 @@ class Image:
+         try:
+             save_handler(self, fp, filename)
+         except Exception:
+-            if open_fp:
++            if open_fp and not dry_run:
+                 fp.close()
+             if created:
+                 try:
+@@ -2586,7 +2596,7 @@ class Image:
+                 del self.encoderinfo
+             except AttributeError:
+                 pass
+-        if open_fp:
++        if dry_run or open_fp:
+             fp.close()
+ 
+     def seek(self, frame: int) -> None:

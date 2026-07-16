@@ -1,0 +1,66 @@
+diff --git a/dspy/propose/grounded_proposer.py b/dspy/propose/grounded_proposer.py
+index 13722b4b..35ee3e49 100644
+--- a/dspy/propose/grounded_proposer.py
++++ b/dspy/propose/grounded_proposer.py
+@@ -284,7 +284,8 @@ class GroundedProposer(Proposer):
+         set_tip_randomly=True,
+         set_history_randomly=True,
+         verbose=False,
+-        rng=None
++        rng=None,
++        tip_weights: dict[str, float] | None = None,
+     ):
+         super().__init__()
+         self.program_aware = program_aware
+@@ -297,6 +298,7 @@ class GroundedProposer(Proposer):
+         self.set_history_randomly=set_history_randomly
+         self.verbose = verbose
+         self.rng = rng or random
++        self.tip_weights = tip_weights
+ 
+         self.prompt_model = get_prompt_model(prompt_model)
+ 
+@@ -362,8 +364,12 @@ class GroundedProposer(Proposer):
+                     if self.verbose:
+                         print("Using a randomly generated configuration for our grounded proposer.")
+                     # Randomly select the tip
+-                    selected_tip_key = self.rng.choice(list(TIPS.keys()))
+-                    selected_tip = TIPS[selected_tip_key]
++                    if self.tip_weights is None:
++                        selected_tip_key = self.rng.choice(list(TIPS.keys()))
++                        selected_tip = TIPS[selected_tip_key]
++                    else:
++                        selected_tip_key = self._select_tip_with_weights()
++                        selected_tip = TIPS[selected_tip_key]
+                     self.use_tip = bool(
+                         selected_tip,
+                     )
+@@ -385,6 +391,28 @@ class GroundedProposer(Proposer):
+ 
+         return proposed_instructions
+ 
++    def _select_tip_with_weights(self) -> str:
++        """Select a tip key from TIPS using self.tip_weights to bias the draw.
++
++        Nonpositive or missing weights are treated as 0 (missing keys default to 1.0
++        before that clamp). If every weight ends up 0, falls back to a uniform draw.
++        """
++        keys = list(TIPS.keys())
++        weights = [max(0.0, self.tip_weights.get(key, 1.0)) for key in keys]
++        total_weight = sum(weights)
++
++        if total_weight <= 0:
++            return self.rng.choice(keys)
++
++        probabilities = [weight / total_weight for weight in weights]
++        threshold = self.rng.random()
++        cumulative = 0.0
++        for key, probability in zip(keys, probabilities):
++            cumulative += probability
++            if threshold < cumulative:
++                return key
++        return keys[-1]
++
+     def propose_instruction_for_predictor(
+         self,
+         program,

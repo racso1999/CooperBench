@@ -1,0 +1,101 @@
+diff --git a/src/datasets/features/features.py b/src/datasets/features/features.py
+index 6a0da6401..1981174e5 100644
+--- a/src/datasets/features/features.py
++++ b/src/datasets/features/features.py
+@@ -1245,15 +1245,42 @@ class Features(dict):
+         super().__delitem__(column_name)
+         del self._column_requires_decoding[column_name]
+ 
++    @staticmethod
++    def _as_mergeable_dict(value):
++        if isinstance(value, dict):
++            return value
++        if isinstance(value, Sequence) and isinstance(value.feature, dict):
++            return value.feature
++        return None
++
++    @classmethod
++    def _deep_merge_dicts(cls, existing_dict, new_dict):
++        for key, value in new_dict.items():
++            existing_sub_dict = cls._as_mergeable_dict(existing_dict.get(key))
++            new_sub_dict = cls._as_mergeable_dict(value)
++            if key in existing_dict and existing_sub_dict is not None and new_sub_dict is not None:
++                cls._deep_merge_dicts(existing_sub_dict, new_sub_dict)
++            else:
++                existing_dict[key] = value
++
++    def _set_or_merge(self, key, value):
++        existing_dict = self._as_mergeable_dict(self.get(key))
++        new_dict = self._as_mergeable_dict(value)
++        if key in self and existing_dict is not None and new_dict is not None:
++            self._deep_merge_dicts(existing_dict, new_dict)
++            self._column_requires_decoding[key] = require_decoding(self[key])
++        else:
++            self[key] = value
++
+     def update(self, iterable, **kwds):
+         if hasattr(iterable, "keys"):
+             for key in iterable.keys():
+-                self[key] = iterable[key]
++                self._set_or_merge(key, iterable[key])
+         else:
+             for key, value in iterable:
+-                self[key] = value
++                self._set_or_merge(key, value)
+         for key in kwds:
+-            self[key] = kwds[key]
++            self._set_or_merge(key, kwds[key])
+ 
+     def __reduce__(self):
+         return Features, (dict(self),)
+diff --git a/tests/features/test_features.py b/tests/features/test_features.py
+index 9a563f96d..df7f46ab8 100644
+--- a/tests/features/test_features.py
++++ b/tests/features/test_features.py
+@@ -34,6 +34,46 @@ class FeaturesTest(TestCase):
+         self.assertDictEqual(dset[0], new_dset[0])
+         self.assertDictEqual(dset[:], new_dset[:])
+ 
++    def test_update_deep_merges_nested_dict(self):
++        features = Features({"a": {"x": Value("int32"), "y": Value("string")}, "b": Value("int32")})
++        features.update({"a": {"y": Value("float32"), "z": Value("bool")}, "c": Value("int64")})
++        self.assertDictEqual(
++            dict(features["a"]),
++            {"x": Value("int32"), "y": Value("float32"), "z": Value("bool")},
++        )
++        self.assertEqual(features["b"], Value("int32"))
++        self.assertEqual(features["c"], Value("int64"))
++
++    def test_update_deep_merges_nested_sequence(self):
++        features = Features({"a": Sequence({"x": Value("int32")})})
++        features.update({"a": Sequence({"y": Value("string")})})
++        self.assertDictEqual(
++            dict(features["a"].feature),
++            {"x": Value("int32"), "y": Value("string")},
++        )
++
++    def test_update_deep_merges_doubly_nested_dict(self):
++        features = Features({"a": {"nested": {"deep": Value("int32")}}})
++        features.update({"a": {"nested": {"deep2": Value("string")}}})
++        self.assertDictEqual(
++            dict(features["a"]["nested"]),
++            {"deep": Value("int32"), "deep2": Value("string")},
++        )
++
++    def test_update_overwrites_non_dict_values(self):
++        features = Features({"a": Value("int32")})
++        features.update({"a": Value("string")})
++        self.assertEqual(features["a"], Value("string"))
++
++    def test_update_with_kwds_deep_merges(self):
++        features = Features({"a": {"x": Value("int32")}})
++        features.update({}, a={"y": Value("string")}, b=Value("int64"))
++        self.assertDictEqual(
++            dict(features["a"]),
++            {"x": Value("int32"), "y": Value("string")},
++        )
++        self.assertEqual(features["b"], Value("int64"))
++
+     def test_from_arrow_schema_with_sequence(self):
+         data = {"a": [{"b": {"c": ["text"]}}] * 10, "foo": [1] * 10}
+         original_features = Features({"a": {"b": Sequence({"c": Value("string")})}, "foo": Value("int64")})

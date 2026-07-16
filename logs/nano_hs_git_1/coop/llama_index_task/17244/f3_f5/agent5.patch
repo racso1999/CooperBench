@@ -1,0 +1,74 @@
+diff --git a/llama-index-core/llama_index/core/base/llms/types.py b/llama-index-core/llama_index/core/base/llms/types.py
+index 00e30cf23..0eb4ddc56 100644
+--- a/llama-index-core/llama_index/core/base/llms/types.py
++++ b/llama-index-core/llama_index/core/base/llms/types.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import base64
++import binascii
+ from enum import Enum
+ from io import BytesIO
+ from typing import (
+@@ -31,6 +32,25 @@ from llama_index.core.bridge.pydantic import (
+ from llama_index.core.constants import DEFAULT_CONTEXT_WINDOW, DEFAULT_NUM_OUTPUTS
+ 
+ 
++def normalize_image_bytes(image: bytes) -> tuple[bytes, bytes]:
++    """Normalize raw or base64-encoded image bytes.
++
++    Detects whether `image` is already base64-encoded (round-trips through
++    decode+encode unchanged) and, if not, encodes it. Returns a tuple of
++    `(encoded_image, decoded_for_guessing)` where `encoded_image` is
++    guaranteed to be base64-encoded and `decoded_for_guessing` holds the raw
++    bytes, suitable for MIME type detection.
++    """
++    try:
++        decoded = base64.b64decode(image, validate=True)
++        if base64.b64encode(decoded) == image:
++            return image, decoded
++    except (binascii.Error, ValueError):
++        pass
++
++    return base64.b64encode(image), image
++
++
+ class MessageRole(str, Enum):
+     """Message role."""
+ 
+@@ -75,14 +95,32 @@ class ImageBlock(BaseModel):
+         if not self.image:
+             return self
+ 
++        self.image, decoded_for_guessing = normalize_image_bytes(self.image)
++
+         if not self.image_mimetype:
+-            guess = filetype.guess(self.image)
++            guess = filetype.guess(decoded_for_guessing)
+             self.image_mimetype = guess.mime if guess else None
+ 
+-        self.image = base64.b64encode(self.image)
+-
+         return self
+ 
++    def get_image_mimetype(self) -> str | None:
++        """Lazily resolve and cache the image's mimetype.
++
++        If ``image_mimetype`` is already set, it's returned as-is. Otherwise,
++        the mimetype is guessed from ``image`` using the filetype library and
++        cached on the instance so subsequent calls avoid re-guessing.
++        """
++        if self.image_mimetype:
++            return self.image_mimetype
++
++        if not self.image:
++            return None
++
++        guess = filetype.guess(self.image)
++        self.image_mimetype = guess.mime if guess else None
++
++        return self.image_mimetype
++
+     def resolve_image(self, as_base64: bool = False) -> BytesIO:
+         """Resolve an image such that PIL can read it.
+ 

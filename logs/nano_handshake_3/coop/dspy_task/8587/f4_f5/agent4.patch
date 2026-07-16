@@ -1,0 +1,90 @@
+diff --git a/dspy/streaming/streaming_listener.py b/dspy/streaming/streaming_listener.py
+index 98fd4aca..3a1cad74 100644
+--- a/dspy/streaming/streaming_listener.py
++++ b/dspy/streaming/streaming_listener.py
+@@ -1,4 +1,6 @@
++import dataclasses
+ import re
++import time
+ from collections import defaultdict
+ from queue import Queue
+ from typing import TYPE_CHECKING, Any
+@@ -26,6 +28,7 @@ class StreamListener:
+         predict: Any = None,
+         predict_name: str | None = None,
+         allow_reuse: bool = False,
++        idle_timeout_s: float | None = None,
+     ):
+         """
+         Args:
+@@ -36,6 +39,9 @@ class StreamListener:
+                 automatically look for the predictor that has the `signature_field_name` in its signature.
+             allow_reuse: If True, the stream listener can be reused for multiple streams. Please note that this could
+                 hurt the performance because the same stream chunk is sent to multiple listeners.
++            idle_timeout_s: If set, the stream listener will emit a final empty-chunk `StreamResponse` and reset its
++                state if no chunk is received for this many seconds while a stream is in progress. Call `tick()`
++                periodically to check for this condition.
+         """
+         self.signature_field_name = signature_field_name
+         self.predict = predict
+@@ -47,6 +53,8 @@ class StreamListener:
+         self.stream_end = False
+         self.cache_hit = False
+         self.allow_reuse = allow_reuse
++        self.idle_timeout_s = idle_timeout_s
++        self._last_chunk_ts: float | None = None
+ 
+         self.adapter_identifiers = {
+             "ChatAdapter": {
+@@ -91,6 +99,7 @@ class StreamListener:
+                 self.field_start_queue = []
+                 self.field_end_queue = Queue()
+                 self.stream_start = False
++                self._last_chunk_ts = None
+             else:
+                 return
+ 
+@@ -98,6 +107,7 @@ class StreamListener:
+             chunk_message = chunk.choices[0].delta.content
+             if chunk_message is None:
+                 return
++            self._last_chunk_ts = time.time()
+         except Exception:
+             return
+ 
+@@ -198,6 +208,35 @@ class StreamListener:
+                 f"{', '.join([a.__name__ for a in ADAPTER_SUPPORT_STREAMING])}"
+             )
+ 
++    def tick(self, now_ts: float | None = None) -> "StreamResponse | None":
++        """Check whether the stream has been idle for longer than `idle_timeout_s`.
++
++        This should be called periodically by the streaming system. If a stream is in progress (started
++        but not yet ended) and no chunk has arrived within `idle_timeout_s` seconds, this emits a final
++        `StreamResponse` with an empty `chunk` and resets the listener's state so it isn't left stuck.
++        """
++        if self.idle_timeout_s is None or not self.stream_start or self.stream_end:
++            return None
++
++        now_ts = now_ts if now_ts is not None else time.time()
++        if self._last_chunk_ts is None or now_ts - self._last_chunk_ts < self.idle_timeout_s:
++            return None
++
++        response = StreamResponse(self.predict_name, self.signature_field_name, "")
++        if any(f.name == "is_last_chunk" for f in dataclasses.fields(response)):
++            response.is_last_chunk = True
++
++        # Reset unconditionally (regardless of `allow_reuse`) so the listener doesn't stay stuck in a
++        # started state after a timeout.
++        self.field_start_queue = []
++        self.field_end_queue = Queue()
++        self.stream_start = False
++        self.stream_end = False
++        self.cache_hit = False
++        self._last_chunk_ts = None
++
++        return response
++
+ 
+ def find_predictor_for_stream_listeners(program: "Module", stream_listeners: list[StreamListener]):
+     """Find the predictor for each stream listener.

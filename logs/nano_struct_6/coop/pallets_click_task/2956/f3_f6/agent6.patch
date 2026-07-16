@@ -1,0 +1,116 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..ecdf6e2 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -1186,6 +1186,28 @@ class Command:
+             self.parse_args(ctx, args)
+         return ctx
+ 
++    def _resolve_dynamic_defaults(self, ctx: Context) -> None:
++        """Second-pass resolution for options whose ``default`` is a
++        dynamic mapping keyed by other option names. Only applies to
++        options whose value came from :attr:`ParameterSource.DEFAULT`,
++        i.e. no value was explicitly provided.
++        """
++        for param in self.get_params(ctx):
++            if (
++                not isinstance(param, Option)
++                or param._dynamic_default is None
++                or param.name is None
++            ):
++                continue
++
++            if ctx.get_parameter_source(param.name) is not ParameterSource.DEFAULT:
++                continue
++
++            resolved = param._resolve_dynamic_default(ctx)
++
++            if resolved is not None and param.expose_value:
++                ctx.params[param.name] = param.type_cast_value(ctx, resolved)
++
+     def parse_args(self, ctx: Context, args: list[str]) -> list[str]:
+         if not args and self.no_args_is_help and not ctx.resilient_parsing:
+             raise NoArgsIsHelpError(ctx)
+@@ -1196,6 +1218,8 @@ class Command:
+         for param in iter_params_for_processing(param_order, self.get_params(ctx)):
+             value, args = param.handle_parse_result(ctx, opts, args)
+ 
++        self._resolve_dynamic_defaults(ctx)
++
+         if args and not ctx.allow_extra_args and not ctx.resilient_parsing:
+             ctx.fail(
+                 ngettext(
+@@ -2559,6 +2583,13 @@ class Option(Parameter):
+             param_decls, type=type, multiple=multiple, deprecated=deprecated, **attrs
+         )
+ 
++        self._dynamic_default: dict[str, dict[str, t.Any]] | None = None
++
++        if not default_is_missing and isinstance(self.default, dict):
++            self._validate_dynamic_default(self.default)
++            self._dynamic_default = self.default
++            self.default = None
++
+         if prompt is True:
+             if self.name is None:
+                 raise TypeError("'name' is required with 'prompt=True'.")
+@@ -2662,6 +2693,44 @@ class Option(Parameter):
+                 if self.is_flag:
+                     raise TypeError("'count' is not valid with 'is_flag'.")
+ 
++    @staticmethod
++    def _validate_dynamic_default(mapping: dict[t.Any, t.Any]) -> None:
++        for key, value in mapping.items():
++            if not isinstance(key, str):
++                raise TypeError("Dynamic default keys must be strings")
++
++            if not isinstance(value, dict):
++                raise TypeError("Dynamic default values must be dictionaries")
++
++    def _resolve_dynamic_default(self, ctx: Context) -> t.Any | None:
++        """Resolve a dynamic (dict-based) default by looking at the
++        current values of the referenced options. Returns ``None`` if
++        no mapping matches.
++        """
++        assert self._dynamic_default is not None
++        resolved: t.Any | None = None
++
++        for opt_name, mapping in self._dynamic_default.items():
++            source_param = next(
++                (
++                    param
++                    for param in ctx.command.get_params(ctx)
++                    if opt_name in param.opts or opt_name in param.secondary_opts
++                ),
++                None,
++            )
++
++            if source_param is None or source_param.name is None:
++                continue
++
++            source_value = ctx.params.get(source_param.name)
++            key = str(source_value)
++
++            if key in mapping:
++                resolved = mapping[key]
++
++        return resolved
++
+     def to_info_dict(self) -> dict[str, t.Any]:
+         info_dict = super().to_info_dict()
+         info_dict.update(
+@@ -2861,9 +2930,13 @@ class Option(Parameter):
+         elif ctx.show_default is not None:
+             show_default = ctx.show_default
+ 
+-        if show_default_is_str or (show_default and (default_value is not None)):
++        if show_default_is_str or (
++            show_default and (default_value is not None or self._dynamic_default is not None)
++        ):
+             if show_default_is_str:
+                 default_string = f"({self.show_default})"
++            elif self._dynamic_default is not None:
++                default_string = _("(dynamic)")
+             elif isinstance(default_value, (list, tuple)):
+                 default_string = ", ".join(str(d) for d in default_value)
+             elif inspect.isfunction(default_value):

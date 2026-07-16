@@ -1,0 +1,88 @@
+diff --git a/dspy/streaming/streaming_listener.py b/dspy/streaming/streaming_listener.py
+index 98fd4aca..e881be29 100644
+--- a/dspy/streaming/streaming_listener.py
++++ b/dspy/streaming/streaming_listener.py
+@@ -1,4 +1,5 @@
+ import re
++import time
+ from collections import defaultdict
+ from queue import Queue
+ from typing import TYPE_CHECKING, Any
+@@ -26,6 +27,7 @@ class StreamListener:
+         predict: Any = None,
+         predict_name: str | None = None,
+         allow_reuse: bool = False,
++        idle_timeout_s: float | None = None,
+     ):
+         """
+         Args:
+@@ -36,6 +38,9 @@ class StreamListener:
+                 automatically look for the predictor that has the `signature_field_name` in its signature.
+             allow_reuse: If True, the stream listener can be reused for multiple streams. Please note that this could
+                 hurt the performance because the same stream chunk is sent to multiple listeners.
++            idle_timeout_s: If set, and no chunk is received for this many seconds after the stream has started, the
++                listener will terminate the stream by emitting a `StreamResponse` with an empty `chunk` when `tick()`
++                is called.
+         """
+         self.signature_field_name = signature_field_name
+         self.predict = predict
+@@ -48,6 +53,9 @@ class StreamListener:
+         self.cache_hit = False
+         self.allow_reuse = allow_reuse
+ 
++        self.idle_timeout_s = idle_timeout_s
++        self._last_chunk_ts: float | None = None
++
+         self.adapter_identifiers = {
+             "ChatAdapter": {
+                 "start_identifier": f"[[ ## {self.signature_field_name} ## ]]",
+@@ -101,6 +109,9 @@ class StreamListener:
+         except Exception:
+             return
+ 
++        if chunk_message:
++            self._last_chunk_ts = time.time()
++
+         if chunk_message and start_identifier in chunk_message:
+             # If the cache is hit, the chunk_message could be the full response. When it happens we can
+             # directly end the stream listening. In some models like gemini, each stream chunk can be multiple
+@@ -168,6 +179,39 @@ class StreamListener:
+             if token:
+                 return StreamResponse(self.predict_name, self.signature_field_name, token)
+ 
++    def tick(self, now_ts: float | None = None) -> StreamResponse | None:
++        """Check whether the stream has gone idle for longer than `idle_timeout_s` and terminate it if so.
++
++        This is a polling method meant to be called periodically by the streaming system, since the listener
++        itself is purely event-driven and has no other way to notice that the upstream has stalled.
++
++        Args:
++            now_ts: The current timestamp to check against. Defaults to `time.time()` when not provided, exposed
++                as a parameter to make this method easier to test.
++
++        Returns:
++            A `StreamResponse` with an empty `chunk` if the stream timed out, `None` otherwise.
++        """
++        if self.idle_timeout_s is None or not self.stream_start or self.stream_end or self._last_chunk_ts is None:
++            return None
++
++        current_ts = now_ts if now_ts is not None else time.time()
++        if current_ts - self._last_chunk_ts < self.idle_timeout_s:
++            return None
++
++        response = StreamResponse(self.predict_name, self.signature_field_name, "")
++
++        # Unconditionally reset the listener state, regardless of `allow_reuse`, so that it isn't left stuck in a
++        # started state after the stream was cut short by the idle timeout.
++        self.stream_start = False
++        self.stream_end = False
++        self.cache_hit = False
++        self.field_start_queue = []
++        self.field_end_queue = Queue()
++        self._last_chunk_ts = None
++
++        return response
++
+     def flush(self) -> str:
+         """Flush all tokens in the field end queue.
+ 

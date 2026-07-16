@@ -1,0 +1,165 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..77f1bb0 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -2506,6 +2506,12 @@ class Option(Parameter):
+                                context.
+     :param help: the help string.
+     :param hidden: hide this option from help outputs.
++    :param auto_complete: if this is set to ``True``, Click will try to
++        provide smart shell completions for this option based on its name
++        (for example ``--user``, ``--branch``, ``--file``, ``--env``) and
++        the current execution context, without needing a manual
++        ``shell_complete`` callback. An explicit ``shell_complete``
++        callback, if given, always takes precedence over this behavior.
+     :param attrs: Other command arguments described in :class:`Parameter`.
+ 
+     .. versionchanged:: 8.2
+@@ -2549,6 +2555,7 @@ class Option(Parameter):
+         show_choices: bool = True,
+         show_envvar: bool = False,
+         deprecated: bool | str = False,
++        auto_complete: bool = False,
+         **attrs: t.Any,
+     ) -> None:
+         if help:
+@@ -2636,6 +2643,7 @@ class Option(Parameter):
+         self.show_default = show_default
+         self.show_choices = show_choices
+         self.show_envvar = show_envvar
++        self.auto_complete = auto_complete
+ 
+         if __debug__:
+             if deprecated and prompt:
+@@ -2671,6 +2679,7 @@ class Option(Parameter):
+             flag_value=self.flag_value,
+             count=self.count,
+             hidden=self.hidden,
++            auto_complete=getattr(self, "auto_complete", False),
+         )
+         return info_dict
+ 
+@@ -2680,6 +2689,39 @@ class Option(Parameter):
+             result += f" (env var: '{self.envvar}')"
+         return result
+ 
++    def _smart_complete(self, ctx: Context, incomplete: str) -> list[CompletionItem]:
++        """Look up a completion function for this option based on its
++        name and return its results. Used by :meth:`shell_complete` when
++        the option was declared with ``auto_complete=True``.
++
++        :param ctx: Invocation context for this command.
++        :param incomplete: Value being completed. May be empty.
++        """
++        complete_func = types.SMART_COMPLETION_PATTERNS.get((self.name or "").lower())
++
++        if complete_func is None:
++            return []
++
++        return complete_func(incomplete)
++
++    def shell_complete(self, ctx: Context, incomplete: str) -> list[CompletionItem]:
++        """Return a list of completions for the incomplete value. A
++        manually provided ``shell_complete`` function always takes
++        precedence. Otherwise, if ``auto_complete`` is enabled, smart
++        completions are attempted based on the option's name. Falls back
++        to the param's type completion.
++
++        :param ctx: Invocation context for this command.
++        :param incomplete: Value being completed. May be empty.
++        """
++        if self._custom_shell_complete is None and self.auto_complete:
++            results = self._smart_complete(ctx, incomplete)
++
++            if results:
++                return results
++
++        return super().shell_complete(ctx, incomplete)
++
+     def _parse_decls(
+         self, decls: cabc.Sequence[str], expose_value: bool
+     ) -> tuple[str | None, list[str], list[str]]:
+diff --git a/src/click/types.py b/src/click/types.py
+index 684cb3b..8e4fbd5 100644
+--- a/src/click/types.py
++++ b/src/click/types.py
+@@ -27,6 +27,79 @@ if t.TYPE_CHECKING:
+ ParamTypeValue = t.TypeVar("ParamTypeValue")
+ 
+ 
++def _complete_usernames(incomplete: str) -> list[CompletionItem]:
++    """Complete system usernames, for options such as ``--user``."""
++    from .shell_completion import CompletionItem
++
++    try:
++        import pwd
++
++        names = [entry.pw_name for entry in pwd.getpwall()]
++    except (ImportError, OSError):
++        names = []
++
++    return [CompletionItem(name) for name in names if name.startswith(incomplete)]
++
++
++def _complete_git_branches(incomplete: str) -> list[CompletionItem]:
++    """Complete local and remote git branch names, for options such as
++    ``--branch``. Only produces results when run inside a git repository.
++    """
++    import subprocess
++
++    from .shell_completion import CompletionItem
++
++    try:
++        output = subprocess.run(
++            ["git", "branch", "-a", "--format=%(refname:short)"],
++            capture_output=True,
++            text=True,
++            timeout=5,
++        )
++    except (OSError, subprocess.SubprocessError):
++        return []
++
++    if output.returncode != 0:
++        return []
++
++    branches = {line.strip() for line in output.stdout.splitlines() if line.strip()}
++    return [
++        CompletionItem(branch) for branch in branches if branch.startswith(incomplete)
++    ]
++
++
++def _complete_env_vars(incomplete: str) -> list[CompletionItem]:
++    """Complete environment variable names, for options such as ``--env``."""
++    from .shell_completion import CompletionItem
++
++    return [CompletionItem(key) for key in os.environ if key.startswith(incomplete)]
++
++
++def _complete_filesystem_paths(incomplete: str) -> list[CompletionItem]:
++    """Complete filesystem paths, for options such as ``--file``."""
++    from .shell_completion import CompletionItem
++
++    return [CompletionItem(incomplete, type="file")]
++
++
++#: Maps common option name patterns to the smart completion function that
++#: should be used for them. Consulted by
++#: :meth:`~click.core.Option._smart_complete` when an option is declared
++#: with ``auto_complete=True`` and has no manual ``shell_complete`` callback.
++SMART_COMPLETION_PATTERNS: dict[str, t.Callable[[str], "list[CompletionItem]"]] = {
++    "user": _complete_usernames,
++    "username": _complete_usernames,
++    "branch": _complete_git_branches,
++    "git_branch": _complete_git_branches,
++    "file": _complete_filesystem_paths,
++    "filename": _complete_filesystem_paths,
++    "path": _complete_filesystem_paths,
++    "env": _complete_env_vars,
++    "envvar": _complete_env_vars,
++    "environment": _complete_env_vars,
++}
++
++
+ class ParamType:
+     """Represents the type of a parameter. Validates and converts values
+     from the command line or Python into the correct type.

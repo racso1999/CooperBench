@@ -1,0 +1,136 @@
+diff --git a/Tests/test_image_quantize.py b/Tests/test_image_quantize.py
+index bd9db362c..d34ca5c31 100644
+--- a/Tests/test_image_quantize.py
++++ b/Tests/test_image_quantize.py
+@@ -85,3 +85,23 @@ def test_transparent_colors_equal():
+     converted = im.quantize()
+     converted_px = converted.load()
+     assert converted_px[0, 0] == converted_px[0, 1]
++
++
++def test_error_threshold_low_colors():
++    image = hopper()
++    converted = image.quantize(colors=256, error_threshold=10000)
++    assert_image(converted, "P", converted.size)
++    assert len(converted.getcolors()) <= 256
++
++
++def test_error_threshold_uses_fewer_colors():
++    image = Image.new("RGB", (100, 100), (255, 0, 0))
++    converted = image.quantize(colors=256, error_threshold=1)
++    assert len(converted.getcolors()) < 256
++
++
++def test_error_threshold_unmet_uses_max_colors():
++    image = hopper()
++    converted = image.quantize(colors=8, error_threshold=0.0001)
++    assert_image(converted, "P", converted.size)
++    assert len(converted.getcolors()) <= 8
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..60b21e536 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -476,6 +476,14 @@ def _getscaleoffset(expr):
+     raise ValueError("illegal expression")
+ 
+ 
++def _getmse(im1, im2):
++    from . import ImageChops, ImageStat
++
++    diff = ImageChops.difference(im1.convert("RGB"), im2.convert("RGB"))
++    stat = ImageStat.Stat(diff)
++    return sum(rms**2 for rms in stat.rms) / len(stat.rms)
++
++
+ # --------------------------------------------------------------------
+ # Implementation wrapper
+ 
+@@ -1048,7 +1056,16 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        error_threshold=None,
++        sort_palette=None,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1090,17 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param error_threshold: An optional maximum mean square error (MSE)
++           allowed between the original image and the quantized image. If
++           specified, the number of colors used will be increased from 2 up
++           to ``colors`` until the MSE is at or below this threshold. If the
++           threshold cannot be met within the ``colors`` limit, ``colors``
++           will be used.
++        :param sort_palette: An optional method for sorting the palette
++           colors after quantization. Can be ``"brightness"`` to sort
++           colors by perceived brightness (luma), or ``"rgb"`` to sort
++           colors by their RGB value. Default: None (the palette order is
++           left as produced by the quantization algorithm).
+         :returns: A new image
+ 
+         """
+@@ -1106,12 +1134,50 @@ class Image:
+             new_im.palette = palette.palette.copy()
+             return new_im
+ 
+-        im = self._new(self.im.quantize(colors, method, kmeans))
++        if error_threshold is not None:
++            im = None
++            for num_colors in range(2, colors + 1):
++                candidate_im = self._new(self.im.quantize(num_colors, method, kmeans))
++                if _getmse(self, candidate_im) <= error_threshold:
++                    im = candidate_im
++                    break
++            if im is None:
++                im = self._new(self.im.quantize(colors, method, kmeans))
++        else:
++            im = self._new(self.im.quantize(colors, method, kmeans))
+ 
+         from . import ImagePalette
+ 
+         mode = im.im.getpalettemode()
+-        im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
++        palette_bytes = im.im.getpalette(mode, mode)
++
++        if sort_palette:
++            rgb_palette = im.im.getpalette("RGB", "RGB")
++            num_palette_colors = len(rgb_palette) // 3
++            colors_list = [
++                rgb_palette[i * 3 : i * 3 + 3] for i in range(num_palette_colors)
++            ]
++
++            if sort_palette == "brightness":
++
++                def sort_key(color):
++                    r, g, b = color
++                    return r * 299 + g * 587 + b * 114
++
++            elif sort_palette == "rgb":
++
++                def sort_key(color):
++                    return tuple(color)
++
++            else:
++                raise ValueError("sort_palette must be 'brightness', 'rgb', or None")
++
++            dest_map = sorted(
++                range(num_palette_colors), key=lambda i: sort_key(colors_list[i])
++            )
++            im = im.remap_palette(dest_map)
++        else:
++            im.palette = ImagePalette.ImagePalette(mode, palette_bytes)
+ 
+         return im
+ 

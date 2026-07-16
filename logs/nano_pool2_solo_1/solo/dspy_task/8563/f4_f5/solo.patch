@@ -1,0 +1,272 @@
+diff --git a/dspy/adapters/types/tool.py b/dspy/adapters/types/tool.py
+index 843eceed..a001d234 100644
+--- a/dspy/adapters/types/tool.py
++++ b/dspy/adapters/types/tool.py
+@@ -1,5 +1,7 @@
+ import asyncio
++import hashlib
+ import inspect
++import json
+ from typing import TYPE_CHECKING, Any, Callable, Type, get_origin, get_type_hints
+ 
+ from jsonschema import ValidationError, validate
+@@ -254,19 +256,177 @@ class Tool(Type):
+         return f"{self.name}{desc} {arg_desc}"
+ 
+ 
++_METADATA_FIELDS = ("note", "comment", "annotation", "tags", "priority", "meta")
++
++
++def _canonicalize_value(value: Any) -> Any:
++    """Recursively canonicalize a value for stable fingerprinting.
++
++    Dict keys are sorted, tuples are converted to lists, and strings are stripped of
++    leading/trailing whitespace. Numeric and boolean types are left untouched.
++    """
++    if isinstance(value, dict):
++        return {k: _canonicalize_value(v) for k, v in sorted(value.items())}
++    if isinstance(value, (list, tuple)):
++        return [_canonicalize_value(v) for v in value]
++    if isinstance(value, str):
++        return value.strip()
++    return value
++
++
++def _compute_fingerprint(name: str, args: dict[str, Any]) -> tuple[str, str]:
++    """Compute a stable (fingerprint, id) pair for a tool call's name and args."""
++    canonical = {"name": name, "args": _canonicalize_value(args)}
++    serialized = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
++    fingerprint = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
++    return fingerprint, fingerprint[:8]
++
++
++def _split_code_and_comment(line: str) -> tuple[str, str | None]:
++    """Split a line into (code, comment) at the first unquoted `#`."""
++    in_string = False
++    string_char = ""
++    escape = False
++    for i, ch in enumerate(line):
++        if escape:
++            escape = False
++            continue
++        if ch == "\\":
++            escape = True
++            continue
++        if in_string:
++            if ch == string_char:
++                in_string = False
++            continue
++        if ch in ("'", '"'):
++            in_string = True
++            string_char = ch
++            continue
++        if ch == "#":
++            return line[:i], line[i + 1 :].strip()
++    return line, None
++
++
++def _parse_calls_and_comments(text: str) -> tuple[list[dict[str, Any]], list[str | None]]:
++    """Parse raw text containing JSON tool call objects interleaved with Python comments.
++
++    Each line is split into a code portion and an optional trailing comment. The code
++    portions are concatenated and decoded as a sequence of back-to-back JSON objects.
++    Comments are then associated with a call as follows:
++      - An inline comment (sharing a line with call code) attaches to the call whose span
++        that line belongs to (i.e. the call being closed/continued on that line).
++      - A standalone comment (on its own line) attaches to the next call that hasn't started
++        yet, or - if there is no following call - to the last call, as a trailing comment.
++
++    Returns the parsed dicts alongside the combined (possibly multi-line) comment string for
++    each call, or None if no comment was associated with it.
++    """
++    code_pieces = []
++    raw_comments = []  # (line_start_offset, line_end_offset, comment_text, is_inline)
++    offset = 0
++    for raw_line in text.split("\n"):
++        code_part, comment_part = _split_code_and_comment(raw_line)
++        start = offset
++        end = offset + len(code_part)
++        if comment_part:
++            raw_comments.append((start, end, comment_part, bool(code_part.strip())))
++        code_pieces.append(code_part)
++        offset = end + 1  # account for the "\n" used to join lines below
++
++    concatenated = "\n".join(code_pieces)
++
++    decoder = json.JSONDecoder()
++    calls = []  # (obj, start_offset, end_offset)
++    idx = 0
++    n = len(concatenated)
++    while idx < n:
++        while idx < n and concatenated[idx] in " \t\r\n":
++            idx += 1
++        if idx >= n:
++            break
++        obj, end = decoder.raw_decode(concatenated, idx)
++        calls.append((obj, idx, end))
++        idx = end
++
++    if not calls:
++        return [], []
++
++    def most_recent_call_index(pos: int) -> int | None:
++        best = None
++        for i, (_, start, end) in enumerate(calls):
++            if start <= pos <= end:
++                return i
++            if end <= pos:
++                best = i
++        return best
++
++    def next_call_index(pos: int) -> int | None:
++        for i, (_, start, _) in enumerate(calls):
++            if start >= pos:
++                return i
++        return None
++
++    assigned: list[list[str]] = [[] for _ in calls]
++    for start, end, comment_text, is_inline in raw_comments:
++        if is_inline:
++            call_index = most_recent_call_index(start)
++            if call_index is None:
++                call_index = next_call_index(start)
++        else:
++            call_index = next_call_index(start)
++            if call_index is None:
++                call_index = most_recent_call_index(start)
++        if call_index is None:
++            call_index = len(calls) - 1
++        assigned[call_index].append(comment_text)
++
++    parsed_dicts = [call[0] for call in calls]
++    comments_list = ["\n".join(comments) if comments else None for comments in assigned]
++    return parsed_dicts, comments_list
++
++
+ class ToolCalls(Type):
+     class ToolCall(BaseModel):
+         name: str
+         args: dict[str, Any]
+ 
++        # Metadata fields: never passed to the underlying `Tool` and excluded from the
++        # fingerprint. Purely for logging, debugging, or UI display.
++        note: str | None = None
++        comment: str | None = None
++        annotation: str | None = None
++        tags: list[str] | None = None
++        priority: str | int | None = None
++        meta: dict[str, Any] | None = None
++
++        # Read-only, computed once at creation time from `name` and `args` alone.
++        fingerprint: str = ""
++        id: str = ""
++
++        def __init__(self, **data):
++            data.pop("fingerprint", None)
++            data.pop("id", None)
++            super().__init__(**data)
++            fingerprint, short_id = _compute_fingerprint(self.name, self.args)
++            object.__setattr__(self, "fingerprint", fingerprint)
++            object.__setattr__(self, "id", short_id)
++
++        def has_metadata(self) -> bool:
++            return any(getattr(self, field) is not None for field in _METADATA_FIELDS)
++
+     tool_calls: list[ToolCall]
+ 
+     @classmethod
+-    def from_dict_list(cls, tool_calls_dicts: list[dict[str, Any]]) -> "ToolCalls":
++    def from_dict_list(
++        cls, tool_calls_dicts: list[dict[str, Any]], comments: list[str | None] | None = None
++    ) -> "ToolCalls":
+         """Convert a list of dictionaries to a ToolCalls instance.
+ 
+         Args:
+-            dict_list: A list of dictionaries, where each dictionary should have 'name' and 'args' keys.
++            tool_calls_dicts: A list of dictionaries, where each dictionary should have 'name' and 'args' keys,
++                along with any optional metadata fields (`note`, `comment`, `annotation`, `tags`, `priority`, `meta`).
++            comments: Optional list of Python-style comments, one per entry in `tool_calls_dicts`. When provided,
++                these take precedence over any explicit `comment` field on the corresponding dictionary.
+ 
+         Returns:
+             A ToolCalls instance.
+@@ -281,9 +441,25 @@ class ToolCalls(Type):
+             tool_calls = ToolCalls.from_dict_list(tool_calls_dict)
+             ```
+         """
+-        tool_calls = [cls.ToolCall(**item) for item in tool_calls_dicts]
++        tool_calls = []
++        for i, item in enumerate(tool_calls_dicts):
++            item = dict(item)
++            if comments is not None and i < len(comments) and comments[i]:
++                item["comment"] = comments[i]
++            tool_calls.append(cls.ToolCall(**item))
+         return cls(tool_calls=tool_calls)
+ 
++    @classmethod
++    def from_string(cls, text: str) -> "ToolCalls":
++        """Parse a raw string containing JSON tool call objects and Python-style `#` comments.
++
++        Comments found near a call (before, inline, or immediately after) are combined and
++        attached to that call's `comment` field, taking precedence over any explicit `comment`
++        field present in the JSON itself.
++        """
++        tool_calls_dicts, comments = _parse_calls_and_comments(text)
++        return cls.from_dict_list(tool_calls_dicts, comments=comments)
++
+     @classmethod
+     def description(cls) -> str:
+         return (
+@@ -291,23 +467,39 @@ class ToolCalls(Type):
+             "Arguments must be provided in JSON format."
+         )
+ 
+-    def format(self) -> list[dict[str, Any]]:
++    def format(self) -> list[dict[str, Any]] | dict[str, Any]:
+         # The tool_call field is compatible with OpenAI's tool calls schema.
+-        return [
++        tool_calls = [
+             {
+-                "type": "tool_calls",
+-                "tool_calls": [
+-                    {
+-                        "type": "function",
+-                        "function": {
+-                            "name": tool_call.name,
+-                            "arguments": tool_call.args,
+-                        },
+-                    }
+-                    for tool_call in self.tool_calls
+-                ],
++                "type": "function",
++                "function": {
++                    "name": tool_call.name,
++                    "arguments": tool_call.args,
++                },
+             }
++            for tool_call in self.tool_calls
+         ]
++        if any(tool_call.has_metadata() for tool_call in self.tool_calls):
++            return [{"type": "tool_calls", "tool_calls": tool_calls}]
++        return {"tool_calls": tool_calls}
++
++    def format_with_metadata(self) -> list[dict[str, Any]]:
++        """Like `format()`, but includes metadata fields for debugging/logging purposes."""
++        tool_calls = []
++        for tool_call in self.tool_calls:
++            call_dict = {
++                "type": "function",
++                "function": {
++                    "name": tool_call.name,
++                    "arguments": tool_call.args,
++                },
++            }
++            for field in _METADATA_FIELDS:
++                value = getattr(tool_call, field)
++                if value is not None:
++                    call_dict[field] = value
++            tool_calls.append(call_dict)
++        return [{"type": "tool_calls", "tool_calls": tool_calls}]
+ 
+ 
+ def _resolve_json_schema_reference(schema: dict) -> dict:

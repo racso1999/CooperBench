@@ -1,0 +1,162 @@
+diff --git a/Tests/test_image.py b/Tests/test_image.py
+index c2e850c36..9ac663b2b 100644
+--- a/Tests/test_image.py
++++ b/Tests/test_image.py
+@@ -182,6 +182,51 @@ class TestImage:
+         with Image.open(out) as reloaded:
+             assert_image_equal(im, reloaded)
+ 
++    def test_save_backup(self, tmp_path: Path) -> None:
++        out = tmp_path / "temp.png"
++
++        original = hopper()
++        original.save(out)
++        assert not os.path.exists(str(out) + ".bak")
++
++        with Image.open(out) as im:
++            original_bytes = im.tobytes()
++
++        modified = hopper().rotate(90)
++        modified.save(out, backup=True)
++
++        assert os.path.exists(str(out) + ".bak")
++        with Image.open(str(out) + ".bak") as backup_im:
++            assert backup_im.tobytes() == original_bytes
++
++        with Image.open(out) as reloaded:
++            assert_image_equal(modified, reloaded)
++
++    def test_save_backup_custom_suffix(self, tmp_path: Path) -> None:
++        out = tmp_path / "temp.png"
++
++        hopper().save(out)
++        hopper().rotate(90).save(out, backup=True, backup_suffix=".backup")
++
++        assert os.path.exists(str(out) + ".backup")
++        assert not os.path.exists(str(out) + ".bak")
++
++    def test_save_backup_no_existing_file(self, tmp_path: Path) -> None:
++        out = tmp_path / "temp.png"
++
++        hopper().save(out, backup=True)
++
++        assert os.path.exists(out)
++        assert not os.path.exists(str(out) + ".bak")
++
++    def test_save_backup_false(self, tmp_path: Path) -> None:
++        out = tmp_path / "temp.png"
++
++        hopper().save(out)
++        hopper().rotate(90).save(out, backup=False)
++
++        assert not os.path.exists(str(out) + ".bak")
++
+     def test_pathlib(self, tmp_path: Path) -> None:
+         with Image.open(Path("Tests/images/multipage-mmap.tiff")) as im:
+             assert im.mode == "P"
+@@ -752,6 +797,30 @@ class TestImage:
+ 
+         assert not os.path.exists(temp_file)
+ 
++    def test_save_dry_run(self, tmp_path: Path) -> None:
++        temp_file = tmp_path / "temp.png"
++
++        im = Image.new("RGB", (10, 10), "#f00")
++        im.save(temp_file, dry_run=True)
++
++        assert not os.path.exists(temp_file)
++
++        # A normal save should still work afterwards
++        im.save(temp_file)
++        assert os.path.exists(temp_file)
++
++    def test_save_dry_run_fp(self) -> None:
++        im = Image.new("RGB", (10, 10), "#f00")
++        fp = io.BytesIO()
++        im.save(fp, format="PNG", dry_run=True)
++
++        assert fp.tell() == 0
++
++    def test_save_dry_run_raises_error(self) -> None:
++        im = Image.new("RGBA", (10, 10))
++        with pytest.raises(OSError):
++            im.save("temp.jpg", format="JPEG", dry_run=True)
++
+     def test_load_on_nonexclusive_multiframe(self) -> None:
+         with open("Tests/images/frozenpond.mpo", "rb") as fp:
+ 
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 233df592c..00782b73f 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -34,6 +34,7 @@ import logging
+ import math
+ import os
+ import re
++import shutil
+ import struct
+ import sys
+ import tempfile
+@@ -2505,6 +2506,16 @@ class Image:
+              red = Image.new("RGB", (1, 1), "#f00")
+              red.encoderinfo = {"xmp": b"test"}
+              black.save("out.mpo", save_all=True, append_images=[red])
++
++           ``dry_run`` can be set to ``True`` to run the image through the
++           save process, including format conversion and encoding, without
++           writing anything to disk or to a given file object. This is
++           useful for validating that an image can be saved in a given
++           format before committing to the actual write.
++        :param backup: If true, and a file already exists at the target path, a
++           backup copy of the existing file is created before it is overwritten.
++        :param backup_suffix: The suffix to append to the filename when creating
++           a backup copy. Defaults to ``".bak"``. Only used if ``backup`` is true.
+         :returns: None
+         :exception ValueError: If the output format could not be determined
+            from the file name.  Use the format option to solve this.
+@@ -2544,6 +2555,9 @@ class Image:
+         self._ensure_mutable()
+ 
+         save_all = params.pop("save_all", None)
++        dry_run = params.pop("dry_run", False)
++        backup = params.pop("backup", False)
++        backup_suffix = params.pop("backup_suffix", ".bak")
+         self.encoderinfo = {**getattr(self, "encoderinfo", {}), **params}
+         self.encoderconfig: tuple[Any, ...] = ()
+ 
+@@ -2559,8 +2573,16 @@ class Image:
+             save_handler = SAVE[format.upper()]
+ 
+         created = False
+-        if open_fp:
++        if dry_run:
++            fp = io.BytesIO()
++        elif open_fp:
+             created = not os.path.exists(filename)
++            if backup and not created:
++                if isinstance(filename, bytes):
++                    backup_filename = filename + os.fsencode(backup_suffix)
++                else:
++                    backup_filename = filename + backup_suffix
++                shutil.copy2(filename, backup_filename)
+             if params.get("append", False):
+                 # Open also for reading ("+"), because TIFF save_all
+                 # writer needs to go back and edit the written data.
+@@ -2573,7 +2595,7 @@ class Image:
+         try:
+             save_handler(self, fp, filename)
+         except Exception:
+-            if open_fp:
++            if open_fp and not dry_run:
+                 fp.close()
+             if created:
+                 try:
+@@ -2586,7 +2608,7 @@ class Image:
+                 del self.encoderinfo
+             except AttributeError:
+                 pass
+-        if open_fp:
++        if open_fp and not dry_run:
+             fp.close()
+ 
+     def seek(self, frame: int) -> None:

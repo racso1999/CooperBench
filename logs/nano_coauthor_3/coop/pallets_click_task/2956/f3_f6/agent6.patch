@@ -1,0 +1,135 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..3607c84 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -1209,6 +1209,48 @@ class Command:
+         ctx._opt_prefixes.update(parser._opt_prefixes)
+         return args
+ 
++    def _resolve_dynamic_defaults(self, ctx: Context) -> None:
++        """Resolve options whose default is a dynamic default mapping.
++
++        This runs after all command line arguments, environment
++        variables, and configuration files have been processed, so
++        that dynamic defaults can be selected based on the final
++        values of the options they depend on.
++        """
++        params = self.get_params(ctx)
++
++        for param in params:
++            dynamic_default = getattr(param, "dynamic_default", None)
++
++            if dynamic_default is None:
++                continue
++
++            if ctx.get_parameter_source(param.name) is not ParameterSource.DEFAULT:  # type: ignore[arg-type]
++                continue
++
++            resolved = None
++
++            for source_opt, mapping in dynamic_default.items():
++                source_param = next(
++                    (
++                        p
++                        for p in params
++                        if source_opt in p.opts or source_opt in p.secondary_opts
++                    ),
++                    None,
++                )
++
++                if source_param is None:
++                    continue
++
++                source_value = ctx.params.get(source_param.name)  # type: ignore[arg-type]
++
++                if str(source_value) in mapping:
++                    resolved = mapping[str(source_value)]
++
++            if resolved is not None:
++                ctx.params[param.name] = param.type_cast_value(ctx, resolved)  # type: ignore[arg-type]
++
+     def invoke(self, ctx: Context) -> t.Any:
+         """Given a context, this invokes the attached callback (if it exists)
+         in the right way.
+@@ -1360,6 +1402,7 @@ class Command:
+         try:
+             try:
+                 with self.make_context(prog_name, args, **extra) as ctx:
++                    self._resolve_dynamic_defaults(ctx)
+                     rv = self.invoke(ctx)
+                     if not standalone_mode:
+                         return rv
+@@ -2541,6 +2584,7 @@ class Option(Parameter):
+         is_flag: bool | None = None,
+         flag_value: t.Any | None = None,
+         multiple: bool = False,
++        batch_size: int | None = None,
+         count: bool = False,
+         allow_from_autoenv: bool = True,
+         type: types.ParamType | t.Any | None = None,
+@@ -2555,6 +2599,21 @@ class Option(Parameter):
+             help = inspect.cleandoc(help)
+ 
+         default_is_missing = "default" not in attrs
++        dynamic_default: dict[str, dict[str, t.Any]] | None = None
++
++        if not default_is_missing:
++            candidate_default = attrs["default"]
++
++            if isinstance(candidate_default, dict) and not callable(candidate_default):
++                for key, mapping in candidate_default.items():
++                    if not isinstance(key, str):
++                        raise TypeError("Dynamic default keys must be strings")
++                    if not isinstance(mapping, dict):
++                        raise TypeError("Dynamic default values must be dictionaries")
++
++                dynamic_default = candidate_default
++                attrs["default"] = None
++
+         super().__init__(
+             param_decls, type=type, multiple=multiple, deprecated=deprecated, **attrs
+         )
+@@ -2631,11 +2690,14 @@ class Option(Parameter):
+             if default_is_missing:
+                 self.default = 0
+ 
++        self.batch_size = batch_size
++
+         self.allow_from_autoenv = allow_from_autoenv
+         self.help = help
+         self.show_default = show_default
+         self.show_choices = show_choices
+         self.show_envvar = show_envvar
++        self.dynamic_default = dynamic_default
+ 
+         if __debug__:
+             if deprecated and prompt:
+@@ -2662,6 +2724,13 @@ class Option(Parameter):
+                 if self.is_flag:
+                     raise TypeError("'count' is not valid with 'is_flag'.")
+ 
++            if self.batch_size is not None:
++                if self.batch_size < 0:
++                    raise ValueError("'batch_size' must be a positive integer.")
++
++                if not self.multiple:
++                    raise TypeError("'batch_size' is only valid with 'multiple'.")
++
+     def to_info_dict(self) -> dict[str, t.Any]:
+         info_dict = super().to_info_dict()
+         info_dict.update(
+@@ -2861,9 +2930,13 @@ class Option(Parameter):
+         elif ctx.show_default is not None:
+             show_default = ctx.show_default
+ 
+-        if show_default_is_str or (show_default and (default_value is not None)):
++        if show_default_is_str or (
++            show_default and (default_value is not None or self.dynamic_default is not None)
++        ):
+             if show_default_is_str:
+                 default_string = f"({self.show_default})"
++            elif self.dynamic_default is not None:
++                default_string = _("(dynamic)")
+             elif isinstance(default_value, (list, tuple)):
+                 default_string = ", ".join(str(d) for d in default_value)
+             elif inspect.isfunction(default_value):

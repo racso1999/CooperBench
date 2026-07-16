@@ -1,0 +1,114 @@
+diff --git a/dirty_equals/__init__.py b/dirty_equals/__init__.py
+index ba8214e..cea2b25 100644
+--- a/dirty_equals/__init__.py
++++ b/dirty_equals/__init__.py
+@@ -18,7 +18,7 @@ from ._numeric import (
+     IsPositiveFloat,
+     IsPositiveInt,
+ )
+-from ._other import FunctionCheck, IsJson, IsUUID
++from ._other import FunctionCheck, IsJson, IsPhoneNumber, IsUUID
+ from ._sequence import Contains, HasLen, IsList, IsListOrTuple, IsTuple
+ from ._strings import IsAnyStr, IsBytes, IsStr
+ 
+@@ -69,6 +69,7 @@ __all__ = (
+     'FunctionCheck',
+     'IsJson',
+     'IsUUID',
++    'IsPhoneNumber',
+     # strings
+     'IsStr',
+     'IsBytes',
+diff --git a/dirty_equals/_other.py b/dirty_equals/_other.py
+index b2b8379..eae783e 100644
+--- a/dirty_equals/_other.py
++++ b/dirty_equals/_other.py
+@@ -1,5 +1,6 @@
+ import json
+-from typing import Any, Callable, TypeVar, overload
++import re
++from typing import Any, Callable, Optional, TypeVar, overload
+ from uuid import UUID
+ 
+ from ._base import DirtyEquals
+@@ -145,3 +146,80 @@ class FunctionCheck(DirtyEquals[Any]):
+ 
+     def equals(self, other: Any) -> bool:
+         return self.func(other)
++
++
++class IsPhoneNumber(DirtyEquals[str]):
++    """
++    A class that checks if a value is a valid phone number, optionally checking against a specific country's
++    formatting rules.
++    """
++
++    _allowed_chars_re = re.compile(r'^\+?[\d\s\-.()]+$')
++
++    def __init__(self, country_code: Optional[str] = None):
++        """
++        Args:
++            country_code: The ISO 3166-1 alpha-2 country code to check the phone number against, if omitted,
++                a generic international phone number check is performed.
++
++        Provides pragmatic phone number validation suitable for general application use, it is not intended to be
++        a fully-fledged phone number parsing/validation library. `US` and `GB` numbers are given dedicated
++        validation logic, other country codes fall back to a generic international format check
++        (`+<country calling code><7 to 15 digits>`).
++
++        ```py title="IsPhoneNumber"
++        from dirty_equals import IsPhoneNumber
++
++        assert '+1-555-123-4567' == IsPhoneNumber
++        assert '555-123-4567' == IsPhoneNumber('US')
++        assert '+1-555-123-4567' == IsPhoneNumber('US')
++        assert '020 7946 0958' == IsPhoneNumber('GB')
++        assert '+44 20 7946 0958' == IsPhoneNumber('GB')
++        assert '555-123-4567' != IsPhoneNumber('GB')
++        assert '020 7946 0958' != IsPhoneNumber('US')
++        ```
++        """
++        self.country_code = country_code.upper() if country_code else None
++        super().__init__(plain_repr('*') if country_code is None else country_code)
++
++    def equals(self, other: Any) -> bool:
++        if not isinstance(other, str):
++            return False
++
++        value = other.strip()
++        if not value or not self._allowed_chars_re.match(value):
++            return False
++
++        has_plus = value.startswith('+')
++        digits = re.sub(r'\D', '', value)
++
++        if self.country_code == 'US':
++            return self._is_us(digits, has_plus)
++        elif self.country_code == 'GB':
++            return self._is_gb(digits, has_plus)
++        elif self.country_code is not None:
++            return self._is_generic_international(digits, has_plus)
++        else:
++            return self._is_generic(digits)
++
++    @staticmethod
++    def _is_us(digits: str, has_plus: bool) -> bool:
++        if has_plus:
++            return len(digits) == 11 and digits.startswith('1')
++        else:
++            return len(digits) == 10
++
++    @staticmethod
++    def _is_gb(digits: str, has_plus: bool) -> bool:
++        if has_plus:
++            return len(digits) == 12 and digits.startswith('44')
++        else:
++            return len(digits) == 11 and digits.startswith('0')
++
++    @staticmethod
++    def _is_generic_international(digits: str, has_plus: bool) -> bool:
++        return has_plus and 7 <= len(digits) <= 15
++
++    @staticmethod
++    def _is_generic(digits: str) -> bool:
++        return 7 <= len(digits) <= 15

@@ -1,0 +1,144 @@
+diff --git a/src/jinja2/environment.py b/src/jinja2/environment.py
+index 9dd455a5..25198b4f 100644
+--- a/src/jinja2/environment.py
++++ b/src/jinja2/environment.py
+@@ -90,6 +90,22 @@ def create_cache(
+     return LRUCache(size)  # type: ignore
+ 
+ 
++def _register_loader_environment(
++    loader: t.Optional["BaseLoader"], environment: "Environment"
++) -> None:
++    """Let a loader know that ``environment`` is using it, if the loader
++    supports tracking that (see :class:`~jinja2.loaders.FileSystemLoader`
++    for cache invalidation when watched template files change).
++    """
++    if loader is None:
++        return
++
++    register = getattr(loader, "_register_environment", None)
++
++    if register is not None:
++        register(environment)
++
++
+ def copy_cache(
+     cache: t.Optional[t.MutableMapping],
+ ) -> t.Optional[t.MutableMapping[t.Tuple[weakref.ref, str], "Template"]]:
+@@ -355,6 +371,7 @@ class Environment:
+         self.cache = create_cache(cache_size)
+         self.bytecode_cache = bytecode_cache
+         self.auto_reload = auto_reload
++        _register_loader_environment(loader, self)
+ 
+         # configurable policies
+         self.policies = DEFAULT_POLICIES.copy()
+@@ -426,6 +443,9 @@ class Environment:
+             if value is not missing:
+                 setattr(rv, key, value)
+ 
++        if loader is not missing:
++            _register_loader_environment(loader, rv)
++
+         if cache_size is not missing:
+             rv.cache = create_cache(cache_size)
+         else:
+diff --git a/src/jinja2/loaders.py b/src/jinja2/loaders.py
+index d7d9bd04..8131b670 100644
+--- a/src/jinja2/loaders.py
++++ b/src/jinja2/loaders.py
+@@ -170,6 +170,13 @@ class FileSystemLoader(BaseLoader):
+     :param encoding: Use this encoding to read the text from template
+         files.
+     :param followlinks: Follow symbolic links in the path.
++    :param auto_reload: Track environments using this loader so their
++        template cache can be invalidated when a template file in one
++        of the search paths is changed, added, or removed. Defaults to
++        ``True``.
++
++    .. versionchanged:: 3.1
++        Added the ``auto_reload`` parameter.
+ 
+     .. versionchanged:: 2.8
+         Added the ``followlinks`` parameter.
+@@ -180,6 +187,7 @@ class FileSystemLoader(BaseLoader):
+         searchpath: t.Union[str, os.PathLike, t.Sequence[t.Union[str, os.PathLike]]],
+         encoding: str = "utf-8",
+         followlinks: bool = False,
++        auto_reload: bool = True,
+     ) -> None:
+         if not isinstance(searchpath, abc.Iterable) or isinstance(searchpath, str):
+             searchpath = [searchpath]
+@@ -187,6 +195,72 @@ class FileSystemLoader(BaseLoader):
+         self.searchpath = [os.fspath(p) for p in searchpath]
+         self.encoding = encoding
+         self.followlinks = followlinks
++        self.auto_reload = auto_reload
++
++        # Environments using this loader, tracked with weak references
++        # so they can still be garbage collected normally. Only
++        # populated when ``auto_reload`` is enabled.
++        self._environments: "weakref.WeakSet[Environment]" = weakref.WeakSet()
++
++    def _register_environment(self, environment: "Environment") -> None:
++        """Called by :class:`~jinja2.Environment` when it starts using
++        this loader, so that :meth:`_on_template_changed` can find and
++        invalidate its cache entries. Only tracks the environment if
++        ``auto_reload`` is enabled.
++        """
++        if self.auto_reload:
++            self._environments.add(environment)
++
++    def _path_to_template_name(self, filename: str) -> t.Optional[str]:
++        """Convert an absolute file path to the template name that
++        would be used to look it up, or ``None`` if it isn't inside
++        any of this loader's search paths.
++        """
++        filename = os.path.abspath(filename)
++
++        for searchpath in self.searchpath:
++            searchpath = os.path.abspath(searchpath)
++
++            try:
++                common = os.path.commonpath([filename, searchpath])
++            except ValueError:
++                # paths don't have enough in common, e.g. different
++                # drives on Windows
++                continue
++
++            if common != searchpath:
++                continue
++
++            return os.path.relpath(filename, searchpath).replace(os.path.sep, "/")
++
++        return None
++
++    def _on_template_changed(self, file_paths: t.List[str]) -> None:
++        """Invalidate the cache entries for the given file paths in
++        every environment tracked by this loader. ``file_paths`` that
++        don't exist, or aren't inside a search path, are ignored.
++
++        This is called automatically when ``auto_reload`` is enabled
++        and a change is detected in one of the search paths, and can
++        also be called directly, e.g. in tests.
++        """
++        names = {self._path_to_template_name(path) for path in file_paths}
++        names.discard(None)
++
++        if not names:
++            return
++
++        for environment in list(self._environments):
++            cache = environment.cache
++
++            if cache is None:
++                continue
++
++            for name in names:
++                cache_key = (weakref.ref(self), name)
++
++                if cache_key in cache:
++                    del cache[cache_key]
+ 
+     def get_source(
+         self, environment: "Environment", template: str

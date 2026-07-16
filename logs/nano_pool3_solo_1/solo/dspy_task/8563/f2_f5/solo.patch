@@ -1,0 +1,320 @@
+diff --git a/dspy/adapters/types/tool.py b/dspy/adapters/types/tool.py
+index 843eceed..30036b3c 100644
+--- a/dspy/adapters/types/tool.py
++++ b/dspy/adapters/types/tool.py
+@@ -1,9 +1,11 @@
++import ast
+ import asyncio
+ import inspect
+ from typing import TYPE_CHECKING, Any, Callable, Type, get_origin, get_type_hints
+ 
++import json_repair
+ from jsonschema import ValidationError, validate
+-from pydantic import BaseModel, TypeAdapter, create_model
++from pydantic import BaseModel, TypeAdapter, create_model, model_validator
+ 
+ from dspy.adapters.types.base_type import Type
+ from dspy.dsp.utils.settings import settings
+@@ -254,19 +256,55 @@ class Tool(Type):
+         return f"{self.name}{desc} {arg_desc}"
+ 
+ 
++# Metadata fields carried by a `ToolCalls.ToolCall` that are informational only: they are never sent to the
++# underlying `Tool` on execution, excluded from `format()`'s execution payload, and skipped when parsing
++# python-call syntax (which only recognizes `name` and keyword args).
++_TOOL_CALL_METADATA_FIELDS = ("note", "comment", "annotation", "tags", "priority", "meta")
++
++
+ class ToolCalls(Type):
+     class ToolCall(BaseModel):
+         name: str
+         args: dict[str, Any]
+ 
++        # Optional, execution-irrelevant metadata. See `_TOOL_CALL_METADATA_FIELDS`.
++        note: str | None = None
++        comment: str | None = None
++        annotation: str | None = None
++        tags: list[str] | None = None
++        priority: str | int | None = None
++        meta: dict[str, Any] | None = None
++
++        def has_metadata(self) -> bool:
++            return any(getattr(self, field) is not None for field in _TOOL_CALL_METADATA_FIELDS)
++
+     tool_calls: list[ToolCall]
+ 
++    @model_validator(mode="before")
+     @classmethod
+-    def from_dict_list(cls, tool_calls_dicts: list[dict[str, Any]]) -> "ToolCalls":
++    def validate_input(cls, data: Any):
++        if isinstance(data, cls):
++            return data
++
++        if isinstance(data, str):
++            data = parse_python_calls(data)
++
++        if isinstance(data, list):
++            data = {"tool_calls": data}
++
++        return data
++
++    @classmethod
++    def from_dict_list(
++        cls, tool_calls_dicts: list[dict[str, Any]], comments: list[str | None] | None = None
++    ) -> "ToolCalls":
+         """Convert a list of dictionaries to a ToolCalls instance.
+ 
+         Args:
+-            dict_list: A list of dictionaries, where each dictionary should have 'name' and 'args' keys.
++            tool_calls_dicts: A list of dictionaries, where each dictionary should have 'name' and 'args' keys,
++                plus optionally any of the recognized metadata keys (see `_TOOL_CALL_METADATA_FIELDS`).
++            comments: An optional list of Python-comment strings, aligned by index with `tool_calls_dicts`. When
++                present and non-empty for a given index, it overrides that call's `comment` field.
+ 
+         Returns:
+             A ToolCalls instance.
+@@ -281,9 +319,47 @@ class ToolCalls(Type):
+             tool_calls = ToolCalls.from_dict_list(tool_calls_dict)
+             ```
+         """
+-        tool_calls = [cls.ToolCall(**item) for item in tool_calls_dicts]
++        tool_calls = []
++        for i, item in enumerate(tool_calls_dicts):
++            call = cls.ToolCall(**item)
++            if comments is not None and i < len(comments) and comments[i]:
++                call.comment = comments[i]
++            tool_calls.append(call)
+         return cls(tool_calls=tool_calls)
+ 
++    @classmethod
++    def from_string(cls, text: str) -> "ToolCalls":
++        """Parse a string containing one or more JSON tool-call objects interleaved with Python `#` comments.
++
++        Comments (whether on their own line or trailing a JSON object) are stripped from the JSON, combined in
++        source order into a single newline-joined string, and attached as the `comment` metadata on every parsed
++        call, overriding any explicit `comment` key already present in the JSON.
++
++        Args:
++            text: Raw text containing one or more JSON objects (each with 'name' and 'args' keys) and optional
++                Python comments.
++
++        Returns:
++            A ToolCalls instance.
++        """
++        code_lines = []
++        comment_lines = []
++        for line in text.splitlines():
++            code_part, comment_part = _split_inline_comment(line)
++            code_lines.append(code_part)
++            if comment_part is not None and comment_part.strip():
++                comment_lines.append(comment_part.strip())
++
++        combined_comment = "\n".join(comment_lines) if comment_lines else None
++
++        json_blocks = _extract_json_objects("\n".join(code_lines))
++        if not json_blocks:
++            raise ValueError("No tool call JSON object found in the input.")
++
++        tool_calls_dicts = [json_repair.loads(block) for block in json_blocks]
++        comments = [combined_comment] * len(tool_calls_dicts) if combined_comment else None
++        return cls.from_dict_list(tool_calls_dicts, comments=comments)
++
+     @classmethod
+     def description(cls) -> str:
+         return (
+@@ -291,24 +367,181 @@ class ToolCalls(Type):
+             "Arguments must be provided in JSON format."
+         )
+ 
+-    def format(self) -> list[dict[str, Any]]:
+-        # The tool_call field is compatible with OpenAI's tool calls schema.
+-        return [
++    def format(self) -> list[dict[str, Any]] | dict[str, Any]:
++        # The tool_call field is compatible with OpenAI's tool calls schema. Metadata fields are never included
++        # here since they are irrelevant to execution; use `format_with_metadata()` to inspect them.
++        tool_calls_payload = [
+             {
+-                "type": "tool_calls",
+-                "tool_calls": [
+-                    {
+-                        "type": "function",
+-                        "function": {
+-                            "name": tool_call.name,
+-                            "arguments": tool_call.args,
+-                        },
+-                    }
+-                    for tool_call in self.tool_calls
+-                ],
++                "type": "function",
++                "function": {
++                    "name": tool_call.name,
++                    "arguments": tool_call.args,
++                },
+             }
++            for tool_call in self.tool_calls
+         ]
+ 
++        if any(tool_call.has_metadata() for tool_call in self.tool_calls):
++            return [{"type": "tool_calls", "tool_calls": tool_calls_payload}]
++        return {"tool_calls": tool_calls_payload}
++
++    def format_with_metadata(self) -> list[dict[str, Any]]:
++        """Like `format()`, but includes each call's metadata fields as siblings of `type`/`function`."""
++        tool_calls_payload = []
++        for tool_call in self.tool_calls:
++            item = {
++                "type": "function",
++                "function": {
++                    "name": tool_call.name,
++                    "arguments": tool_call.args,
++                },
++            }
++            for field in _TOOL_CALL_METADATA_FIELDS:
++                value = getattr(tool_call, field)
++                if value is not None:
++                    item[field] = value
++            tool_calls_payload.append(item)
++
++        return [{"type": "tool_calls", "tool_calls": tool_calls_payload}]
++
++
++def parse_python_calls(text: str) -> dict[str, Any]:
++    """Parse one or more Python-style function call expressions into the `ToolCalls` dict format.
++
++    This accepts only a minimal, safe subset of Python: top-level call expressions (e.g. `search(q="nlp")`),
++    one per line or separated by `;`, with keyword-only arguments whose values are literals (strings, numbers,
++    booleans, `None`, and dicts/lists/tuples thereof). Nothing is evaluated; the source is only parsed to an AST
++    and walked.
++
++    Args:
++        text: The source text containing one or more Python-style call expressions.
++
++    Returns:
++        A dict of the form `{"tool_calls": [{"name": ..., "args": {...}}, ...]}`, in source order.
++    """
++    try:
++        tree = ast.parse(text, mode="exec")
++    except SyntaxError as e:
++        raise ValueError(f"Could not parse tool call(s): invalid Python syntax ({e.msg}).")
++
++    if not tree.body:
++        raise ValueError("No tool call found in the input.")
++
++    tool_calls = []
++    for node in tree.body:
++        if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
++            raise ValueError("Only function call expressions are supported, e.g. `search(query=\"hello\")`.")
++        tool_calls.append(_convert_call_node(node.value))
++
++    return {"tool_calls": tool_calls}
++
++
++def _convert_call_node(call: ast.Call) -> dict[str, Any]:
++    name = _extract_call_name(call.func)
++
++    if call.args:
++        raise ValueError(
++            f"Only keyword arguments supported when calling `{name}`; found positional argument(s). "
++            'Please use keyword arguments instead, e.g. `foo(a=1, b="x")`.'
++        )
++
++    args = {}
++    for kw in call.keywords:
++        if kw.arg is None:
++            raise ValueError(f"Only keyword arguments supported when calling `{name}`; found `**kwargs` expansion.")
++        args[kw.arg] = _convert_literal(kw.value, name)
++
++    return {"name": name, "args": args}
++
++
++def _extract_call_name(func_node: ast.AST) -> str:
++    if isinstance(func_node, ast.Name):
++        return func_node.id
++    if isinstance(func_node, ast.Attribute):
++        _validate_attribute_chain(func_node.value)
++        return func_node.attr
++    raise ValueError("Only simple function names are supported, e.g. `foo(...)` or `pkg.foo(...)`.")
++
++
++def _validate_attribute_chain(node: ast.AST) -> None:
++    if isinstance(node, ast.Name):
++        return
++    if isinstance(node, ast.Attribute):
++        _validate_attribute_chain(node.value)
++        return
++    raise ValueError("Only simple function names are supported, e.g. `foo(...)` or `pkg.foo(...)`.")
++
++
++def _convert_literal(node: ast.AST, call_name: str) -> Any:
++    if isinstance(node, ast.Constant):
++        return node.value
++
++    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
++        if isinstance(node.operand, ast.Constant) and isinstance(node.operand.value, (int, float)):
++            value = node.operand.value
++            return -value if isinstance(node.op, ast.USub) else value
++        raise ValueError(f"Only literal values are allowed in call to `{call_name}`.")
++
++    if isinstance(node, ast.Dict):
++        if any(k is None for k in node.keys):
++            raise ValueError(
++                f"Only literal values are allowed in call to `{call_name}`; dict expansion (`**`) is not supported."
++            )
++        return {_convert_literal(k, call_name): _convert_literal(v, call_name) for k, v in zip(node.keys, node.values)}
++
++    if isinstance(node, ast.List):
++        return [_convert_literal(elt, call_name) for elt in node.elts]
++
++    if isinstance(node, ast.Tuple):
++        # Convert tuples to lists for JSON compatibility.
++        return [_convert_literal(elt, call_name) for elt in node.elts]
++
++    raise ValueError(f"Only literal values are allowed in call to `{call_name}`; found `{type(node).__name__}`.")
++
++
++def _split_inline_comment(line: str) -> tuple[str, str | None]:
++    """Split a line into (code, comment) around the first unquoted `#`."""
++    in_string = False
++    quote_char = ""
++    for i, ch in enumerate(line):
++        if in_string:
++            if ch == quote_char and line[i - 1] != "\\":
++                in_string = False
++        elif ch in ("'", '"'):
++            in_string = True
++            quote_char = ch
++        elif ch == "#":
++            return line[:i], line[i + 1 :]
++    return line, None
++
++
++def _extract_json_objects(text: str) -> list[str]:
++    """Extract all top-level, balanced `{...}` blocks from `text`, ignoring braces inside string literals."""
++    objects = []
++    depth = 0
++    start = None
++    in_string = False
++    quote_char = ""
++    for i, ch in enumerate(text):
++        if in_string:
++            if ch == quote_char and text[i - 1] != "\\":
++                in_string = False
++            continue
++        if ch in ("'", '"'):
++            in_string = True
++            quote_char = ch
++            continue
++        if ch == "{":
++            if depth == 0:
++                start = i
++            depth += 1
++        elif ch == "}":
++            depth -= 1
++            if depth == 0 and start is not None:
++                objects.append(text[start : i + 1])
++                start = None
++    return objects
++
+ 
+ def _resolve_json_schema_reference(schema: dict) -> dict:
+     """Recursively resolve json model schema, expanding all references."""

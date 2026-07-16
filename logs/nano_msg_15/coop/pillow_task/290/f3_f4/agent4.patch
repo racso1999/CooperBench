@@ -1,0 +1,135 @@
+diff --git a/Tests/test_image_quantize.py b/Tests/test_image_quantize.py
+index bd9db362c..f5c1a61bf 100644
+--- a/Tests/test_image_quantize.py
++++ b/Tests/test_image_quantize.py
+@@ -85,3 +85,34 @@ def test_transparent_colors_equal():
+     converted = im.quantize()
+     converted_px = converted.load()
+     assert converted_px[0, 0] == converted_px[0, 1]
++
++
++def test_quantize_error_threshold():
++    image = hopper()
++
++    # A generous threshold should allow fewer colors than the maximum.
++    converted = image.quantize(colors=256, error_threshold=100)
++    assert_image(converted, "P", converted.size)
++    assert len(converted.getcolors()) <= 256
++
++    mse = image._mean_squared_error(converted.convert("RGB"))
++    assert mse <= 100 or len(converted.getcolors()) == 256
++
++
++def test_quantize_error_threshold_unreachable():
++    image = hopper()
++
++    # An impossibly strict threshold should fall back to using
++    # the maximum number of colors requested.
++    converted = image.quantize(colors=4, error_threshold=0)
++    assert_image(converted, "P", converted.size)
++    assert len(converted.getcolors()) <= 4
++
++
++def test_quantize_error_threshold_lenient():
++    image = hopper()
++
++    # A very lenient threshold should be satisfied with very few colors.
++    converted = image.quantize(colors=256, error_threshold=100000)
++    assert_image(converted, "P", converted.size)
++    assert len(converted.getcolors()) < 256
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..a0d233bfc 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -1048,7 +1048,56 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def _quantize_to_colors(self, n_colors, method, kmeans):
++        im = self._new(self.im.quantize(n_colors, method, kmeans))
++
++        from . import ImagePalette
++
++        mode = im.im.getpalettemode()
++        im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
++
++        return im
++
++    def _mean_squared_error(self, other):
++        from . import ImageChops, ImageStat
++
++        reference = self.convert("RGB")
++        comparison = other.convert("RGB")
++        diff = ImageChops.difference(reference, comparison)
++        stat = ImageStat.Stat(diff)
++        return sum(rms**2 for rms in stat.rms) / len(stat.rms)
++
++    def _quantize_to_error_threshold(self, colors, method, kmeans, error_threshold):
++        # Start from the maximum allowed number of colors. If even that
++        # doesn't satisfy the threshold, it is the best we can do.
++        best_im = self._quantize_to_colors(colors, method, kmeans)
++        if self._mean_squared_error(best_im) > error_threshold:
++            return best_im
++
++        # Binary search for the smallest number of colors whose error is
++        # still within the given threshold, assuming that using more colors
++        # monotonically decreases (or at least does not increase) the error.
++        low, high = 2, colors
++        while low < high:
++            mid = (low + high) // 2
++            candidate = self._quantize_to_colors(mid, method, kmeans)
++            if self._mean_squared_error(candidate) <= error_threshold:
++                best_im = candidate
++                high = mid
++            else:
++                low = mid + 1
++
++        return best_im
++
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        error_threshold=None,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1122,13 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param error_threshold: The maximum acceptable mean squared error
++           between the original image and the quantized result, evaluated
++           in "RGB". If given, ``colors`` is treated as an upper bound and
++           the smallest number of colors that still satisfies the threshold
++           is used, which may be fewer than ``colors``. If the threshold
++           cannot be met even when using ``colors`` colors, that many colors
++           are used anyway. Ignored when ``palette`` is given.
+         :returns: A new image
+ 
+         """
+@@ -1106,14 +1162,12 @@ class Image:
+             new_im.palette = palette.palette.copy()
+             return new_im
+ 
+-        im = self._new(self.im.quantize(colors, method, kmeans))
+-
+-        from . import ImagePalette
+-
+-        mode = im.im.getpalettemode()
+-        im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
++        if error_threshold is not None:
++            return self._quantize_to_error_threshold(
++                colors, method, kmeans, error_threshold
++            )
+ 
+-        return im
++        return self._quantize_to_colors(colors, method, kmeans)
+ 
+     def copy(self):
+         """

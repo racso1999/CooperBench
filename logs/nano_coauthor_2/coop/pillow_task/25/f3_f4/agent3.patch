@@ -1,0 +1,137 @@
+diff --git a/Tests/test_image.py b/Tests/test_image.py
+index c2e850c36..f4ab44b43 100644
+--- a/Tests/test_image.py
++++ b/Tests/test_image.py
+@@ -258,6 +258,35 @@ class TestImage:
+             assert im.readonly
+             im.save(temp_file)
+ 
++    def test_save_dry_run(self, tmp_path: Path) -> None:
++        temp_file = tmp_path / "temp.png"
++
++        im = Image.new("RGB", (10, 10))
++        im.save(temp_file, dry_run=True)
++
++        assert not os.path.exists(temp_file)
++
++    def test_save_dry_run_existing_file_untouched(self, tmp_path: Path) -> None:
++        temp_file = tmp_path / "temp.png"
++
++        im = Image.new("RGB", (10, 10))
++        im.save(temp_file)
++        contents = temp_file.read_bytes()
++
++        other = Image.new("RGB", (20, 20), "#f00")
++        other.save(temp_file, dry_run=True)
++
++        assert temp_file.read_bytes() == contents
++
++    def test_save_dry_run_raises_on_error(self, tmp_path: Path) -> None:
++        temp_file = tmp_path / "temp.png"
++
++        im = Image.new("CMYK", (10, 10))
++        with pytest.raises(OSError):
++            im.save(temp_file, format="PNG", dry_run=True)
++
++        assert not os.path.exists(temp_file)
++
+     def test_dump(self, tmp_path: Path) -> None:
+         im = Image.new("L", (10, 10))
+         im._dump(str(tmp_path / "temp_L.ppm"))
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 233df592c..24354e592 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -34,6 +34,7 @@ import logging
+ import math
+ import os
+ import re
++import shutil
+ import struct
+ import sys
+ import tempfile
+@@ -2505,6 +2506,20 @@ class Image:
+              red = Image.new("RGB", (1, 1), "#f00")
+              red.encoderinfo = {"xmp": b"test"}
+              black.save("out.mpo", save_all=True, append_images=[red])
++
++           Extra parameters relevant to this method itself (rather than being
++           passed on to the writer) are:
++
++           * ``dry_run`` -- If true, the image is fully processed as if it
++             were being saved (including format conversion and validation),
++             but nothing is written to disk and any existing file at
++             ``fp`` is left untouched. Defaults to ``False``.
++           * ``backup`` -- If true and ``fp`` is a filename that already
++             refers to an existing file, that file is copied to
++             ``backup_suffix`` before being overwritten. Ignored when
++             ``dry_run`` is true. Defaults to ``False``.
++           * ``backup_suffix`` -- The suffix appended to ``fp`` to form the
++             backup file name when ``backup`` is true. Defaults to ``.bak``.
+         :returns: None
+         :exception ValueError: If the output format could not be determined
+            from the file name.  Use the format option to solve this.
+@@ -2544,6 +2559,9 @@ class Image:
+         self._ensure_mutable()
+ 
+         save_all = params.pop("save_all", None)
++        dry_run = params.pop("dry_run", False)
++        backup = params.pop("backup", False)
++        backup_suffix = params.pop("backup_suffix", ".bak")
+         self.encoderinfo = {**getattr(self, "encoderinfo", {}), **params}
+         self.encoderconfig: tuple[Any, ...] = ()
+ 
+@@ -2559,34 +2577,50 @@ class Image:
+             save_handler = SAVE[format.upper()]
+ 
+         created = False
+-        if open_fp:
++        backup_path: str | bytes | None = None
++        if open_fp and not dry_run:
+             created = not os.path.exists(filename)
++            if backup and not created:
++                backup_path = (
++                    filename + backup_suffix
++                    if isinstance(filename, str)
++                    else filename + backup_suffix.encode()
++                )
++                shutil.copy2(filename, backup_path)
+             if params.get("append", False):
+                 # Open also for reading ("+"), because TIFF save_all
+                 # writer needs to go back and edit the written data.
+                 fp = builtins.open(filename, "r+b")
+             else:
+                 fp = builtins.open(filename, "w+b")
++        elif open_fp:
++            # dry_run: process the image without touching the filesystem
++            fp = io.BytesIO()
+         else:
+             fp = cast(IO[bytes], fp)
+ 
+         try:
+             save_handler(self, fp, filename)
+         except Exception:
+-            if open_fp:
++            if open_fp and not dry_run:
+                 fp.close()
+             if created:
+                 try:
+                     os.remove(filename)
+                 except PermissionError:
+                     pass
++            if backup_path is not None:
++                try:
++                    shutil.move(backup_path, filename)
++                except OSError:
++                    pass
+             raise
+         finally:
+             try:
+                 del self.encoderinfo
+             except AttributeError:
+                 pass
+-        if open_fp:
++        if open_fp and not dry_run:
+             fp.close()
+ 
+     def seek(self, frame: int) -> None:

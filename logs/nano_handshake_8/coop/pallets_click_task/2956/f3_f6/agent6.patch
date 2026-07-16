@@ -1,0 +1,101 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..77383fa 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -1209,6 +1209,48 @@ class Command:
+         ctx._opt_prefixes.update(parser._opt_prefixes)
+         return args
+ 
++    def _resolve_dynamic_defaults(self, ctx: Context) -> None:
++        """Resolve dict-based dynamic defaults now that every option has
++        been assigned a value from the command line, environment
++        variables, and configuration files.
++
++        A dynamic default is only applied to a parameter whose value is
++        still coming from :attr:`ParameterSource.DEFAULT`. Later entries
++        in a parameter's mapping take precedence over earlier ones when
++        more than one referenced option matches.
++
++        .. versionadded:: 8.3
++        """
++        params = self.get_params(ctx)
++        opt_to_name = {
++            opt: param.name for param in params for opt in (*param.opts, *param.secondary_opts)
++        }
++
++        for param in params:
++            dynamic_default = getattr(param, "_dynamic_default", None)
++
++            if not dynamic_default:
++                continue
++
++            if ctx.get_parameter_source(param.name) is not ParameterSource.DEFAULT:  # type: ignore[arg-type]
++                continue
++
++            resolved = None
++
++            for dep_opt, mapping in dynamic_default.items():
++                dep_name = opt_to_name.get(dep_opt)
++
++                if dep_name is None:
++                    continue
++
++                dep_value = str(ctx.params.get(dep_name))
++
++                if dep_value in mapping:
++                    resolved = mapping[dep_value]
++
++            if resolved is not None:
++                ctx.params[param.name] = resolved  # type: ignore[index]
++
+     def invoke(self, ctx: Context) -> t.Any:
+         """Given a context, this invokes the attached callback (if it exists)
+         in the right way.
+@@ -1360,6 +1402,7 @@ class Command:
+         try:
+             try:
+                 with self.make_context(prog_name, args, **extra) as ctx:
++                    self._resolve_dynamic_defaults(ctx)
+                     rv = self.invoke(ctx)
+                     if not standalone_mode:
+                         return rv
+@@ -2555,6 +2598,23 @@ class Option(Parameter):
+             help = inspect.cleandoc(help)
+ 
+         default_is_missing = "default" not in attrs
++
++        self._dynamic_default: dict[str, dict[str, t.Any]] | None = None
++        raw_default = attrs.get("default")
++
++        if isinstance(raw_default, dict):
++            for dep_opt, mapping in raw_default.items():
++                if not isinstance(dep_opt, str):
++                    raise TypeError("Dynamic default keys must be strings")
++
++                if not isinstance(mapping, dict):
++                    raise TypeError("Dynamic default values must be dictionaries")
++
++            self._dynamic_default = raw_default
++            # The mapping itself is not a usable static default; the real
++            # value is resolved later from the referenced options' values.
++            attrs["default"] = None
++
+         super().__init__(
+             param_decls, type=type, multiple=multiple, deprecated=deprecated, **attrs
+         )
+@@ -2861,9 +2921,14 @@ class Option(Parameter):
+         elif ctx.show_default is not None:
+             show_default = ctx.show_default
+ 
+-        if show_default_is_str or (show_default and (default_value is not None)):
++        if show_default_is_str or (
++            show_default
++            and (default_value is not None or self._dynamic_default is not None)
++        ):
+             if show_default_is_str:
+                 default_string = f"({self.show_default})"
++            elif self._dynamic_default is not None:
++                default_string = _("(dynamic)")
+             elif isinstance(default_value, (list, tuple)):
+                 default_string = ", ".join(str(d) for d in default_value)
+             elif inspect.isfunction(default_value):

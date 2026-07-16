@@ -1,0 +1,121 @@
+diff --git a/Tests/test_image_quantize.py b/Tests/test_image_quantize.py
+index bd9db362c..b9970c345 100644
+--- a/Tests/test_image_quantize.py
++++ b/Tests/test_image_quantize.py
+@@ -1,6 +1,6 @@
+ import pytest
+ 
+-from PIL import Image
++from PIL import Image, ImageChops, ImageStat
+ 
+ from .helper import assert_image, assert_image_similar, hopper, is_ppc64le
+ 
+@@ -85,3 +85,37 @@ def test_transparent_colors_equal():
+     converted = im.quantize()
+     converted_px = converted.load()
+     assert converted_px[0, 0] == converted_px[0, 1]
++
++
++def test_quantize_error_threshold_uses_fewer_colors():
++    # A flat color image can be perfectly represented with very few colors,
++    # so a generous error_threshold should let quantize use fewer than the
++    # requested maximum.
++    image = Image.new("RGB", (100, 100), (255, 0, 0))
++    converted = image.quantize(colors=256, error_threshold=100)
++    assert len(converted.getcolors()) < 256
++
++
++def test_quantize_error_threshold_meets_threshold():
++    image = hopper()
++    error_threshold = 50
++    converted = image.quantize(colors=256, error_threshold=error_threshold)
++
++    diff = ImageChops.difference(image, converted.convert("RGB"))
++    stat = ImageStat.Stat(diff)
++    mse = sum(rms**2 for rms in stat.rms) / len(stat.rms)
++    assert mse <= error_threshold or len(converted.getcolors()) == 256
++
++
++def test_quantize_error_threshold_uses_max_colors_when_unmet():
++    # An impossibly strict threshold cannot be met, so quantize should fall
++    # back to using the maximum number of colors allowed.
++    image = hopper()
++    converted = image.quantize(colors=8, error_threshold=0)
++    assert len(converted.getcolors()) <= 8
++
++
++def test_quantize_without_error_threshold_unaffected():
++    image = hopper()
++    converted = image.quantize(colors=100)
++    assert len(converted.getcolors()) == 100
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..389f89764 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -1048,7 +1048,15 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        error_threshold=None,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1081,12 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param error_threshold: The maximum allowed mean square error (MSE)
++           between this image and the quantized result. When given, the
++           smallest number of colors (up to ``colors``) whose resulting MSE
++           is at or below this threshold is used, so fewer colors than
++           ``colors`` may be used. If the threshold cannot be met, ``colors``
++           is used instead. Ignored when ``palette`` is given.
+         :returns: A new image
+ 
+         """
+@@ -1106,12 +1120,32 @@ class Image:
+             new_im.palette = palette.palette.copy()
+             return new_im
+ 
+-        im = self._new(self.im.quantize(colors, method, kmeans))
+-
+         from . import ImagePalette
+ 
+-        mode = im.im.getpalettemode()
+-        im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
++        def quantize_to(num_colors):
++            new_im = self._new(self.im.quantize(num_colors, method, kmeans))
++            mode = new_im.im.getpalettemode()
++            new_im.palette = ImagePalette.ImagePalette(
++                mode, new_im.im.getpalette(mode, mode)
++            )
++            return new_im
++
++        if error_threshold is None:
++            return quantize_to(colors)
++
++        from . import ImageChops, ImageStat
++
++        reference = self.convert("RGB") if self.mode != "RGB" else self
++
++        im = quantize_to(colors)
++        for num_colors in range(1, colors + 1):
++            candidate = quantize_to(num_colors)
++            diff = ImageChops.difference(reference, candidate.convert("RGB"))
++            stat = ImageStat.Stat(diff)
++            mse = sum(band_rms**2 for band_rms in stat.rms) / len(stat.rms)
++            if mse <= error_threshold:
++                im = candidate
++                break
+ 
+         return im
+ 

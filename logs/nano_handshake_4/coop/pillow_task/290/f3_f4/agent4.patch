@@ -1,0 +1,111 @@
+diff --git a/Tests/test_image_quantize.py b/Tests/test_image_quantize.py
+index bd9db362c..175854ad2 100644
+--- a/Tests/test_image_quantize.py
++++ b/Tests/test_image_quantize.py
+@@ -77,6 +77,24 @@ def test_quantize_dither_diff():
+     assert dither.tobytes() != nodither.tobytes()
+ 
+ 
++def test_quantize_error_threshold():
++    image = hopper()
++
++    # A very high error threshold should be satisfied almost immediately,
++    # resulting in far fewer colors than the requested maximum.
++    lenient = image.quantize(colors=256, error_threshold=1000000)
++    assert len(lenient.getcolors()) < 256
++
++    # A very low error threshold cannot be met, so the maximum number of
++    # colors should be used instead.
++    strict = image.quantize(colors=32, error_threshold=0.0001)
++    assert len(strict.getcolors()) == 32
++
++    # Without a threshold, the full requested number of colors is used.
++    default = image.quantize(colors=64)
++    assert len(default.getcolors()) == 64
++
++
+ def test_transparent_colors_equal():
+     im = Image.new("RGBA", (1, 2), (0, 0, 0, 0))
+     px = im.load()
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..2aca476c1 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -1048,7 +1048,15 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        error_threshold=None,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1081,12 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param error_threshold: An optional maximum allowed mean squared error
++           (MSE) between the original image and the quantized result. If
++           given, quantization starts from a small palette and adds colors
++           until either the resulting error falls at or below this
++           threshold, or ``colors`` is reached, whichever happens first.
++           Ignored when ``palette`` is given.
+         :returns: A new image
+ 
+         """
+@@ -1106,7 +1120,12 @@ class Image:
+             new_im.palette = palette.palette.copy()
+             return new_im
+ 
+-        im = self._new(self.im.quantize(colors, method, kmeans))
++        if error_threshold is None:
++            im = self._new(self.im.quantize(colors, method, kmeans))
++        else:
++            im = self._quantize_to_error_threshold(
++                colors, method, kmeans, error_threshold
++            )
+ 
+         from . import ImagePalette
+ 
+@@ -1115,6 +1134,33 @@ class Image:
+ 
+         return im
+ 
++    def _quantize_to_error_threshold(self, colors, method, kmeans, error_threshold):
++        """
++        Quantizes using as few colors as possible (up to ``colors``) such
++        that the mean squared error against the original image is at or
++        below ``error_threshold``. If that error cannot be reached, the
++        result quantized to ``colors`` is returned instead.
++        """
++        from . import ImageChops, ImageStat
++
++        original = self.convert("RGB") if self.mode != "RGB" else self
++
++        def quantize_to(num_colors):
++            candidate = self._new(self.im.quantize(num_colors, method, kmeans))
++            comparison = candidate.convert("RGB")
++            diff = ImageChops.difference(original, comparison)
++            stat = ImageStat.Stat(diff)
++            mse = sum(rms**2 for rms in stat.rms) / len(stat.rms)
++            return candidate, mse
++
++        num_colors = 2
++        im, mse = quantize_to(num_colors)
++        while mse > error_threshold and num_colors < colors:
++            num_colors += 1
++            im, mse = quantize_to(num_colors)
++
++        return im
++
+     def copy(self):
+         """
+         Copies this image. Use this method if you wish to paste things

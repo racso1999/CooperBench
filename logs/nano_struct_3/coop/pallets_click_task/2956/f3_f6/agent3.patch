@@ -1,0 +1,96 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..674b25a 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -15,6 +15,7 @@ from contextlib import ExitStack
+ from functools import update_wrapper
+ from gettext import gettext as _
+ from gettext import ngettext
++from itertools import islice
+ from itertools import repeat
+ from types import TracebackType
+ 
+@@ -1981,6 +1982,14 @@ def _check_iter(value: t.Any) -> cabc.Iterator[t.Any]:
+     return iter(value)
+ 
+ 
++def _batched(value: cabc.Iterable[t.Any], batch_size: int) -> cabc.Iterator[t.Any]:
++    """Split an iterable into tuples of up to ``batch_size`` items each."""
++    it = iter(value)
++
++    while batch := tuple(islice(it, batch_size)):
++        yield batch
++
++
+ class Parameter:
+     r"""A parameter to a command comes in two versions: they are either
+     :class:`Option`\s or :class:`Argument`\s.  Other subclasses are currently
+@@ -2499,6 +2508,11 @@ class Option(Parameter):
+                      multiple times and recorded.  This is similar to ``nargs``
+                      in how it works but supports arbitrary number of
+                      arguments.
++    :param batch_size: if this is set together with ``multiple=True``, the
++                        collected values are yielded in batches of up to this
++                        many items instead of a single tuple. Must be a
++                        non-negative integer and is only valid when
++                        ``multiple`` is ``True``.
+     :param count: this flag makes an option increment an integer.
+     :param allow_from_autoenv: if this is enabled then the value of this
+                                parameter will be pulled from an environment
+@@ -2508,6 +2522,9 @@ class Option(Parameter):
+     :param hidden: hide this option from help outputs.
+     :param attrs: Other command arguments described in :class:`Parameter`.
+ 
++    .. versionchanged:: 8.3
++        Added the ``batch_size`` parameter.
++
+     .. versionchanged:: 8.2
+         ``envvar`` used with ``flag_value`` will always use the ``flag_value``,
+         previously it would use the value of the environment variable.
+@@ -2541,6 +2558,7 @@ class Option(Parameter):
+         is_flag: bool | None = None,
+         flag_value: t.Any | None = None,
+         multiple: bool = False,
++        batch_size: int | None = None,
+         count: bool = False,
+         allow_from_autoenv: bool = True,
+         type: types.ParamType | t.Any | None = None,
+@@ -2554,6 +2572,15 @@ class Option(Parameter):
+         if help:
+             help = inspect.cleandoc(help)
+ 
++        if batch_size is not None:
++            if not multiple:
++                raise TypeError("'batch_size' is only valid when 'multiple' is true.")
++
++            if batch_size < 0:
++                raise ValueError("'batch_size' must not be negative.")
++
++        self.batch_size = batch_size
++
+         default_is_missing = "default" not in attrs
+         super().__init__(
+             param_decls, type=type, multiple=multiple, deprecated=deprecated, **attrs
+@@ -2671,6 +2698,7 @@ class Option(Parameter):
+             flag_value=self.flag_value,
+             count=self.count,
+             hidden=self.hidden,
++            batch_size=self.batch_size,
+         )
+         return info_dict
+ 
+@@ -2680,6 +2708,14 @@ class Option(Parameter):
+             result += f" (env var: '{self.envvar}')"
+         return result
+ 
++    def type_cast_value(self, ctx: Context, value: t.Any) -> t.Any:
++        value = super().type_cast_value(ctx, value)
++
++        if self.multiple and self.batch_size:
++            value = tuple(_batched(value, self.batch_size))
++
++        return value
++
+     def _parse_decls(
+         self, decls: cabc.Sequence[str], expose_value: bool
+     ) -> tuple[str | None, list[str], list[str]]:

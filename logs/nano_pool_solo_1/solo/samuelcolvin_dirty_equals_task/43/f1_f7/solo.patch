@@ -1,0 +1,157 @@
+diff --git a/dirty_equals/__init__.py b/dirty_equals/__init__.py
+index ba8214e..509b521 100644
+--- a/dirty_equals/__init__.py
++++ b/dirty_equals/__init__.py
+@@ -18,7 +18,7 @@ from ._numeric import (
+     IsPositiveFloat,
+     IsPositiveInt,
+ )
+-from ._other import FunctionCheck, IsJson, IsUUID
++from ._other import FunctionCheck, IsHash, IsIP, IsJson, IsUUID
+ from ._sequence import Contains, HasLen, IsList, IsListOrTuple, IsTuple
+ from ._strings import IsAnyStr, IsBytes, IsStr
+ 
+@@ -69,6 +69,8 @@ __all__ = (
+     'FunctionCheck',
+     'IsJson',
+     'IsUUID',
++    'IsIP',
++    'IsHash',
+     # strings
+     'IsStr',
+     'IsBytes',
+diff --git a/dirty_equals/_other.py b/dirty_equals/_other.py
+index b2b8379..a6bbd0e 100644
+--- a/dirty_equals/_other.py
++++ b/dirty_equals/_other.py
+@@ -1,9 +1,11 @@
++import ipaddress
+ import json
+-from typing import Any, Callable, TypeVar, overload
++import string
++from typing import Any, Callable, Dict, Optional, TypeVar, Union, overload
+ from uuid import UUID
+ 
+ from ._base import DirtyEquals
+-from ._utils import plain_repr
++from ._utils import Omit, plain_repr
+ 
+ try:
+     from typing import Literal
+@@ -145,3 +147,116 @@ class FunctionCheck(DirtyEquals[Any]):
+ 
+     def equals(self, other: Any) -> bool:
+         return self.func(other)
++
++
++IpVersion = Literal[None, 4, 6]
++AnyIp = Union[
++    str,
++    bytes,
++    int,
++    ipaddress.IPv4Address,
++    ipaddress.IPv6Address,
++    ipaddress.IPv4Network,
++    ipaddress.IPv6Network,
++]
++
++
++class IsIP(DirtyEquals[AnyIp]):
++    """
++    A class that checks if a value is a valid IP address, optionally checking IP version and netmask.
++    """
++
++    def __init__(self, version: IpVersion = None, *, netmask: Optional[Union[str, int]] = None):
++        """
++        Args:
++            version: The version of the IP to check, if omitted, both versions are accepted.
++            netmask: The netmask of the IP to check, if omitted, no netmask check is performed.
++                Requires `version` to be set.
++
++        ```py title="IsIP"
++        from dirty_equals import IsIP
++
++        assert '129.144.52.38' == IsIP
++        assert '129.144.52.38' == IsIP(4)
++        assert '129.144.52.38' != IsIP(6)
++        assert '2001:db8::8a2e:370:7334' == IsIP(6)
++        assert 3232235521 == IsIP
++        assert b'\\xC0\\xA8\\x00\\x01' == IsIP
++        assert '192.168.0.0/24' == IsIP(4, netmask='255.255.255.0')
++        assert '192.168.0.0/24' != IsIP(4, netmask='255.255.0.0')
++        ```
++        """
++        if netmask and not version:
++            raise TypeError('To check the netmask you must specify the IP version')
++
++        self.version = version
++        self.netmask = netmask
++        super().__init__(version=Omit if version is None else version, netmask=Omit if netmask is None else netmask)
++
++    def equals(self, other: Any) -> bool:
++        ip = ipaddress.ip_network(other, strict=False)
++
++        if self.version is not None and ip.version != self.version:
++            return False
++
++        if self.netmask is not None:
++            if isinstance(self.netmask, int):
++                netmask_cls = ipaddress.IPv4Network if ip.version == 4 else ipaddress.IPv6Network
++                expected_netmask = netmask_cls((0, self.netmask)).netmask
++            else:
++                expected_netmask = ipaddress.ip_address(self.netmask)
++
++            if ip.netmask != expected_netmask:
++                return False
++
++        return True
++
++
++HashTypes = Literal['md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512']
++
++
++class IsHash(DirtyEquals[str]):
++    """
++    A class that checks if a value is a valid hash of a given algorithm/hash-type.
++    """
++
++    hash_length: Dict[str, int] = {
++        'md5': 32,
++        'sha1': 40,
++        'sha224': 56,
++        'sha256': 64,
++        'sha384': 96,
++        'sha512': 128,
++    }
++
++    def __init__(self, algorithm: HashTypes):
++        """
++        Args:
++            algorithm: The algorithm/hash-type used by the hash to check against, e.g. `'md5'`, `'sha256'`, etc.
++                Case insensitive.
++
++        ```py title="IsHash"
++        import hashlib
++        from dirty_equals import IsHash
++
++        assert hashlib.md5(b'foo').hexdigest() == IsHash('md5')
++        assert hashlib.sha1(b'foo').hexdigest() == IsHash('sha1')
++        assert hashlib.sha256(b'foo').hexdigest() == IsHash('sha256')
++        assert 'not-a-hash' != IsHash('sha256')
++        ```
++        """
++        algorithm_lower = algorithm.lower()
++        if algorithm_lower not in self.hash_length:
++            raise TypeError(f'Unknown hash algorithm: {algorithm!r}')
++
++        self.algorithm = algorithm_lower
++        super().__init__(algorithm)
++
++    def equals(self, other: Any) -> bool:
++        if not isinstance(other, str):
++            return False
++
++        if len(other) != self.hash_length[self.algorithm]:
++            return False
++
++        return all(c in string.hexdigits for c in other)

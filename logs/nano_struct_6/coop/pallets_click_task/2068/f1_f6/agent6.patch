@@ -1,0 +1,143 @@
+diff --git a/src/click/_termui_impl.py b/src/click/_termui_impl.py
+index 7b97bfb..967ac20 100644
+--- a/src/click/_termui_impl.py
++++ b/src/click/_termui_impl.py
+@@ -478,6 +478,27 @@ def _nullpager(
+         stream.write(text)
+ 
+ 
++#: Mapping of the ``process_priority`` levels accepted by :class:`Editor`
++#: to the Windows process creation flags used to launch the editor.
++_WIN_PRIORITY_CLASSES = {
++    "low": "IDLE_PRIORITY_CLASS",
++    "below_normal": "BELOW_NORMAL_PRIORITY_CLASS",
++    "normal": "NORMAL_PRIORITY_CLASS",
++    "above_normal": "ABOVE_NORMAL_PRIORITY_CLASS",
++    "high": "HIGH_PRIORITY_CLASS",
++}
++
++#: Mapping of the ``process_priority`` levels accepted by :class:`Editor`
++#: to POSIX ``nice`` increments used to launch the editor.
++_UNIX_NICE_VALUES = {
++    "low": 19,
++    "below_normal": 10,
++    "normal": 0,
++    "above_normal": -5,
++    "high": -10,
++}
++
++
+ class Editor:
+     def __init__(
+         self,
+@@ -485,12 +506,18 @@ class Editor:
+         env: cabc.Mapping[str, str] | None = None,
+         require_save: bool = True,
+         extension: str = ".txt",
++        process_priority: str | None = None,
+     ) -> None:
+         self.editor = editor
+         self.env = env
+         self.require_save = require_save
+         self.extension = extension
+ 
++        if process_priority not in _UNIX_NICE_VALUES:
++            process_priority = None
++
++        self.process_priority = process_priority
++
+     def get_editor(self) -> str:
+         if self.editor is not None:
+             return self.editor
+@@ -505,6 +532,37 @@ class Editor:
+                 return editor
+         return "vi"
+ 
++    def _get_popen_priority_kwargs(self) -> dict[str, t.Any]:
++        """Build the extra ``subprocess.Popen`` keyword arguments needed
++        to apply ``self.process_priority`` to the editor process, if any.
++
++        Priority changes are best-effort: platforms or privilege levels
++        that don't support them are silently ignored so the editor still
++        launches with the default priority.
++        """
++        if self.process_priority is None:
++            return {}
++
++        if WIN:
++            import subprocess
++
++            priority_class = getattr(
++                subprocess, _WIN_PRIORITY_CLASSES[self.process_priority], None
++            )
++            if priority_class is None:
++                return {}
++            return {"creationflags": priority_class}
++
++        nice_value = _UNIX_NICE_VALUES[self.process_priority]
++
++        def _apply_nice() -> None:
++            try:
++                os.nice(nice_value)
++            except OSError:
++                pass
++
++        return {"preexec_fn": _apply_nice}
++
+     def edit_file(self, filename: str) -> None:
+         import subprocess
+ 
+@@ -515,8 +573,12 @@ class Editor:
+             environ = os.environ.copy()
+             environ.update(self.env)
+ 
++        popen_kwargs = self._get_popen_priority_kwargs()
++
+         try:
+-            c = subprocess.Popen(f'{editor} "{filename}"', env=environ, shell=True)
++            c = subprocess.Popen(
++                f'{editor} "{filename}"', env=environ, shell=True, **popen_kwargs
++            )
+             exit_code = c.wait()
+             if exit_code != 0:
+                 raise ClickException(
+diff --git a/src/click/termui.py b/src/click/termui.py
+index e14e670..c6231d3 100644
+--- a/src/click/termui.py
++++ b/src/click/termui.py
+@@ -650,6 +650,7 @@ def edit(
+     require_save: bool = True,
+     extension: str = ".txt",
+     filename: str | None = None,
++    process_priority: str | None = None,
+ ) -> t.AnyStr | None:
+     r"""Edits the given text in the defined editor.  If an editor is given
+     (should be the full path to the executable but the regular operating
+@@ -677,10 +678,26 @@ def edit(
+     :param filename: if provided it will edit this file instead of the
+                      provided text contents.  It will not use a temporary
+                      file as an indirection in that case.
++    :param process_priority: optionally set the CPU priority of the editor
++                     process.  One of ``"low"``, ``"below_normal"``,
++                     ``"normal"``, ``"above_normal"``, or ``"high"``.
++                     Defaults to `None`, which leaves the process at the
++                     system's default priority.  Unsupported or invalid
++                     values are ignored and the editor still launches
++                     normally.
++
++    .. versionadded:: 8.3
++        Added the ``process_priority`` parameter.
+     """
+     from ._termui_impl import Editor
+ 
+-    ed = Editor(editor=editor, env=env, require_save=require_save, extension=extension)
++    ed = Editor(
++        editor=editor,
++        env=env,
++        require_save=require_save,
++        extension=extension,
++        process_priority=process_priority,
++    )
+ 
+     if filename is None:
+         return ed.edit(text)

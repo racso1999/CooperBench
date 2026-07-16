@@ -1,0 +1,137 @@
+diff --git a/dirty_equals/__init__.py b/dirty_equals/__init__.py
+index ba8214e..291e95c 100644
+--- a/dirty_equals/__init__.py
++++ b/dirty_equals/__init__.py
+@@ -18,7 +18,7 @@ from ._numeric import (
+     IsPositiveFloat,
+     IsPositiveInt,
+ )
+-from ._other import FunctionCheck, IsJson, IsUUID
++from ._other import FunctionCheck, IsHash, IsJson, IsPhoneNumber, IsUUID
+ from ._sequence import Contains, HasLen, IsList, IsListOrTuple, IsTuple
+ from ._strings import IsAnyStr, IsBytes, IsStr
+ 
+@@ -67,7 +67,9 @@ __all__ = (
+     'IsInstance',
+     # other
+     'FunctionCheck',
++    'IsHash',
+     'IsJson',
++    'IsPhoneNumber',
+     'IsUUID',
+     # strings
+     'IsStr',
+diff --git a/dirty_equals/_other.py b/dirty_equals/_other.py
+index b2b8379..094e99a 100644
+--- a/dirty_equals/_other.py
++++ b/dirty_equals/_other.py
+@@ -1,5 +1,6 @@
+ import json
+-from typing import Any, Callable, TypeVar, overload
++import re
++from typing import Any, Callable, Optional, TypeVar, overload
+ from uuid import UUID
+ 
+ from ._base import DirtyEquals
+@@ -120,6 +121,101 @@ class IsJson(DirtyEquals[JsonType]):
+             return False
+ 
+ 
++HASH_LENGTHS = {
++    'md5': 32,
++    'sha1': 40,
++    'sha224': 56,
++    'sha256': 64,
++    'sha384': 96,
++    'sha512': 128,
++    'sha3_224': 56,
++    'sha3_256': 64,
++    'sha3_384': 96,
++    'sha3_512': 128,
++}
++
++
++class IsHash(DirtyEquals[str]):
++    """
++    A class that checks if a value is a valid hash for a specific algorithm, and checks the format of the hash.
++    """
++
++    def __init__(
++        self,
++        algorithm: Literal[
++            'md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512', 'sha3_224', 'sha3_256', 'sha3_384', 'sha3_512'
++        ],
++    ):
++        """
++        Args:
++            algorithm: The algorithm which was used for the hash to check against.
++
++        ```py title="IsHash"
++        from dirty_equals import IsHash
++
++        assert 'ae2b1fca515949e5d54fb22b8ed95575' == IsHash('md5')
++        assert 'dc724af18fbdd4e59189f5fe768a5f8311527050' == IsHash('sha1')
++        assert 'cf80cd8aed482d5d1527d7dc72fceff84e6326592848447d2dc0b0e87dfc9a90' == IsHash('sha256')
++        assert 'not a hash' != IsHash('md5')
++        ```
++        """
++        algorithm_key = algorithm.lower()
++        if algorithm_key not in HASH_LENGTHS:
++            raise ValueError(f'Unknown hash algorithm {algorithm!r}')
++        self.algorithm = algorithm
++        self.length = HASH_LENGTHS[algorithm_key]
++        super().__init__(algorithm)
++
++    def equals(self, other: Any) -> bool:
++        if not isinstance(other, str):
++            return False
++        return bool(re.fullmatch(f'[0-9a-fA-F]{{{self.length}}}', other))
++
++
++class IsPhoneNumber(DirtyEquals[str]):
++    """
++    A class that checks if a value is a valid phone number, optionally checking a specific country format.
++    """
++
++    def __init__(self, country_code: Optional[str] = None):
++        """
++        Args:
++            country_code: The country to validate the phone number against, if omitted, generic validation is used.
++
++        ```py title="IsPhoneNumber"
++        from dirty_equals import IsPhoneNumber
++
++        assert '+1-555-123-4567' == IsPhoneNumber()
++        assert '555-123-4567' == IsPhoneNumber('US')
++        assert '020 7946 0958' == IsPhoneNumber('GB')
++        assert 'not a phone number' != IsPhoneNumber()
++        ```
++        """
++        self.country_code = country_code
++        super().__init__(country_code if country_code is not None else plain_repr('*'))
++
++    def equals(self, other: Any) -> bool:
++        if not isinstance(other, str):
++            return False
++
++        normalized = re.sub(r'[\s\-.()]', '', other)
++
++        if self.country_code is None:
++            return bool(re.fullmatch(r'\+?\d{7,15}', normalized))
++
++        country = self.country_code.upper()
++        if country == 'US':
++            if normalized.startswith('+1'):
++                return bool(re.fullmatch(r'\+1\d{10}', normalized))
++            return bool(re.fullmatch(r'\d{10}', normalized))
++        elif country == 'GB':
++            if normalized.startswith('+44'):
++                return bool(re.fullmatch(r'\+44\d{9,10}', normalized))
++            return bool(re.fullmatch(r'0\d{9,10}', normalized))
++        else:
++            return bool(re.fullmatch(r'\+\d{7,15}', normalized))
++
++
+ class FunctionCheck(DirtyEquals[Any]):
+     """
+     Use a function to check if a value "equals" whatever you want to check

@@ -1,0 +1,158 @@
+diff --git a/dirty_equals/__init__.py b/dirty_equals/__init__.py
+index ba8214e..608846f 100644
+--- a/dirty_equals/__init__.py
++++ b/dirty_equals/__init__.py
+@@ -18,7 +18,7 @@ from ._numeric import (
+     IsPositiveFloat,
+     IsPositiveInt,
+ )
+-from ._other import FunctionCheck, IsJson, IsUUID
++from ._other import FunctionCheck, IsHash, IsJson, IsPhoneNumber, IsUUID
+ from ._sequence import Contains, HasLen, IsList, IsListOrTuple, IsTuple
+ from ._strings import IsAnyStr, IsBytes, IsStr
+ 
+@@ -69,6 +69,8 @@ __all__ = (
+     'FunctionCheck',
+     'IsJson',
+     'IsUUID',
++    'IsHash',
++    'IsPhoneNumber',
+     # strings
+     'IsStr',
+     'IsBytes',
+diff --git a/dirty_equals/_other.py b/dirty_equals/_other.py
+index b2b8379..47431ed 100644
+--- a/dirty_equals/_other.py
++++ b/dirty_equals/_other.py
+@@ -1,5 +1,6 @@
+ import json
+-from typing import Any, Callable, TypeVar, overload
++import re
++from typing import Any, Callable, Dict, Optional, Pattern, TypeVar, overload
+ from uuid import UUID
+ 
+ from ._base import DirtyEquals
+@@ -120,6 +121,123 @@ class IsJson(DirtyEquals[JsonType]):
+             return False
+ 
+ 
++class IsHash(DirtyEquals[str]):
++    """
++    A class that checks if a value is a valid hash of a given algorithm/hash type, using a length and character
++    check.
++    """
++
++    hash_lengths = {
++        'md5': 32,
++        'sha1': 40,
++        'sha224': 56,
++        'sha256': 64,
++        'sha384': 96,
++        'sha512': 128,
++    }
++
++    def __init__(self, hash_type: Literal['md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512']):
++        """
++        Args:
++            hash_type: The type of hash to check, options are: `'md5'`, `'sha1'`, `'sha224'`, `'sha256'`,
++                `'sha384'`, `'sha512'`.
++
++        ```py title="IsHash"
++        import hashlib
++        from dirty_equals import IsHash
++
++        s = 'Testing IsHash'
++
++        md5 = hashlib.md5(s.encode()).hexdigest()
++        sha1 = hashlib.sha1(s.encode()).hexdigest()
++        sha256 = hashlib.sha256(s.encode()).hexdigest()
++
++        assert md5 == IsHash('md5')
++        assert sha1 == IsHash('sha1')
++        assert sha256 == IsHash('sha256')
++        assert md5 != IsHash('sha1')
++        assert sha1 != IsHash('md5')
++        assert sha256 != IsHash('md5')
++        ```
++        """
++        self.hash_type = hash_type
++        self.hash_type_lower = hash_type.lower()
++        if self.hash_type_lower not in self.hash_lengths:
++            raise ValueError(f'Unknown hash type: {hash_type!r}')
++        self.length = self.hash_lengths[self.hash_type_lower]
++        super().__init__(hash_type)
++
++    def equals(self, other: Any) -> bool:
++        if not isinstance(other, str):
++            return False
++
++        if len(other) != self.length:
++            return False
++
++        return bool(re.fullmatch('[0-9a-fA-F]+', other))
++
++
++class IsPhoneNumber(DirtyEquals[str]):
++    """
++    A class that checks if a value is a valid phone number, optionally restricting checks to a specific
++    country's format. This provides pragmatic validation, suitable for everyday application use, rather
++    than exhaustive compliance with numbering plans.
++    """
++
++    # national formats require the leading digit/trunk prefix, international formats require the `+` and
++    # calling code, bare digit runs without a `+` or trunk prefix are rejected to avoid ambiguity between countries
++    country_patterns: Dict[str, Pattern[str]] = {
++        'US': re.compile(r'\+1\d{10}|\d{10}'),
++        'GB': re.compile(r'\+44\d{9,10}|0\d{9,10}'),
++    }
++
++    generic_pattern = re.compile(r'\+?\d{7,15}')
++    generic_international_pattern = re.compile(r'\+\d{7,15}')
++
++    def __init__(self, country: Optional[str] = None):
++        """
++        Args:
++            country: ISO 3166-1 alpha-2 country code used to restrict validation to that country's phone
++                number format, if omitted, generic validation is performed. Currently `'US'` and `'GB'`
++                have dedicated format checks, other country codes fall back to generic international
++                validation (a `+` followed by 7-15 digits).
++
++        ```py title="IsPhoneNumber"
++        from dirty_equals import IsPhoneNumber
++
++        assert '+1-555-123-4567' == IsPhoneNumber
++        assert '555-123-4567' == IsPhoneNumber
++        assert 'not a phone number' != IsPhoneNumber
++
++        assert '555-123-4567' == IsPhoneNumber('US')
++        assert '+1-555-123-4567' == IsPhoneNumber('US')
++        assert '020 7946 0958' != IsPhoneNumber('US')
++
++        assert '020 7946 0958' == IsPhoneNumber('GB')
++        assert '+44 20 7946 0958' == IsPhoneNumber('GB')
++        assert '555-123-4567' != IsPhoneNumber('GB')
++
++        assert '+33 1 23 45 67 89' == IsPhoneNumber('FR')
++        ```
++        """
++        self.country = country.upper() if country else None
++        super().__init__(self.country or plain_repr('*'))
++
++    def equals(self, other: Any) -> bool:
++        if not isinstance(other, str):
++            return False
++
++        cleaned = re.sub(r'[\s\-.()]', '', other)
++
++        if self.country is None:
++            pattern = self.generic_pattern
++        else:
++            pattern = self.country_patterns.get(self.country, self.generic_international_pattern)
++
++        m = pattern.fullmatch(cleaned)
++        return m is not None
++
++
+ class FunctionCheck(DirtyEquals[Any]):
+     """
+     Use a function to check if a value "equals" whatever you want to check

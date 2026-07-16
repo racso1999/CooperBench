@@ -1,0 +1,102 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index 666ad68..a32e6b5 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -228,11 +228,19 @@ class Context:
+         value is not set, it defaults to the value from the parent
+         context. ``Command.show_default`` overrides this default for the
+         specific command.
++    :param validate_nesting: If ``True``, this context tracks any child
++        contexts created through :meth:`_make_sub_context` and raises a
++        :class:`RuntimeError` from :meth:`close` if any of them are still
++        open. Child contexts automatically inherit this setting from
++        their parent. Defaults to ``False``.
+ 
+     .. versionchanged:: 8.2
+         The ``protected_args`` attribute is deprecated and will be removed in
+         Click 9.0. ``args`` will contain remaining unparsed tokens.
+ 
++    .. versionchanged:: 8.2
++        Added the ``validate_nesting`` parameter.
++
+     .. versionchanged:: 8.1
+         The ``show_default`` parameter is overridden by
+         ``Command.show_default``, instead of the other way around.
+@@ -280,6 +288,7 @@ class Context:
+         token_normalize_func: t.Callable[[str], str] | None = None,
+         color: bool | None = None,
+         show_default: bool | None = None,
++        validate_nesting: bool = False,
+     ) -> None:
+         #: the parent context or `None` if none exists.
+         self.parent = parent
+@@ -432,6 +441,19 @@ class Context:
+         self._parameter_source: dict[str, ParameterSource] = {}
+         self._exit_stack = ExitStack()
+ 
++        #: Controls whether child contexts created through
++        #: :meth:`_make_sub_context` are tracked and validated to be
++        #: closed before this context is closed. Inherited automatically
++        #: by sub contexts.
++        #:
++        #: .. versionadded:: 8.2
++        self.validate_nesting = validate_nesting
++
++        #: Open child contexts created through :meth:`_make_sub_context`
++        #: while :attr:`validate_nesting` is enabled. Each child removes
++        #: itself from this list when it is closed.
++        self._children: list[Context] = []
++
+     @property
+     def protected_args(self) -> list[str]:
+         import warnings
+@@ -606,11 +628,30 @@ class Context:
+         """Invoke all close callbacks registered with
+         :meth:`call_on_close`, and exit all context managers entered
+         with :meth:`with_resource`.
++
++        :raises RuntimeError: if :attr:`validate_nesting` is enabled and
++            any child contexts created through :meth:`_make_sub_context`
++            are still open.
++
++        .. versionchanged:: 8.2
++            Validates that open child contexts are closed first when
++            :attr:`validate_nesting` is enabled.
+         """
++        if self.validate_nesting and self._children:
++            names = ", ".join(repr(child.info_name) for child in self._children)
++            raise RuntimeError(
++                "Tried to close a context while it still has open child"
++                f" contexts: {names}. Child contexts must be closed"
++                " before their parent."
++            )
++
+         self._exit_stack.close()
+         # In case the context is reused, create a new exit stack.
+         self._exit_stack = ExitStack()
+ 
++        if self.parent is not None and self in self.parent._children:
++            self.parent._children.remove(self)
++
+     @property
+     def command_path(self) -> str:
+         """The computed command path.  This is used for the ``usage``
+@@ -728,7 +769,17 @@ class Context:
+ 
+         :meta private:
+         """
+-        return type(self)(command, info_name=command.name, parent=self)
++        child = type(self)(
++            command,
++            info_name=command.name,
++            parent=self,
++            validate_nesting=self.validate_nesting,
++        )
++
++        if self.validate_nesting:
++            self._children.append(child)
++
++        return child
+ 
+     @t.overload
+     def invoke(

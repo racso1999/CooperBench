@@ -1,0 +1,173 @@
+diff --git a/dirty_equals/__init__.py b/dirty_equals/__init__.py
+index ba8214e..291e95c 100644
+--- a/dirty_equals/__init__.py
++++ b/dirty_equals/__init__.py
+@@ -18,7 +18,7 @@ from ._numeric import (
+     IsPositiveFloat,
+     IsPositiveInt,
+ )
+-from ._other import FunctionCheck, IsJson, IsUUID
++from ._other import FunctionCheck, IsHash, IsJson, IsPhoneNumber, IsUUID
+ from ._sequence import Contains, HasLen, IsList, IsListOrTuple, IsTuple
+ from ._strings import IsAnyStr, IsBytes, IsStr
+ 
+@@ -67,7 +67,9 @@ __all__ = (
+     'IsInstance',
+     # other
+     'FunctionCheck',
++    'IsHash',
+     'IsJson',
++    'IsPhoneNumber',
+     'IsUUID',
+     # strings
+     'IsStr',
+diff --git a/dirty_equals/_other.py b/dirty_equals/_other.py
+index b2b8379..323f049 100644
+--- a/dirty_equals/_other.py
++++ b/dirty_equals/_other.py
+@@ -1,5 +1,6 @@
+ import json
+-from typing import Any, Callable, TypeVar, overload
++import re
++from typing import Any, Callable, Dict, Optional, Pattern, Tuple, TypeVar, overload
+ from uuid import UUID
+ 
+ from ._base import DirtyEquals
+@@ -120,6 +121,60 @@ class IsJson(DirtyEquals[JsonType]):
+             return False
+ 
+ 
++HashTypes = Literal['md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512']
++
++_hash_lengths: Dict[str, int] = {
++    'md5': 32,
++    'sha1': 40,
++    'sha224': 56,
++    'sha256': 64,
++    'sha384': 96,
++    'sha512': 128,
++}
++
++
++class IsHash(DirtyEquals[str]):
++    """
++    A class that checks if a value is a valid hash, for a given hashing algorithm.
++    """
++
++    def __init__(self, algorithm: HashTypes):
++        """
++        Args:
++            algorithm: The algorithm to use for the hash, must be one of `'md5'`, `'sha1'`, `'sha224'`,
++                `'sha256'`, `'sha384'` or `'sha512'`.
++
++        ```py title="IsHash"
++        from dirty_equals import IsHash
++
++        assert '5eb63bbbe01eeed093cb22bb8f5acdc3' == IsHash('md5')
++        assert 'd0be2dc421be4fcd0172e5afceea3970e2f3d940' == IsHash('sha1')
++        assert '3d85f13c5da9e330cfd15c00da609a2d1d2cd88a' != IsHash('md5')
++        assert '2ef7bde608ce5404e97d5f042f95f89f1c232871' == IsHash('sha1')
++        ```
++        """
++        self.algorithm = algorithm
++        algorithm_lower = algorithm.lower()
++        if algorithm_lower not in _hash_lengths:
++            raise ValueError(f'Unknown algorithm {algorithm!r}')
++        self.hash_length = _hash_lengths[algorithm_lower]
++        super().__init__(algorithm)
++
++    def equals(self, other: Any) -> bool:
++        if not isinstance(other, str):
++            return False
++
++        if len(other) != self.hash_length:
++            return False
++
++        try:
++            int(other, 16)
++        except ValueError:
++            return False
++
++        return True
++
++
+ class FunctionCheck(DirtyEquals[Any]):
+     """
+     Use a function to check if a value "equals" whatever you want to check
+@@ -145,3 +200,76 @@ class FunctionCheck(DirtyEquals[Any]):
+ 
+     def equals(self, other: Any) -> bool:
+         return self.func(other)
++
++
++class IsPhoneNumber(DirtyEquals[str]):
++    """
++    A class that checks if a value is a valid phone number string, optionally checking it against a
++    specific country's dialing conventions.
++
++    This is intended as a pragmatic check useful in tests, not a fully compliant phone number parser -
++    see [google/libphonenumber](https://github.com/google/libphonenumber) if you need that.
++    """
++
++    _clean_re = re.compile(r'[\s\-.()]')
++
++    # (national format, international format) for countries with dedicated rules
++    _country_patterns: Dict[str, Tuple[Pattern[str], Pattern[str]]] = {
++        'US': (re.compile(r'^\d{10}$'), re.compile(r'^\+1\d{10}$')),
++        'GB': (re.compile(r'^0\d{10}$'), re.compile(r'^\+44\d{10}$')),
++    }
++
++    _generic_national_re = re.compile(r'^\d{7,15}$')
++    _generic_international_re = re.compile(r'^\+\d{7,15}$')
++
++    def __init__(self, country: Optional[str] = None):
++        """
++        Args:
++            country: ISO 3166-1 alpha-2 country code used to apply country-specific validation rules, e.g.
++                `'US'` or `'GB'`. If omitted, generic national/international formats are accepted.
++                Countries without dedicated rules fall back to generic international format validation
++                (`+` followed by 7-15 digits) - the location-specific dialing code is not required for a
++                number to be considered valid.
++
++        ```py title="IsPhoneNumber"
++        from dirty_equals import IsPhoneNumber
++
++        assert '+1-555-123-4567' == IsPhoneNumber
++        assert '555-123-4567' == IsPhoneNumber
++        assert '555-123-4567' == IsPhoneNumber('US')
++        assert '+1-555-123-4567' == IsPhoneNumber('US')
++        assert '020 7946 0958' == IsPhoneNumber('GB')
++        assert '+44 20 7946 0958' == IsPhoneNumber('GB')
++        assert '555-123-4567' != IsPhoneNumber('GB')
++        assert '020 7946 0958' != IsPhoneNumber('US')
++        assert '+33 1 42 68 53 00' == IsPhoneNumber('FR')
++        assert 123 != IsPhoneNumber
++        ```
++        """
++        self.country = country.upper() if country else None
++        super().__init__(plain_repr('*') if country is None else self.country)
++
++    def equals(self, other: Any) -> bool:
++        if not isinstance(other, str):
++            return False
++
++        cleaned = self._clean_re.sub('', other)
++        if not cleaned:
++            return False
++
++        if self.country is None:
++            if cleaned.startswith('+'):
++                return bool(self._generic_international_re.fullmatch(cleaned))
++            else:
++                return bool(self._generic_national_re.fullmatch(cleaned))
++
++        patterns = self._country_patterns.get(self.country)
++        if patterns is None:
++            # unsupported country codes fall back to generic international validation
++            return bool(self._generic_international_re.fullmatch(cleaned))
++
++        national_re, international_re = patterns
++        if cleaned.startswith('+'):
++            return bool(international_re.fullmatch(cleaned))
++        else:
++            return bool(national_re.fullmatch(cleaned))

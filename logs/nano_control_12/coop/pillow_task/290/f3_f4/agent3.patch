@@ -1,0 +1,105 @@
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..abb270977 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -476,6 +476,49 @@ def _getscaleoffset(expr):
+     raise ValueError("illegal expression")
+ 
+ 
++def _sort_palette_colors(im, sort_palette):
++    """
++    Reorders the palette of a "P" or "PA" mode image, remapping pixel data
++    to match, and returns the result.
++
++    :param im: An image with a palette, e.g. produced by :py:meth:`~PIL.
++       Image.Image.quantize`.
++    :param sort_palette: Either ``True`` (an alias for ``"brightness"``),
++       ``"brightness"`` to order colors from darkest to lightest, or ``"rgb"``
++       to order colors by their raw RGB (or RGBA) values.
++    """
++    if sort_palette is True:
++        sort_palette = "brightness"
++    if sort_palette not in ("brightness", "rgb"):
++        raise ValueError(
++            "sort_palette must be a boolean, or one of 'brightness' or 'rgb'"
++        )
++
++    mode = im.im.getpalettemode()
++    channels = len(mode)
++    palette_data = im.im.getpalette(mode, mode)
++    num_colors = len(palette_data) // channels
++
++    if sort_palette == "brightness":
++
++        def sort_key(i):
++            r, g, b = palette_data[i * channels : i * channels + 3]
++            return r * 299 + g * 587 + b * 114
++
++    else:
++
++        def sort_key(i):
++            return tuple(palette_data[i * channels : i * channels + channels])
++
++    # Only reorder palette entries that pixels actually reference; leaving
++    # unused slots untouched avoids letting unused (often all-zero) entries
++    # dictate where genuinely used colors end up in the new order.
++    used = [i for i, count in enumerate(im.histogram()[:num_colors]) if count]
++    unused = [i for i in range(num_colors) if i not in used]
++    order = sorted(used, key=sort_key) + unused
++    return im.remap_palette(order)
++
++
+ # --------------------------------------------------------------------
+ # Implementation wrapper
+ 
+@@ -1048,7 +1091,15 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        sort_palette=False,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1124,14 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param sort_palette: Whether, and how, to sort the palette after
++           quantization. This can make palette ordering predictable, which is
++           useful e.g. for reducing the file size of an animation's frames, or
++           for palette cycling effects. Accepts ``False`` to leave the palette
++           in the order produced by the quantization method (the default),
++           ``True`` or ``"brightness"`` to order colors from darkest to
++           lightest, or ``"rgb"`` to order colors by their raw component
++           values.
+         :returns: A new image
+ 
+         """
+@@ -1104,6 +1163,8 @@ class Image:
+             im = self.im.convert("P", dither, palette.im)
+             new_im = self._new(im)
+             new_im.palette = palette.palette.copy()
++            if sort_palette:
++                new_im = _sort_palette_colors(new_im, sort_palette)
+             return new_im
+ 
+         im = self._new(self.im.quantize(colors, method, kmeans))
+@@ -1113,6 +1174,9 @@ class Image:
+         mode = im.im.getpalettemode()
+         im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
+ 
++        if sort_palette:
++            im = _sort_palette_colors(im, sort_palette)
++
+         return im
+ 
+     def copy(self):

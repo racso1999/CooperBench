@@ -1,0 +1,97 @@
+diff --git a/src/jinja2/loaders.py b/src/jinja2/loaders.py
+index d7d9bd04..53a2a37a 100644
+--- a/src/jinja2/loaders.py
++++ b/src/jinja2/loaders.py
+@@ -170,6 +170,9 @@ class FileSystemLoader(BaseLoader):
+     :param encoding: Use this encoding to read the text from template
+         files.
+     :param followlinks: Follow symbolic links in the path.
++    :param auto_reload: Automatically invalidate cached templates in
++        any :class:`~jinja2.Environment` using this loader when the
++        underlying template files change. Enabled by default.
+ 
+     .. versionchanged:: 2.8
+         Added the ``followlinks`` parameter.
+@@ -180,6 +183,7 @@ class FileSystemLoader(BaseLoader):
+         searchpath: t.Union[str, os.PathLike, t.Sequence[t.Union[str, os.PathLike]]],
+         encoding: str = "utf-8",
+         followlinks: bool = False,
++        auto_reload: bool = True,
+     ) -> None:
+         if not isinstance(searchpath, abc.Iterable) or isinstance(searchpath, str):
+             searchpath = [searchpath]
+@@ -187,11 +191,21 @@ class FileSystemLoader(BaseLoader):
+         self.searchpath = [os.fspath(p) for p in searchpath]
+         self.encoding = encoding
+         self.followlinks = followlinks
++        self.auto_reload = auto_reload
++
++        # Environments using this loader, tracked so that changed
++        # template files can invalidate their caches. Weak references
++        # are used so environments can still be garbage collected.
++        self._environments: "weakref.WeakSet[Environment]" = weakref.WeakSet()
+ 
+     def get_source(
+         self, environment: "Environment", template: str
+     ) -> t.Tuple[str, str, t.Callable[[], bool]]:
+-        pieces = split_template_path(template)
++        pieces = split_template_path(os.path.normpath(template))
++
++        if self.auto_reload:
++            self._environments.add(environment)
++
+         for searchpath in self.searchpath:
+             filename = os.path.join(searchpath, *pieces)
+             f = open_if_exists(filename)
+@@ -230,6 +244,40 @@ class FileSystemLoader(BaseLoader):
+                         found.add(template)
+         return sorted(found)
+ 
++    def _on_template_changed(self, file_paths: t.List[str]) -> None:
++        """Invalidate cached templates whose backing file is one of
++        ``file_paths``.  ``file_paths`` is a list of absolute paths to
++        files that have been created, modified, or deleted.
++
++        This is primarily intended for tests and for callers that
++        have their own file system monitoring set up; it is called
++        automatically by nothing in this module.
++        """
++        for file_path in file_paths:
++            template_name = self._get_template_name(file_path)
++            if template_name is None:
++                continue
++
++            cache_key = (weakref.ref(self), template_name)
++            for environment in self._environments:
++                if environment.cache is not None:
++                    try:
++                        del environment.cache[cache_key]
++                    except KeyError:
++                        pass
++
++    def _get_template_name(self, file_path: str) -> t.Optional[str]:
++        file_path = os.path.abspath(file_path)
++
++        for searchpath in self.searchpath:
++            searchpath = os.path.abspath(searchpath)
++            prefix = searchpath + os.path.sep
++
++            if file_path.startswith(prefix):
++                return file_path[len(prefix) :].replace(os.path.sep, "/")
++
++        return None
++
+ 
+ class PackageLoader(BaseLoader):
+     """Load templates from a directory in a Python package.
+@@ -326,7 +374,9 @@ class PackageLoader(BaseLoader):
+     def get_source(
+         self, environment: "Environment", template: str
+     ) -> t.Tuple[str, str, t.Optional[t.Callable[[], bool]]]:
+-        p = os.path.join(self._template_root, *split_template_path(template))
++        p = os.path.join(
++            self._template_root, *split_template_path(os.path.normpath(template))
++        )
+         up_to_date: t.Optional[t.Callable[[], bool]]
+ 
+         if self._archive is None:

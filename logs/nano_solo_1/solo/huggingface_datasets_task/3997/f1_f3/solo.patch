@@ -1,0 +1,111 @@
+diff --git a/src/datasets/features/features.py b/src/datasets/features/features.py
+index 6a0da6401..e7119866f 100644
+--- a/src/datasets/features/features.py
++++ b/src/datasets/features/features.py
+@@ -20,7 +20,7 @@ import re
+ import sys
+ from collections.abc import Iterable
+ from dataclasses import InitVar, _asdict_inner, dataclass, field, fields
+-from functools import reduce
++from functools import reduce, wraps
+ from operator import mul
+ from typing import Any, ClassVar, Dict, List, Optional
+ from typing import Sequence as Sequence_
+@@ -1178,6 +1178,17 @@ def list_of_np_array_to_pyarrow_listarray(l_arr: List[np.ndarray], type: pa.Data
+         return pa.array([], type=type)
+ 
+ 
++# Cache of `require_decoding` results, keyed by `(id(feature), ignore_decode_attribute)`.
++# The feature object itself is kept alongside the result so a cache hit can be checked
++# for an exact identity match, which guards against `id` reuse once a feature is garbage
++# collected. The cache is reset once it grows too large so that long-running processes
++# that keep building new `Features` (e.g. via `keep_features_dicts_synced`, which
++# recomputes the decoding status of every column on every dict mutation) don't retain
++# every feature object seen so far.
++_REQUIRE_DECODING_CACHE_MAX_SIZE = 10_000
++_require_decoding_cache: Dict[Tuple[int, bool], Tuple[FeatureType, bool]] = {}
++
++
+ def require_decoding(feature: FeatureType, ignore_decode_attribute: bool = False) -> bool:
+     """Check if a (possibly nested) feature requires decoding.
+ 
+@@ -1188,14 +1199,44 @@ def require_decoding(feature: FeatureType, ignore_decode_attribute: bool = False
+     Returns:
+         :obj:`bool`
+     """
++    cache_key = (id(feature), ignore_decode_attribute)
++    cache_entry = _require_decoding_cache.get(cache_key)
++    if cache_entry is not None and cache_entry[0] is feature:
++        return cache_entry[1]
+     if isinstance(feature, dict):
+-        return any(require_decoding(f) for f in feature.values())
++        result = any(require_decoding(f) for f in feature.values())
+     elif isinstance(feature, (list, tuple)):
+-        return require_decoding(feature[0])
++        result = require_decoding(feature[0])
+     elif isinstance(feature, Sequence):
+-        return require_decoding(feature.feature)
++        result = require_decoding(feature.feature)
+     else:
+-        return hasattr(feature, "decode_example") and (feature.decode if not ignore_decode_attribute else True)
++        result = hasattr(feature, "decode_example") and (feature.decode if not ignore_decode_attribute else True)
++    if len(_require_decoding_cache) >= _REQUIRE_DECODING_CACHE_MAX_SIZE:
++        _require_decoding_cache.clear()
++    _require_decoding_cache[cache_key] = (feature, result)
++    return result
++
++
++def keep_features_dicts_synced(func):
++    """
++    Wrapper to keep the secondary dictionary, which tracks whether keys are decodable, of the :class:`datasets.Features` object
++    in sync with the main dictionary.
++    """
++
++    @wraps(func)
++    def wrapper(*args, **kwargs):
++        if args:
++            self: "Features" = args[0]
++            args = args[1:]
++        else:
++            self: "Features" = kwargs.pop("self")
++        out = func(self, *args, **kwargs)
++        assert hasattr(self, "_column_requires_decoding")
++        self._column_requires_decoding = {col: require_decoding(feature) for col, feature in self.items()}
++        return out
++
++    wrapper._decorator_name_ = "_keep_dicts_synced"
++    return wrapper
+ 
+ 
+ class Features(dict):
+@@ -1237,23 +1278,13 @@ class Features(dict):
+             col: require_decoding(feature) for col, feature in self.items()
+         }
+ 
+-    def __setitem__(self, column_name: str, feature: FeatureType):
+-        super().__setitem__(column_name, feature)
+-        self._column_requires_decoding[column_name] = require_decoding(feature)
+-
+-    def __delitem__(self, column_name: str):
+-        super().__delitem__(column_name)
+-        del self._column_requires_decoding[column_name]
+-
+-    def update(self, iterable, **kwds):
+-        if hasattr(iterable, "keys"):
+-            for key in iterable.keys():
+-                self[key] = iterable[key]
+-        else:
+-            for key, value in iterable:
+-                self[key] = value
+-        for key in kwds:
+-            self[key] = kwds[key]
++    __setitem__ = keep_features_dicts_synced(dict.__setitem__)
++    __delitem__ = keep_features_dicts_synced(dict.__delitem__)
++    update = keep_features_dicts_synced(dict.update)
++    setdefault = keep_features_dicts_synced(dict.setdefault)
++    pop = keep_features_dicts_synced(dict.pop)
++    popitem = keep_features_dicts_synced(dict.popitem)
++    clear = keep_features_dicts_synced(dict.clear)
+ 
+     def __reduce__(self):
+         return Features, (dict(self),)

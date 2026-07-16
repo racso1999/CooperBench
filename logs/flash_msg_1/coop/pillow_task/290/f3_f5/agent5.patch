@@ -1,0 +1,131 @@
+diff --git a/Tests/test_image_quantize.py b/Tests/test_image_quantize.py
+index bd9db362c..344edf0cc 100644
+--- a/Tests/test_image_quantize.py
++++ b/Tests/test_image_quantize.py
+@@ -85,3 +85,48 @@ def test_transparent_colors_equal():
+     converted = im.quantize()
+     converted_px = converted.load()
+     assert converted_px[0, 0] == converted_px[0, 1]
++
++
++def test_quantize_lightness_factor_no_change():
++    image = Image.new("RGB", (10, 10), (100, 150, 200))
++    converted = image.quantize(colors=4)
++    unchanged = image.quantize(colors=4, lightness_factor=1.0)
++    assert converted.getpalette() == unchanged.getpalette()
++
++
++def test_quantize_lightness_factor_brighter():
++    image = Image.new("RGB", (10, 10), (100, 150, 200))
++    converted = image.quantize(colors=4, lightness_factor=1.5)
++    assert converted.getpalette()[:3] == [150, 225, 255]
++
++
++def test_quantize_lightness_factor_darker():
++    image = Image.new("RGB", (10, 10), (100, 150, 200))
++    converted = image.quantize(colors=4, lightness_factor=0.5)
++    assert converted.getpalette()[:3] == [50, 75, 100]
++
++
++def test_quantize_lightness_factor_clamped():
++    image = Image.new("RGB", (10, 10), (200, 220, 240))
++    converted = image.quantize(colors=4, lightness_factor=2.0)
++    assert converted.getpalette()[:3] == [255, 255, 255]
++
++    image = Image.new("RGB", (10, 10), (10, 20, 30))
++    converted = image.quantize(colors=4, lightness_factor=0)
++    assert converted.getpalette()[:3] == [0, 0, 0]
++
++
++def test_quantize_lightness_factor_with_palette():
++    image = hopper()
++    with Image.open("Tests/images/caption_6_33_22.png") as palette:
++        palette = palette.convert("P")
++
++    converted = image.quantize(palette=palette, lightness_factor=1.5)
++    assert converted.getpalette() != palette.getpalette()
++
++
++def test_quantize_lightness_factor_rgba():
++    image = Image.new("RGBA", (10, 10), (100, 150, 200, 128))
++    converted = image.quantize(colors=4, method=Image.FASTOCTREE, lightness_factor=1.5)
++
++    assert converted.im.getpalette("RGBA", "RGBA")[:4] == b"\x96\xe1\xff\x80"
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..76d07a09b 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -1048,7 +1048,15 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        lightness_factor=1.0,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1081,10 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param lightness_factor: Adjusts the brightness of the palette colors
++           after quantization. A value greater than 1.0 makes the palette
++           brighter, a value less than 1.0 makes it darker. Default: 1.0
++           (no change).
+         :returns: A new image
+ 
+         """
+@@ -1104,6 +1116,8 @@ class Image:
+             im = self.im.convert("P", dither, palette.im)
+             new_im = self._new(im)
+             new_im.palette = palette.palette.copy()
++            if lightness_factor != 1.0:
++                new_im._adjust_palette_lightness(lightness_factor)
+             return new_im
+ 
+         im = self._new(self.im.quantize(colors, method, kmeans))
+@@ -1112,9 +1126,36 @@ class Image:
+ 
+         mode = im.im.getpalettemode()
+         im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
++        if lightness_factor != 1.0:
++            im._adjust_palette_lightness(lightness_factor)
+ 
+         return im
+ 
++    def _adjust_palette_lightness(self, lightness_factor):
++        # Scales each non-alpha palette channel and pushes the result back
++        # to both the low-level palette and the ImagePalette wrapper.
++        mode = self.im.getpalettemode()
++        channels = len(mode)
++        data = bytearray(self.im.getpalette(mode, mode))
++        for i in range(0, len(data), channels):
++            for c in range(channels):
++                if mode[c] == "A":
++                    continue
++                value = round(data[i + c] * lightness_factor)
++                data[i + c] = max(0, min(255, value))
++
++        if mode == "RGBA":
++            rgb = bytes(byte for i, byte in enumerate(data) if i % 4 != 3)
++            alpha = bytes(data[3::4])
++            self.im.putpalette("RGB", rgb)
++            self.im.putpalettealphas(alpha)
++        else:
++            self.im.putpalette("RGB", bytes(data))
++
++        from . import ImagePalette
++
++        self.palette = ImagePalette.ImagePalette(mode, self.im.getpalette(mode, mode))
++
+     def copy(self):
+         """
+         Copies this image. Use this method if you wish to paste things

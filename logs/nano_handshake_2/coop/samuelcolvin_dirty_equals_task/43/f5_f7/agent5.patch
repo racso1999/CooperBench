@@ -1,0 +1,106 @@
+diff --git a/dirty_equals/__init__.py b/dirty_equals/__init__.py
+index ba8214e..5f87717 100644
+--- a/dirty_equals/__init__.py
++++ b/dirty_equals/__init__.py
+@@ -19,6 +19,7 @@ from ._numeric import (
+     IsPositiveInt,
+ )
+ from ._other import FunctionCheck, IsJson, IsUUID
++from ._other import IsPhoneNumber
+ from ._sequence import Contains, HasLen, IsList, IsListOrTuple, IsTuple
+ from ._strings import IsAnyStr, IsBytes, IsStr
+ 
+@@ -69,6 +70,7 @@ __all__ = (
+     'FunctionCheck',
+     'IsJson',
+     'IsUUID',
++    'IsPhoneNumber',
+     # strings
+     'IsStr',
+     'IsBytes',
+diff --git a/dirty_equals/_other.py b/dirty_equals/_other.py
+index b2b8379..e9931f2 100644
+--- a/dirty_equals/_other.py
++++ b/dirty_equals/_other.py
+@@ -1,5 +1,6 @@
+ import json
+-from typing import Any, Callable, TypeVar, overload
++import re
++from typing import Any, Callable, Optional, TypeVar, overload
+ from uuid import UUID
+ 
+ from ._base import DirtyEquals
+@@ -145,3 +146,73 @@ class FunctionCheck(DirtyEquals[Any]):
+ 
+     def equals(self, other: Any) -> bool:
+         return self.func(other)
++
++
++_PHONE_NUMBER_DELIMITERS_RE = re.compile(r'[\s\-.()]')
++
++# pragmatic, non-exhaustive rules for a handful of common countries; other countries fall back to generic
++# international validation
++_PHONE_NUMBER_COUNTRY_PATTERNS = {
++    'US': (
++        re.compile(r'^\+1\d{10}$'),
++        re.compile(r'^\d{10}$'),
++    ),
++    'GB': (
++        re.compile(r'^\+44\d{9,10}$'),
++        re.compile(r'^0\d{9,10}$'),
++    ),
++}
++
++_PHONE_NUMBER_GENERIC_INTERNATIONAL_RE = re.compile(r'^\+\d{7,15}$')
++_PHONE_NUMBER_GENERIC_NATIONAL_RE = re.compile(r'^\d{7,15}$')
++
++
++class IsPhoneNumber(DirtyEquals[str]):
++    """
++    A class that checks if a value is a valid phone number, optionally restricted to a specific country.
++    """
++
++    def __init__(self, country: Optional[str] = None):
++        """
++        Args:
++            country: ISO 3166-1 alpha-2 country code used to apply country-specific validation rules. If
++                omitted, generic international/national validation is performed. Only a handful of
++                countries (currently `US` and `GB`) have dedicated rules, other countries fall back to
++                generic international validation (`+` followed by 7 to 15 digits).
++
++        ```py title="IsPhoneNumber"
++        from dirty_equals import IsPhoneNumber
++
++        assert '+1-555-123-4567' == IsPhoneNumber
++        assert '555-123-4567' == IsPhoneNumber
++        assert '555-123-4567' == IsPhoneNumber('US')
++        assert '+1-555-123-4567' == IsPhoneNumber('US')
++        assert '020 7946 0958' == IsPhoneNumber('GB')
++        assert '+44 20 7946 0958' == IsPhoneNumber('GB')
++        assert '555-123-4567' != IsPhoneNumber('GB')
++        assert 12345 != IsPhoneNumber
++        ```
++        """
++        self.country: Optional[str] = country.upper() if country else None
++        super().__init__(plain_repr('*') if self.country is None else self.country)
++
++    def equals(self, other: Any) -> bool:
++        if not isinstance(other, str):
++            return False
++
++        cleaned = _PHONE_NUMBER_DELIMITERS_RE.sub('', other)
++        if not cleaned:
++            return False
++
++        if self.country is None:
++            return bool(
++                _PHONE_NUMBER_GENERIC_INTERNATIONAL_RE.match(cleaned)
++                or _PHONE_NUMBER_GENERIC_NATIONAL_RE.match(cleaned)
++            )
++
++        patterns = _PHONE_NUMBER_COUNTRY_PATTERNS.get(self.country)
++        if patterns is None:
++            return bool(_PHONE_NUMBER_GENERIC_INTERNATIONAL_RE.match(cleaned))
++
++        international_pattern, national_pattern = patterns
++        return bool(international_pattern.match(cleaned) or national_pattern.match(cleaned))

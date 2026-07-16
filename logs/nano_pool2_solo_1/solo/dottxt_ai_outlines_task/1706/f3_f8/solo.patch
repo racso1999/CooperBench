@@ -1,0 +1,236 @@
+diff --git a/outlines/backends/xgrammar.py b/outlines/backends/xgrammar.py
+index fcb1672d..17f59c50 100644
+--- a/outlines/backends/xgrammar.py
++++ b/outlines/backends/xgrammar.py
+@@ -1,5 +1,6 @@
+ """Backend class for XGrammar."""
+ 
++import logging
+ from typing import TYPE_CHECKING
+ 
+ from outlines.backends.base import BaseBackend
+@@ -13,6 +14,8 @@ from outlines.processors.base_logits_processor import (
+ if TYPE_CHECKING:
+     from xgrammar.contrib.hf import LogitsProcessor
+ 
++logger = logging.getLogger(__name__)
++
+ 
+ class XGrammarLogitsProcessor(OutlinesLogitsProcessor):
+     """Logits processor for XGrammar.
+@@ -22,27 +25,116 @@ class XGrammarLogitsProcessor(OutlinesLogitsProcessor):
+ 
+     """
+ 
+-    def __init__(self, compiled_grammar: str):
++    def __init__(
++        self,
++        compiled_grammar: str,
++        temperature: float = 1.0,
++        track_memory_usage: bool = False,
++    ):
+         """
+         Parameters
+         ----------
+         compiled_grammar: str
+             The compiled grammar to use to create the logits processor.
++        temperature: float
++            The temperature to apply to the logits before grammar
++            constraints are enforced. Defaults to 1.0 (no scaling).
++        track_memory_usage: bool
++            Whether to track memory usage statistics for each call to
++            `process_logits`. Defaults to False.
+ 
+         """
+         import xgrammar as xgr
+ 
+         self.xgr = xgr
+         self.compiled_grammar = compiled_grammar
++        self.temperature = temperature
+         self.xgrammar_logits_processor = None
++
++        self.track_memory_usage = track_memory_usage
++        self._memory_stats: dict = {
++            "peak_memory_mb": 0.0,
++            "total_calls": 0,
++            "memory_history": [],
++        }
++
+         super().__init__("torch")
+ 
+     def reset(self):
+         """Reset the logits processor for a new generation."""
+         self.xgrammar_logits_processor = None
++        if self.track_memory_usage:
++            self._memory_stats = {
++                "peak_memory_mb": 0.0,
++                "total_calls": 0,
++                "memory_history": [],
++            }
++
++    def _get_memory_usage(self) -> float:
++        """Return the current process memory usage in MB.
++
++        Returns 0.0 if the memory usage cannot be determined.
++
++        """
++        try:
++            import resource
++
++            # ru_maxrss is in KB on Linux and bytes on macOS.
++            import sys
++
++            usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
++            if sys.platform == "darwin":
++                return usage / (1024 * 1024)
++            return usage / 1024
++        except Exception:
++            return 0.0
++
++    def _update_memory_stats(self, memory_mb: float) -> None:
++        """Update the running memory usage statistics."""
++        stats = self._memory_stats
++        stats["total_calls"] += 1
++        stats["memory_history"].append(memory_mb)
++        stats["peak_memory_mb"] = max(stats["peak_memory_mb"], memory_mb)
++
++        if stats["total_calls"] % 10 == 0:
++            logger.info(
++                "XGrammarLogitsProcessor memory usage: %.2f MB "
++                "(peak: %.2f MB, calls: %d)",
++                memory_mb,
++                stats["peak_memory_mb"],
++                stats["total_calls"],
++            )
++
++    def get_memory_stats(self) -> dict:
++        """Return the collected memory usage statistics.
++
++        Returns
++        -------
++        dict
++            A dictionary containing `peak_memory_mb`, `total_calls`,
++            `avg_memory_per_call_mb` and `memory_history`.
++
++        """
++        stats = self._memory_stats
++        total_calls = stats["total_calls"]
++        avg_memory = (
++            sum(stats["memory_history"]) / total_calls if total_calls else 0.0
++        )
++        return {
++            "peak_memory_mb": stats["peak_memory_mb"],
++            "total_calls": total_calls,
++            "avg_memory_per_call_mb": avg_memory,
++            "memory_history": list(stats["memory_history"]),
++        }
+ 
+     def process_logits(self, input_ids: TensorType, logits: TensorType) -> TensorType:
+         """Bias the logits."""
++        if self.track_memory_usage:
++            self._update_memory_stats(self._get_memory_usage())
++
++        if self.temperature != 1.0:
++            logits = logits / self.temperature
++
+         if self.xgrammar_logits_processor is None:
+             self.xgrammar_logits_processor = self.xgr.contrib.hf.LogitsProcessor(
+                 self.compiled_grammar
+@@ -79,7 +171,10 @@ class XGrammarBackend(BaseBackend):
+         self.grammar_compiler = xgr.GrammarCompiler(tokenizer_info)
+ 
+     def get_json_schema_logits_processor(
+-        self, json_schema: str
++        self,
++        json_schema: str,
++        temperature: float = 1.0,
++        track_memory_usage: bool = False,
+     ) -> "LogitsProcessor":
+         """Create a logits processor from a JSON schema.
+ 
+@@ -87,6 +182,11 @@ class XGrammarBackend(BaseBackend):
+         ----------
+         json_schema: str
+             The JSON schema to create a logits processor from.
++        temperature: float
++            The temperature to apply to the logits before grammar
++            constraints are enforced. Defaults to 1.0 (no scaling).
++        track_memory_usage: bool
++            Whether to track memory usage statistics. Defaults to False.
+ 
+         Returns
+         -------
+@@ -97,15 +197,29 @@ class XGrammarBackend(BaseBackend):
+         compiled_grammar = self.grammar_compiler.compile_json_schema(
+             json_schema
+         )
+-        return XGrammarLogitsProcessor(compiled_grammar)
++        return XGrammarLogitsProcessor(
++            compiled_grammar,
++            temperature=temperature,
++            track_memory_usage=track_memory_usage,
++        )
+ 
+-    def get_regex_logits_processor(self, regex: str) -> "LogitsProcessor":
++    def get_regex_logits_processor(
++        self,
++        regex: str,
++        temperature: float = 1.0,
++        track_memory_usage: bool = False,
++    ) -> "LogitsProcessor":
+         """Create a logits processor from a regex.
+ 
+         Parameters
+         ----------
+         regex: str
+             The regex to create a logits processor from.
++        temperature: float
++            The temperature to apply to the logits before grammar
++            constraints are enforced. Defaults to 1.0 (no scaling).
++        track_memory_usage: bool
++            Whether to track memory usage statistics. Defaults to False.
+ 
+         Returns
+         -------
+@@ -114,15 +228,29 @@ class XGrammarBackend(BaseBackend):
+ 
+         """
+         compiled_grammar = self.grammar_compiler.compile_regex(regex)
+-        return XGrammarLogitsProcessor(compiled_grammar)
++        return XGrammarLogitsProcessor(
++            compiled_grammar,
++            temperature=temperature,
++            track_memory_usage=track_memory_usage,
++        )
+ 
+-    def get_cfg_logits_processor(self, grammar: str) -> "LogitsProcessor":
++    def get_cfg_logits_processor(
++        self,
++        grammar: str,
++        temperature: float = 1.0,
++        track_memory_usage: bool = False,
++    ) -> "LogitsProcessor":
+         """Create a logits processor from a context-free grammar.
+ 
+         Parameters
+         ----------
+         grammar: str
+             The context-free grammar to create a logits processor from.
++        temperature: float
++            The temperature to apply to the logits before grammar
++            constraints are enforced. Defaults to 1.0 (no scaling).
++        track_memory_usage: bool
++            Whether to track memory usage statistics. Defaults to False.
+ 
+         Returns
+         -------
+@@ -131,4 +259,8 @@ class XGrammarBackend(BaseBackend):
+ 
+         """
+         compiled_grammar = self.grammar_compiler.compile_grammar(grammar)
+-        return XGrammarLogitsProcessor(compiled_grammar)
++        return XGrammarLogitsProcessor(
++            compiled_grammar,
++            temperature=temperature,
++            track_memory_usage=track_memory_usage,
++        )

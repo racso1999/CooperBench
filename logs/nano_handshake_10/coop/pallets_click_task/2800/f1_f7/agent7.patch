@@ -1,0 +1,95 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index 666ad68..a8d39ec 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -228,6 +228,12 @@ class Context:
+         value is not set, it defaults to the value from the parent
+         context. ``Command.show_default`` overrides this default for the
+         specific command.
++    :param validate_nesting: if this is set to `True`, the context will
++        track child contexts created through :meth:`_make_sub_context`
++        and raise a ``RuntimeError`` if it is closed while any of them
++        are still open. Child contexts automatically inherit this
++        setting from their parent. Contexts created for shell completion
++        always have this disabled. The default is ``False``.
+ 
+     .. versionchanged:: 8.2
+         The ``protected_args`` attribute is deprecated and will be removed in
+@@ -280,6 +286,7 @@ class Context:
+         token_normalize_func: t.Callable[[str], str] | None = None,
+         color: bool | None = None,
+         show_default: bool | None = None,
++        validate_nesting: bool = False,
+     ) -> None:
+         #: the parent context or `None` if none exists.
+         self.parent = parent
+@@ -432,6 +439,20 @@ class Context:
+         self._parameter_source: dict[str, ParameterSource] = {}
+         self._exit_stack = ExitStack()
+ 
++        #: Contexts created for resilient parsing (such as shell
++        #: completion) never validate nesting, regardless of what was
++        #: requested, since they don't follow normal cleanup order.
++        #:
++        #: .. versionadded:: 8.2
++        self.validate_nesting: bool = validate_nesting and not resilient_parsing
++
++        #: Open child contexts created via :meth:`_make_sub_context` while
++        #: ``validate_nesting`` is enabled. Used to detect a parent context
++        #: closing while children are still open.
++        #:
++        #: .. versionadded:: 8.2
++        self._children: list[Context] = []
++
+     @property
+     def protected_args(self) -> list[str]:
+         import warnings
+@@ -606,11 +627,29 @@ class Context:
+         """Invoke all close callbacks registered with
+         :meth:`call_on_close`, and exit all context managers entered
+         with :meth:`with_resource`.
++
++        If :attr:`validate_nesting` is enabled and any child contexts
++        created via :meth:`_make_sub_context` are still open, raises a
++        ``RuntimeError`` instead, since closing this context first would
++        leak the still-open children's resources.
+         """
++        if self.validate_nesting and self._children:
++            open_names = ", ".join(repr(child.info_name) for child in self._children)
++            raise RuntimeError(
++                "Cannot close context because the following child"
++                f" context(s) are still open: {open_names}"
++            )
++
+         self._exit_stack.close()
+         # In case the context is reused, create a new exit stack.
+         self._exit_stack = ExitStack()
+ 
++        if self.validate_nesting and self.parent is not None:
++            try:
++                self.parent._children.remove(self)
++            except ValueError:
++                pass
++
+     @property
+     def command_path(self) -> str:
+         """The computed command path.  This is used for the ``usage``
+@@ -728,7 +767,17 @@ class Context:
+ 
+         :meta private:
+         """
+-        return type(self)(command, info_name=command.name, parent=self)
++        child = type(self)(
++            command,
++            info_name=command.name,
++            parent=self,
++            validate_nesting=self.validate_nesting,
++        )
++
++        if self.validate_nesting:
++            self._children.append(child)
++
++        return child
+ 
+     @t.overload
+     def invoke(

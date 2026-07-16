@@ -1,0 +1,115 @@
+diff --git a/dirty_equals/__init__.py b/dirty_equals/__init__.py
+index ba8214e..cea2b25 100644
+--- a/dirty_equals/__init__.py
++++ b/dirty_equals/__init__.py
+@@ -18,7 +18,7 @@ from ._numeric import (
+     IsPositiveFloat,
+     IsPositiveInt,
+ )
+-from ._other import FunctionCheck, IsJson, IsUUID
++from ._other import FunctionCheck, IsJson, IsPhoneNumber, IsUUID
+ from ._sequence import Contains, HasLen, IsList, IsListOrTuple, IsTuple
+ from ._strings import IsAnyStr, IsBytes, IsStr
+ 
+@@ -69,6 +69,7 @@ __all__ = (
+     'FunctionCheck',
+     'IsJson',
+     'IsUUID',
++    'IsPhoneNumber',
+     # strings
+     'IsStr',
+     'IsBytes',
+diff --git a/dirty_equals/_other.py b/dirty_equals/_other.py
+index b2b8379..72f4079 100644
+--- a/dirty_equals/_other.py
++++ b/dirty_equals/_other.py
+@@ -1,5 +1,6 @@
+ import json
+-from typing import Any, Callable, TypeVar, overload
++import re
++from typing import Any, Callable, Optional, TypeVar, overload
+ from uuid import UUID
+ 
+ from ._base import DirtyEquals
+@@ -120,6 +121,81 @@ class IsJson(DirtyEquals[JsonType]):
+             return False
+ 
+ 
++class IsPhoneNumber(DirtyEquals[str]):
++    """
++    A class that checks if a value is a valid phone number, optionally restricted to a specific country's
++    formatting rules.
++    """
++
++    _delimiters_re = re.compile(r'[\s.\-()]')
++
++    # (international regex, national regex) - both operate on digits only, with any leading `+` stripped
++    _country_patterns = {
++        'US': (re.compile(r'^1\d{10}$'), re.compile(r'^\d{10}$')),
++        'GB': (re.compile(r'^44\d{10}$'), re.compile(r'^0\d{10}$')),
++    }
++
++    _generic_international_re = re.compile(r'^\d{8,18}$')
++    _generic_national_re = re.compile(r'^\d{7,15}$')
++
++    def __init__(self, country: Optional[str] = None):
++        """
++        Args:
++            country: ISO 3166-1 alpha-2 country code to restrict validation to, e.g. `'US'` or `'GB'`. If
++                omitted, generic phone number validation is used.
++
++        ```py title="IsPhoneNumber"
++        from dirty_equals import IsPhoneNumber
++
++        assert '+1-555-123-4567' == IsPhoneNumber
++        assert '555-123-4567' == IsPhoneNumber
++        assert '555-123-4567' == IsPhoneNumber('US')
++        assert '555-123-4567' != IsPhoneNumber('GB')
++        assert '020 7946 0958' == IsPhoneNumber('GB')
++        assert '+44 20 7946 0958' == IsPhoneNumber('GB')
++        assert 12345 != IsPhoneNumber
++        ```
++        """
++        self.country = country
++        super().__init__(country or plain_repr('*'))
++
++    def equals(self, other: Any) -> bool:
++        if not isinstance(other, str):
++            return False
++
++        cleaned = self._delimiters_re.sub('', other.strip())
++        if not cleaned:
++            return False
++
++        has_plus = cleaned.startswith('+')
++        digits = cleaned[1:] if has_plus else cleaned
++        if not digits or not digits.isdigit():
++            return False
++
++        if self.country:
++            return self._check_country(self.country.upper(), digits, has_plus)
++        else:
++            return self._check_generic(digits, has_plus)
++
++    def _check_country(self, country: str, digits: str, has_plus: bool) -> bool:
++        patterns = self._country_patterns.get(country)
++        if patterns is None:
++            # unknown country, fall back to generic international validation
++            return has_plus and bool(self._generic_international_re.match(digits))
++
++        international_re, national_re = patterns
++        if has_plus:
++            return bool(international_re.match(digits))
++        else:
++            return bool(national_re.match(digits))
++
++    def _check_generic(self, digits: str, has_plus: bool) -> bool:
++        if has_plus:
++            return bool(self._generic_international_re.match(digits))
++        else:
++            return bool(self._generic_national_re.match(digits))
++
++
+ class FunctionCheck(DirtyEquals[Any]):
+     """
+     Use a function to check if a value "equals" whatever you want to check

@@ -1,0 +1,124 @@
+diff --git a/Tests/test_image_quantize.py b/Tests/test_image_quantize.py
+index bd9db362c..5469707f1 100644
+--- a/Tests/test_image_quantize.py
++++ b/Tests/test_image_quantize.py
+@@ -85,3 +85,34 @@ def test_transparent_colors_equal():
+     converted = im.quantize()
+     converted_px = converted.load()
+     assert converted_px[0, 0] == converted_px[0, 1]
++
++
++def test_quantize_sort_palette_invalid():
++    image = hopper()
++    with pytest.raises(ValueError):
++        image.quantize(100, sort_palette="not-a-real-method")
++
++
++@pytest.mark.parametrize("sort_palette", ("luminance", "rgb"))
++def test_quantize_sort_palette(sort_palette):
++    image = hopper()
++    unsorted = image.quantize(100)
++    sorted_im = image.quantize(100, sort_palette=sort_palette)
++
++    # Sorting the palette shouldn't change how the image looks
++    assert_image_similar(sorted_im.convert("RGB"), unsorted.convert("RGB"), 1)
++
++    palette = sorted_im.getpalette()
++    colors = [tuple(palette[i : i + 3]) for i in range(0, len(palette), 3)]
++    if sort_palette == "luminance":
++        key = lambda c: c[0] * 299 + c[1] * 587 + c[2] * 114  # noqa: E731
++    else:
++        key = tuple
++    assert colors == sorted(colors, key=key)
++
++    # The unsorted palette shouldn't already happen to be in order
++    unsorted_palette = unsorted.getpalette()
++    unsorted_colors = [
++        tuple(unsorted_palette[i : i + 3]) for i in range(0, len(unsorted_palette), 3)
++    ]
++    assert unsorted_colors != sorted(unsorted_colors, key=key)
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..3a2d65d8b 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -1048,7 +1048,15 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        sort_palette=None,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1081,12 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param sort_palette: Re-order the palette entries produced by
++           quantization, without changing the image's appearance. This does
++           not apply when ``palette`` is given. Available values are
++           ``None`` (keep the order the quantization method produced,
++           default), ``"luminance"`` (sort colors from darkest to lightest)
++           and ``"rgb"`` (sort colors by their RGB values).
+         :returns: A new image
+ 
+         """
+@@ -1111,10 +1125,49 @@ class Image:
+         from . import ImagePalette
+ 
+         mode = im.im.getpalettemode()
+-        im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
++        palette = im.im.getpalette(mode, mode)
++        if sort_palette:
++            palette, im = im._sort_palette(mode, palette, sort_palette)
++        im.palette = ImagePalette.ImagePalette(mode, palette)
+ 
+         return im
+ 
++    def _sort_palette(self, mode, palette, sort_palette):
++        band_count = len(mode)
++        colors = [
++            palette[i : i + band_count] for i in range(0, len(palette), band_count)
++        ]
++
++        if sort_palette == "luminance":
++
++            def sort_key(color):
++                return sum(c * w for c, w in zip(color, (0.299, 0.587, 0.114)))
++
++        elif sort_palette == "rgb":
++
++            def sort_key(color):
++                return tuple(color)
++
++        else:
++            raise ValueError("sort_palette must be 'luminance' or 'rgb'")
++
++        order = sorted(range(len(colors)), key=lambda i: sort_key(colors[i]))
++
++        new_palette = bytearray(len(palette))
++        lut = [0] * len(colors)
++        for new_index, old_index in enumerate(order):
++            lut[old_index] = new_index
++            start = new_index * band_count
++            new_palette[start : start + band_count] = colors[old_index]
++        new_palette = bytes(new_palette)
++
++        im = self.point(lut)
++        # Update the palette embedded in the image data itself, so that
++        # encoders which read it directly (bypassing the Python-level
++        # ImagePalette) still match the remapped pixel indices.
++        im.putpalette(new_palette, mode)
++        return new_palette, im
++
+     def copy(self):
+         """
+         Copies this image. Use this method if you wish to paste things

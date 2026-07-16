@@ -1,0 +1,102 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..7cecb56 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -15,6 +15,7 @@ from contextlib import ExitStack
+ from functools import update_wrapper
+ from gettext import gettext as _
+ from gettext import ngettext
++from itertools import islice
+ from itertools import repeat
+ from types import TracebackType
+ 
+@@ -93,6 +94,17 @@ def batch(iterable: cabc.Iterable[V], batch_size: int) -> list[tuple[V, ...]]:
+     return list(zip(*repeat(iter(iterable), batch_size), strict=False))
+ 
+ 
++def _batched(
++    iterable: cabc.Iterable[V], batch_size: int
++) -> cabc.Iterator[tuple[V, ...]]:
++    """Yield successive tuples of up to ``batch_size`` items from
++    ``iterable``, including a final, possibly shorter, tuple.
++    """
++    iterator = iter(iterable)
++    while chunk := tuple(islice(iterator, batch_size)):
++        yield chunk
++
++
+ @contextmanager
+ def augment_usage_errors(
+     ctx: Context, param: Parameter | None = None
+@@ -2500,6 +2512,11 @@ class Option(Parameter):
+                      in how it works but supports arbitrary number of
+                      arguments.
+     :param count: this flag makes an option increment an integer.
++    :param batch_size: if set, groups the values collected by a
++                       ``multiple`` option into tuples of up to this many
++                       items, and the option's value becomes an iterator
++                       over those tuples instead of a single flat tuple.
++                       Only valid together with ``multiple=True``.
+     :param allow_from_autoenv: if this is enabled then the value of this
+                                parameter will be pulled from an environment
+                                variable in case a prefix is defined on the
+@@ -2508,6 +2525,9 @@ class Option(Parameter):
+     :param hidden: hide this option from help outputs.
+     :param attrs: Other command arguments described in :class:`Parameter`.
+ 
++    .. versionadded:: 8.3
++        Added the ``batch_size`` parameter.
++
+     .. versionchanged:: 8.2
+         ``envvar`` used with ``flag_value`` will always use the ``flag_value``,
+         previously it would use the value of the environment variable.
+@@ -2541,6 +2561,7 @@ class Option(Parameter):
+         is_flag: bool | None = None,
+         flag_value: t.Any | None = None,
+         multiple: bool = False,
++        batch_size: int | None = None,
+         count: bool = False,
+         allow_from_autoenv: bool = True,
+         type: types.ParamType | t.Any | None = None,
+@@ -2631,6 +2652,8 @@ class Option(Parameter):
+             if default_is_missing:
+                 self.default = 0
+ 
++        self.batch_size = batch_size
++
+         self.allow_from_autoenv = allow_from_autoenv
+         self.help = help
+         self.show_default = show_default
+@@ -2662,6 +2685,13 @@ class Option(Parameter):
+                 if self.is_flag:
+                     raise TypeError("'count' is not valid with 'is_flag'.")
+ 
++            if self.batch_size is not None:
++                if not self.multiple:
++                    raise TypeError("'batch_size' is only valid with 'multiple'.")
++
++                if self.batch_size < 0:
++                    raise ValueError("'batch_size' must not be negative.")
++
+     def to_info_dict(self) -> dict[str, t.Any]:
+         info_dict = super().to_info_dict()
+         info_dict.update(
+@@ -2671,9 +2701,18 @@ class Option(Parameter):
+             flag_value=self.flag_value,
+             count=self.count,
+             hidden=self.hidden,
++            batch_size=self.batch_size,
+         )
+         return info_dict
+ 
++    def process_value(self, ctx: Context, value: t.Any) -> t.Any:
++        value = super().process_value(ctx, value)
++
++        if self.batch_size is not None and self.multiple:
++            return _batched(value, self.batch_size)
++
++        return value
++
+     def get_error_hint(self, ctx: Context) -> str:
+         result = super().get_error_hint(ctx)
+         if self.show_envvar:

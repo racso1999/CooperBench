@@ -1,0 +1,98 @@
+diff --git a/src/jinja2/filters.py b/src/jinja2/filters.py
+index 80ea6504..0692aa06 100644
+--- a/src/jinja2/filters.py
++++ b/src/jinja2/filters.py
+@@ -1163,6 +1163,8 @@ def sync_do_groupby(
+     value: "t.Iterable[V]",
+     attribute: t.Union[str, int],
+     default: t.Optional[t.Any] = None,
++    case_sensitive: bool = False,
++    with_counts: bool = False,
+ ) -> "t.List[t.Tuple[t.Any, t.List[V]]]":
+     """Group a sequence of objects by an attribute using Python's
+     :func:`itertools.groupby`. The attribute can use dot notation for
+@@ -1203,6 +1205,25 @@ def sync_do_groupby(
+           <li>{{ city }}: {{ items|map(attribute="name")|join(", ") }}</li>
+         {% endfor %}</ul>
+ 
++    Like the :func:`~jinja-filters.sort` filter, sorting and grouping is
++    case-insensitive by default. The ``key`` for each group uses the
++    case of the first matching item. For example, if a list of users
++    has cities ``["CA", "NY", "ca"]``, the "CA" and "ca" entries will be
++    grouped together, under the "CA" or "ca" key depending on which came
++    first. Pass ``case_sensitive=True`` to group case sensitively instead.
++
++    You can also use ``with_counts`` to get the number of items in each
++    group without a separate ``|length`` call.
++
++    .. sourcecode:: html+jinja
++
++        <ul>{% for city, items, count in users|groupby("city", with_counts=True) %}
++          <li>{{ city }} ({{ count }})
++        {% endfor %}</ul>
++
++    .. versionchanged:: 3.1
++        Added the ``case_sensitive`` and ``with_counts`` parameters.
++
+     .. versionchanged:: 3.0
+         Added the ``default`` parameter.
+ 
+@@ -1210,10 +1231,12 @@ def sync_do_groupby(
+         The attribute supports dot notation for nested access.
+     """
+     expr = make_attrgetter(environment, attribute, default=default)
+-    return [
+-        _GroupTuple(key, list(values))
+-        for key, values in groupby(sorted(value, key=expr), expr)
+-    ]
++    out = _do_groupby(value, expr, case_sensitive)
++
++    if with_counts:
++        return [(key, values, len(values)) for key, values in out]
++
++    return [_GroupTuple(key, values) for key, values in out]
+ 
+ 
+ @async_variant(sync_do_groupby)  # type: ignore
+@@ -1222,12 +1245,37 @@ async def do_groupby(
+     value: "t.Union[t.AsyncIterable[V], t.Iterable[V]]",
+     attribute: t.Union[str, int],
+     default: t.Optional[t.Any] = None,
++    case_sensitive: bool = False,
++    with_counts: bool = False,
+ ) -> "t.List[t.Tuple[t.Any, t.List[V]]]":
+     expr = make_attrgetter(environment, attribute, default=default)
+-    return [
+-        _GroupTuple(key, await auto_to_list(values))
+-        for key, values in groupby(sorted(await auto_to_list(value), key=expr), expr)
+-    ]
++    out = _do_groupby(await auto_to_list(value), expr, case_sensitive)
++
++    if with_counts:
++        return [(key, values, len(values)) for key, values in out]
++
++    return [_GroupTuple(key, values) for key, values in out]
++
++
++def _do_groupby(
++    value: "t.Iterable[V]",
++    expr: t.Callable[[t.Any], t.Any],
++    case_sensitive: bool,
++) -> "t.List[t.Tuple[t.Any, t.List[V]]]":
++    if case_sensitive:
++        key = expr
++    else:
++
++        def key(item: t.Any) -> t.Any:
++            return ignore_case(expr(item))
++
++    out = []
++
++    for _, group in groupby(sorted(value, key=key), key):
++        group_list = list(group)
++        out.append((expr(group_list[0]), group_list))
++
++    return out
+ 
+ 
+ @pass_environment

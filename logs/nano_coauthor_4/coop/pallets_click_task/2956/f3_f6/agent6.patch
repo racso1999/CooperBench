@@ -1,0 +1,142 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..8e7ae59 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -1209,6 +1209,29 @@ class Command:
+         ctx._opt_prefixes.update(parser._opt_prefixes)
+         return args
+ 
++    def _resolve_dynamic_defaults(self, ctx: Context) -> None:
++        """Resolve options whose default is a dynamic default (a
++        mapping of other option values to defaults) now that every
++        parameter has been parsed and is available on ``ctx.params``.
++
++        Dynamic defaults only apply when the option's value source is
++        still :attr:`ParameterSource.DEFAULT`, i.e. no explicit value
++        was given on the command line, an environment variable, or a
++        default map.
++        """
++        for param in self.get_params(ctx):
++            if not isinstance(param, Option) or not isinstance(param.default, dict):
++                continue
++
++            if ctx.get_parameter_source(param.name) != ParameterSource.DEFAULT:  # type: ignore[arg-type]
++                continue
++
++            value = param.resolve_dynamic_default(ctx)
++            value = param.process_value(ctx, value)
++
++            if param.expose_value:
++                ctx.params[param.name] = value  # type: ignore[index]
++
+     def invoke(self, ctx: Context) -> t.Any:
+         """Given a context, this invokes the attached callback (if it exists)
+         in the right way.
+@@ -1360,6 +1383,7 @@ class Command:
+         try:
+             try:
+                 with self.make_context(prog_name, args, **extra) as ctx:
++                    self._resolve_dynamic_defaults(ctx)
+                     rv = self.invoke(ctx)
+                     if not standalone_mode:
+                         return rv
+@@ -2549,6 +2573,7 @@ class Option(Parameter):
+         show_choices: bool = True,
+         show_envvar: bool = False,
+         deprecated: bool | str = False,
++        batch_size: int | None = None,
+         **attrs: t.Any,
+     ) -> None:
+         if help:
+@@ -2636,6 +2661,15 @@ class Option(Parameter):
+         self.show_default = show_default
+         self.show_choices = show_choices
+         self.show_envvar = show_envvar
++        self.batch_size = batch_size
++
++        if isinstance(self.default, dict):
++            for key, value in self.default.items():
++                if not isinstance(key, str):
++                    raise TypeError("Dynamic default keys must be strings")
++
++                if not isinstance(value, dict):
++                    raise TypeError("Dynamic default values must be dictionaries")
+ 
+         if __debug__:
+             if deprecated and prompt:
+@@ -2662,6 +2696,13 @@ class Option(Parameter):
+                 if self.is_flag:
+                     raise TypeError("'count' is not valid with 'is_flag'.")
+ 
++            if batch_size is not None:
++                if not multiple:
++                    raise TypeError("'batch_size' is only valid with 'multiple'.")
++
++                if batch_size < 0:
++                    raise ValueError("'batch_size' must be a positive integer.")
++
+     def to_info_dict(self) -> dict[str, t.Any]:
+         info_dict = super().to_info_dict()
+         info_dict.update(
+@@ -2866,7 +2907,7 @@ class Option(Parameter):
+                 default_string = f"({self.show_default})"
+             elif isinstance(default_value, (list, tuple)):
+                 default_string = ", ".join(str(d) for d in default_value)
+-            elif inspect.isfunction(default_value):
++            elif inspect.isfunction(default_value) or isinstance(default_value, dict):
+                 default_string = _("(dynamic)")
+             elif self.is_bool_flag and self.secondary_opts:
+                 # For boolean flags that have distinct True/False opts,
+@@ -2923,7 +2964,51 @@ class Option(Parameter):
+ 
+             return None
+ 
+-        return super().get_default(ctx, call=call)
++        value = super().get_default(ctx, call=False)
++
++        if call and isinstance(value, dict):
++            # Dynamic defaults (a mapping of other option names to
++            # value-based defaults) are resolved in a second pass, once
++            # all parameters have been parsed, not during initial
++            # parsing. See Command.main().
++            return None
++
++        if call and callable(value):
++            value = value()
++
++        return value
++
++    def resolve_dynamic_default(self, ctx: Context) -> t.Any:
++        """Resolve a dynamic default: a mapping of other option
++        declarations (e.g. ``"--protocol"``) to a mapping of that
++        option's stringified value to the default that should be used
++        for this option.
++
++        Only called for options whose ``default`` is a ``dict``. If
++        multiple source options are given, later entries take
++        precedence over earlier ones. Returns ``None`` if nothing
++        matches.
++        """
++        resolved = None
++
++        for source_decl, mapping in self.default.items():
++            source_param = None
++
++            for param in ctx.command.params:
++                if source_decl in param.opts or source_decl in param.secondary_opts:
++                    source_param = param
++                    break
++
++            if source_param is None:
++                continue
++
++            source_value = ctx.params.get(source_param.name)
++            key = str(source_value)
++
++            if key in mapping:
++                resolved = mapping[key]
++
++        return resolved
+ 
+     def prompt_for_value(self, ctx: Context) -> t.Any:
+         """This is an alternative flow that can be activated in the full

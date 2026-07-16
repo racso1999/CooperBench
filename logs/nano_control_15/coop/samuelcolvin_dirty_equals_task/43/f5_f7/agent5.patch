@@ -1,0 +1,111 @@
+diff --git a/dirty_equals/__init__.py b/dirty_equals/__init__.py
+index ba8214e..cea2b25 100644
+--- a/dirty_equals/__init__.py
++++ b/dirty_equals/__init__.py
+@@ -18,7 +18,7 @@ from ._numeric import (
+     IsPositiveFloat,
+     IsPositiveInt,
+ )
+-from ._other import FunctionCheck, IsJson, IsUUID
++from ._other import FunctionCheck, IsJson, IsPhoneNumber, IsUUID
+ from ._sequence import Contains, HasLen, IsList, IsListOrTuple, IsTuple
+ from ._strings import IsAnyStr, IsBytes, IsStr
+ 
+@@ -69,6 +69,7 @@ __all__ = (
+     'FunctionCheck',
+     'IsJson',
+     'IsUUID',
++    'IsPhoneNumber',
+     # strings
+     'IsStr',
+     'IsBytes',
+diff --git a/dirty_equals/_other.py b/dirty_equals/_other.py
+index b2b8379..d62480e 100644
+--- a/dirty_equals/_other.py
++++ b/dirty_equals/_other.py
+@@ -1,5 +1,6 @@
+ import json
+-from typing import Any, Callable, TypeVar, overload
++import re
++from typing import Any, Callable, Dict, Optional, Pattern, Tuple, TypeVar, overload
+ from uuid import UUID
+ 
+ from ._base import DirtyEquals
+@@ -145,3 +146,77 @@ class FunctionCheck(DirtyEquals[Any]):
+ 
+     def equals(self, other: Any) -> bool:
+         return self.func(other)
++
++
++_PHONE_DELIMITERS_RE = re.compile(r'[\s\-.()]')
++
++_GENERIC_INTL_PHONE_RE = re.compile(r'^\+[1-9]\d{6,14}$')
++_GENERIC_NATIONAL_PHONE_RE = re.compile(r'^\d{7,15}$')
++
++# country-specific (international format, national format) pairs
++_COUNTRY_PHONE_PATTERNS: Dict[str, Tuple[Pattern[str], Pattern[str]]] = {
++    'US': (re.compile(r'^\+1\d{10}$'), re.compile(r'^\d{10}$')),
++    'GB': (re.compile(r'^\+44\d{9,10}$'), re.compile(r'^0\d{9,10}$')),
++}
++
++
++class IsPhoneNumber(DirtyEquals[str]):
++    """
++    A class that checks if a value is a valid phone number string, optionally restricting the check to the
++    format used by a specific country.
++    """
++
++    def __init__(self, country: Optional[str] = None):
++        """
++        Args:
++            country: ISO 3166-1 alpha-2 country code (e.g. `'US'`, `'GB'`) used to restrict validation to that
++                country's phone number formats. If omitted, generic national and international phone number
++                formats are accepted.
++
++        `IsPhoneNumber` provides pragmatic, not fully spec-compliant, phone number validation - it accepts
++        international notation (e.g. `+1-555-123-4567`), national formats (e.g. `555-123-4567`), and numbers
++        using common delimiters (spaces, dashes, parentheses, dots).
++
++        Countries without dedicated rules (anything other than `'US'` and `'GB'`) fall back to a generic
++        international check that accepts `+` followed by the country's calling code and 7 to 15 digits.
++
++        ```py title="IsPhoneNumber"
++        from dirty_equals import IsPhoneNumber
++
++        assert '+1-555-123-4567' == IsPhoneNumber
++        assert '555-123-4567' == IsPhoneNumber
++        assert '555-123-4567' == IsPhoneNumber('US')
++        assert '555-123-4567' != IsPhoneNumber('GB')
++        assert '020 7946 0958' == IsPhoneNumber('GB')
++        assert '020 7946 0958' != IsPhoneNumber('US')
++        assert '+33 1 42 68 53 00' == IsPhoneNumber('FR')
++        assert 123 != IsPhoneNumber
++        ```
++        """
++        self.country: Optional[str] = country.upper() if country else None
++        super().__init__(plain_repr('*') if country is None else country)
++
++    def equals(self, other: Any) -> bool:
++        if not isinstance(other, str):
++            return False
++
++        number = _PHONE_DELIMITERS_RE.sub('', other.strip())
++        if not number:
++            return False
++
++        if number.count('+') > 1 or ('+' in number and not number.startswith('+')):
++            return False
++
++        if self.country is None:
++            intl_re, national_re = _GENERIC_INTL_PHONE_RE, _GENERIC_NATIONAL_PHONE_RE
++        else:
++            intl_re, national_re = _COUNTRY_PHONE_PATTERNS.get(
++                self.country, (_GENERIC_INTL_PHONE_RE, None)
++            )
++            if national_re is None and not number.startswith('+'):
++                return False
++
++        if number.startswith('+'):
++            return bool(intl_re.match(number))
++        else:
++            return bool(national_re.match(number))  # type: ignore[union-attr]

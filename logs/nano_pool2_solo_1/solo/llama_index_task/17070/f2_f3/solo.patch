@@ -1,0 +1,75 @@
+diff --git a/llama-index-core/llama_index/core/evaluation/retrieval/metrics.py b/llama-index-core/llama_index/core/evaluation/retrieval/metrics.py
+index 612e547ce..36c951b2f 100644
+--- a/llama-index-core/llama_index/core/evaluation/retrieval/metrics.py
++++ b/llama-index-core/llama_index/core/evaluation/retrieval/metrics.py
+@@ -323,17 +323,24 @@ class NDCG(BaseRetrievalMetric):
+     The position `p` is taken as the size of the query results (which is usually
+     `top_k` of the retriever).
+ 
+-    Currently only supports binary relevance
+-    (``rel=1`` if document is in ``expected_ids``, otherwise ``rel=0``)
+-    since we assume that ``expected_ids`` is unordered.
++    By default, uses binary relevance (``rel=1`` if document is in ``expected_ids``,
++    otherwise ``rel=0``) since we assume that ``expected_ids`` is unordered. Graded
++    relevance can be used instead by providing ``relevance_scores``.
+ 
+     Attributes:
+         metric_name (str): The name of the metric.
+         mode (DiscountedGainMode): Determines the formula for each item in the summation.
++        ignore_missing_ids (bool): Whether to ignore ``None`` or empty string entries in
++            ``retrieved_ids`` instead of treating them as valid (non-relevant) documents.
++        relevance_scores (Optional[Dict[str, float]]): Optional mapping of ``expected_id``
++            to a float relevance score, enabling graded relevance. If not provided, all
++            expected ids are treated as having relevance ``1.0`` (binary relevance).
+     """
+ 
+     metric_name: ClassVar[str] = "ndcg"
+     mode: DiscountedGainMode = "linear"
++    ignore_missing_ids: bool = False
++    relevance_scores: Optional[Dict[str, float]] = None
+ 
+     def compute(
+         self,
+@@ -368,20 +375,40 @@ class NDCG(BaseRetrievalMetric):
+         ):
+             raise ValueError("Retrieved ids and expected ids must be provided")
+ 
++        if self.ignore_missing_ids:
++            retrieved_ids = [
++                docid for docid in retrieved_ids if docid is not None and docid != ""
++            ]
++
+         mode = self.mode
+         expected_set = set(expected_ids)
++        relevance_scores = self.relevance_scores
++
++        def get_relevance(docid: Optional[str]) -> float:
++            if docid not in expected_set:
++                return 0.0
++            if relevance_scores is not None:
++                return relevance_scores.get(docid, 1.0)
++            return 1.0
+ 
+         # Calculate DCG
+         dcg = sum(
+-            discounted_gain(rel=docid in expected_set, i=i, mode=mode)
++            discounted_gain(rel=get_relevance(docid), i=i, mode=mode)
+             for i, docid in enumerate(retrieved_ids, start=1)
+         )
+ 
+         # Calculate IDCG using min(len(retrieved_ids), len(expected_ids))
+         # Since we can't achieve better than perfect ranking of all relevant docs
+         ideal_length = min(len(retrieved_ids), len(expected_ids))
++        if relevance_scores is not None:
++            ideal_relevances = sorted(
++                (relevance_scores.get(docid, 1.0) for docid in expected_ids),
++                reverse=True,
++            )
++        else:
++            ideal_relevances = [1.0] * len(expected_ids)
+         idcg = sum(
+-            discounted_gain(rel=True, i=i, mode=mode)
++            discounted_gain(rel=ideal_relevances[i - 1], i=i, mode=mode)
+             for i in range(1, ideal_length + 1)
+         )
+ 

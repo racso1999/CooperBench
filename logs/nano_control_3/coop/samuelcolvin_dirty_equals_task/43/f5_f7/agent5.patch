@@ -1,0 +1,116 @@
+diff --git a/dirty_equals/__init__.py b/dirty_equals/__init__.py
+index ba8214e..3bec5fa 100644
+--- a/dirty_equals/__init__.py
++++ b/dirty_equals/__init__.py
+@@ -18,7 +18,7 @@ from ._numeric import (
+     IsPositiveFloat,
+     IsPositiveInt,
+ )
+-from ._other import FunctionCheck, IsJson, IsUUID
++from ._other import FunctionCheck, IsJson, IsPhoneNumber, IsUUID
+ from ._sequence import Contains, HasLen, IsList, IsListOrTuple, IsTuple
+ from ._strings import IsAnyStr, IsBytes, IsStr
+ 
+@@ -68,6 +68,7 @@ __all__ = (
+     # other
+     'FunctionCheck',
+     'IsJson',
++    'IsPhoneNumber',
+     'IsUUID',
+     # strings
+     'IsStr',
+diff --git a/dirty_equals/_other.py b/dirty_equals/_other.py
+index b2b8379..5231e0b 100644
+--- a/dirty_equals/_other.py
++++ b/dirty_equals/_other.py
+@@ -1,5 +1,6 @@
+ import json
+-from typing import Any, Callable, TypeVar, overload
++import re
++from typing import Any, Callable, Dict, Optional, Tuple, TypeVar, overload
+ from uuid import UUID
+ 
+ from ._base import DirtyEquals
+@@ -120,6 +121,82 @@ class IsJson(DirtyEquals[JsonType]):
+             return False
+ 
+ 
++class IsPhoneNumber(DirtyEquals[str]):
++    """
++    A class that checks if a value is a phone number, optionally checking it's valid for a specific country.
++
++    Validation is intentionally pragmatic rather than exhaustive: it's designed to catch obviously
++    malformed values (wrong type, wrong number of digits, wrong country) while still accepting the
++    common placeholder/example numbers (e.g. `555-xxx-xxxx`) used in application development. It does
++    not implement the full E.164 / ITU numbering plan.
++    """
++
++    # (dialing code, national significant number length, national trunk prefix)
++    _country_rules: Dict[str, Tuple[str, int, str]] = {
++        'US': ('1', 10, ''),
++        'GB': ('44', 10, '0'),
++    }
++    _format_regex = re.compile(r'^\+?[\d\s.()-]+$')
++
++    def __init__(self, country: Optional[str] = None):
++        """
++        Args:
++            country: ISO 3166-1 alpha-2 country code (e.g. `'US'`, `'GB'`) the phone number should be valid
++                for. If omitted, generic validation is used which accepts common national and
++                international formats. Note that a national number does not need to include its
++                country's dialing code to be considered valid.
++
++        ```py title="IsPhoneNumber"
++        from dirty_equals import IsPhoneNumber
++
++        assert '+1-555-123-4567' == IsPhoneNumber
++        assert '555-123-4567' == IsPhoneNumber
++        assert '555-123-4567' == IsPhoneNumber('US')
++        assert '+1-555-123-4567' == IsPhoneNumber('US')
++        assert '555-123-4567' != IsPhoneNumber('GB')
++        assert '020 7946 0958' == IsPhoneNumber('GB')
++        assert '+44 20 7946 0958' == IsPhoneNumber('GB')
++        assert '+33 1 42 68 53 00' == IsPhoneNumber('FR')
++        assert 5551234567 != IsPhoneNumber
++        ```
++        """
++        self.country = country.upper() if country else None
++        super().__init__(plain_repr('*') if self.country is None else self.country)
++
++    def equals(self, other: Any) -> bool:
++        if not isinstance(other, str):
++            return False
++
++        value = other.strip()
++        if not value or not self._format_regex.match(value):
++            return False
++
++        digit_count = self._digit_count(value)
++
++        if self.country is None:
++            return 7 <= digit_count <= 15
++
++        rules = self._country_rules.get(self.country)
++        if rules is None:
++            # unknown country, fall back to generic international validation
++            return value.startswith('+') and 8 <= digit_count <= 18
++
++        dialing_code, national_length, trunk_prefix = rules
++        if value.startswith('+'):
++            digits = re.sub(r'\D', '', value)
++            if not digits.startswith(dialing_code):
++                return False
++            return len(digits) - len(dialing_code) == national_length
++        else:
++            if trunk_prefix and not value.startswith(trunk_prefix):
++                return False
++            return digit_count == national_length + len(trunk_prefix)
++
++    @staticmethod
++    def _digit_count(value: str) -> int:
++        return len(re.sub(r'\D', '', value))
++
++
+ class FunctionCheck(DirtyEquals[Any]):
+     """
+     Use a function to check if a value "equals" whatever you want to check

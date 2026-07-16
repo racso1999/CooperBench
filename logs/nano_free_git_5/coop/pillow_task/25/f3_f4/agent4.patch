@@ -1,0 +1,157 @@
+diff --git a/Tests/test_image.py b/Tests/test_image.py
+index c2e850c36..18a98f0b2 100644
+--- a/Tests/test_image.py
++++ b/Tests/test_image.py
+@@ -182,6 +182,41 @@ class TestImage:
+         with Image.open(out) as reloaded:
+             assert_image_equal(im, reloaded)
+ 
++    def test_save_backup(self, tmp_path: Path) -> None:
++        out = tmp_path / "temp.png"
++        im = hopper()
++
++        # No existing file, so no backup should be created
++        im.save(out, backup=True)
++        assert not (tmp_path / "temp.png.bak").exists()
++
++        modified = hopper().rotate(45)
++        modified.save(out, backup=True)
++        assert (tmp_path / "temp.png.bak").exists()
++        with Image.open(out) as reloaded:
++            assert_image_equal(modified, reloaded)
++        with Image.open(tmp_path / "temp.png.bak") as backup:
++            assert_image_equal(im, backup)
++
++    def test_save_backup_suffix(self, tmp_path: Path) -> None:
++        out = tmp_path / "temp.png"
++        im = hopper()
++        im.save(out)
++
++        modified = hopper().rotate(45)
++        modified.save(out, backup=True, backup_suffix=".backup")
++        assert (tmp_path / "temp.png.backup").exists()
++        assert not (tmp_path / "temp.png.bak").exists()
++
++    def test_save_no_backup(self, tmp_path: Path) -> None:
++        out = tmp_path / "temp.png"
++        im = hopper()
++        im.save(out)
++
++        modified = hopper().rotate(45)
++        modified.save(out)
++        assert not (tmp_path / "temp.png.bak").exists()
++
+     def test_pathlib(self, tmp_path: Path) -> None:
+         with Image.open(Path("Tests/images/multipage-mmap.tiff")) as im:
+             assert im.mode == "P"
+@@ -258,6 +293,25 @@ class TestImage:
+             assert im.readonly
+             im.save(temp_file)
+ 
++    def test_dry_run(self, tmp_path: Path) -> None:
++        out = tmp_path / "temp.png"
++        im = hopper()
++        im.save(out, dry_run=True)
++        assert not out.exists()
++
++    def test_dry_run_fp(self) -> None:
++        fp = io.BytesIO()
++        im = hopper()
++        im.save(fp, "PNG", dry_run=True)
++        assert fp.tell() == 0
++
++    def test_dry_run_raises(self, tmp_path: Path) -> None:
++        out = tmp_path / "temp.jpg"
++        im = Image.new("RGBA", (10, 10))
++        with pytest.raises(OSError):
++            im.save(out, dry_run=True)
++        assert not out.exists()
++
+     def test_dump(self, tmp_path: Path) -> None:
+         im = Image.new("L", (10, 10))
+         im._dump(str(tmp_path / "temp_L.ppm"))
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 233df592c..162919d8a 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -34,6 +34,7 @@ import logging
+ import math
+ import os
+ import re
++import shutil
+ import struct
+ import sys
+ import tempfile
+@@ -2490,6 +2491,13 @@ class Image:
+            format to use is determined from the filename extension.
+            If a file object was used instead of a filename, this
+            parameter should always be used.
++        :param backup: If true and an existing file at the target filename
++           would be overwritten, a backup copy of that file is made before
++           saving. Has no effect when saving to a file object rather than
++           a filename, or when no file currently exists at that path.
++        :param backup_suffix: The suffix appended to the filename to create
++           the backup copy. Defaults to ``.bak``. Only used when ``backup``
++           is true.
+         :param params: Extra parameters to the image writer. These can also be
+            set on the image itself through ``encoderinfo``. This is useful when
+            saving multiple images::
+@@ -2505,6 +2513,12 @@ class Image:
+              red = Image.new("RGB", (1, 1), "#f00")
+              red.encoderinfo = {"xmp": b"test"}
+              black.save("out.mpo", save_all=True, append_images=[red])
++
++           ``dry_run`` can be set to ``True`` to process the image as if it
++           were being saved, without actually writing any data to disk. This
++           is useful to check whether an image can be saved in a given
++           format, or to measure encoding time separately from disk I/O,
++           without creating a file.
+         :returns: None
+         :exception ValueError: If the output format could not be determined
+            from the file name.  Use the format option to solve this.
+@@ -2544,6 +2558,9 @@ class Image:
+         self._ensure_mutable()
+ 
+         save_all = params.pop("save_all", None)
++        backup = params.pop("backup", False)
++        backup_suffix = params.pop("backup_suffix", ".bak")
++        dry_run = params.pop("dry_run", False)
+         self.encoderinfo = {**getattr(self, "encoderinfo", {}), **params}
+         self.encoderconfig: tuple[Any, ...] = ()
+ 
+@@ -2559,8 +2576,16 @@ class Image:
+             save_handler = SAVE[format.upper()]
+ 
+         created = False
+-        if open_fp:
++        if dry_run:
++            fp = io.BytesIO()
++        elif open_fp:
+             created = not os.path.exists(filename)
++            if backup and not created:
++                if isinstance(filename, bytes):
++                    backup_filename = filename + os.fsencode(backup_suffix)
++                else:
++                    backup_filename = filename + backup_suffix
++                shutil.copy2(filename, backup_filename)
+             if params.get("append", False):
+                 # Open also for reading ("+"), because TIFF save_all
+                 # writer needs to go back and edit the written data.
+@@ -2573,7 +2598,7 @@ class Image:
+         try:
+             save_handler(self, fp, filename)
+         except Exception:
+-            if open_fp:
++            if open_fp and not dry_run:
+                 fp.close()
+             if created:
+                 try:
+@@ -2586,7 +2611,7 @@ class Image:
+                 del self.encoderinfo
+             except AttributeError:
+                 pass
+-        if open_fp:
++        if open_fp and not dry_run:
+             fp.close()
+ 
+     def seek(self, frame: int) -> None:

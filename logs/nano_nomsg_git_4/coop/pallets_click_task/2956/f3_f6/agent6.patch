@@ -1,0 +1,147 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..dd523d5 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -1192,10 +1192,17 @@ class Command:
+ 
+         parser = self.make_parser(ctx)
+         opts, args, param_order = parser.parse_args(args=args)
++        params = self.get_params(ctx)
+ 
+-        for param in iter_params_for_processing(param_order, self.get_params(ctx)):
++        for param in iter_params_for_processing(param_order, params):
+             value, args = param.handle_parse_result(ctx, opts, args)
+ 
++        # Second pass: resolve any dynamic defaults now that every other
++        # option's value has been determined by parsing command-line
++        # arguments, environment variables, and the default map.
++        for param in params:
++            param.resolve_dynamic_default(ctx, params)
++
+         if args and not ctx.allow_extra_args and not ctx.resilient_parsing:
+             ctx.fail(
+                 ngettext(
+@@ -2265,6 +2272,17 @@ class Parameter:
+     def add_to_parser(self, parser: _OptionParser, ctx: Context) -> None:
+         raise NotImplementedError()
+ 
++    def resolve_dynamic_default(
++        self, ctx: Context, params: cabc.Sequence[Parameter]
++    ) -> None:
++        """Hook for parameters that support resolving a default value based
++        on the values of other parameters. This is a no-op unless
++        overridden.
++
++        :param ctx: Current context.
++        :param params: All parameters of the command being processed.
++        """
++
+     def consume_value(
+         self, ctx: Context, opts: cabc.Mapping[str, t.Any]
+     ) -> tuple[t.Any, ParameterSource]:
+@@ -2631,6 +2649,19 @@ class Option(Parameter):
+             if default_is_missing:
+                 self.default = 0
+ 
++        # A dict default is treated as a dynamic default: a mapping of
++        # other options' full opt strings (e.g. "--protocol") to a dict
++        # of their string-cast values to the default that should be used
++        # for this option.
++        self.is_dynamic_default = isinstance(self.default, dict)
++
++        if self.is_dynamic_default:
++            for key, mapping in self.default.items():
++                if not isinstance(key, str):
++                    raise TypeError("Dynamic default keys must be strings")
++                if not isinstance(mapping, dict):
++                    raise TypeError("Dynamic default values must be dictionaries")
++
+         self.allow_from_autoenv = allow_from_autoenv
+         self.help = help
+         self.show_default = show_default
+@@ -2861,9 +2892,13 @@ class Option(Parameter):
+         elif ctx.show_default is not None:
+             show_default = ctx.show_default
+ 
+-        if show_default_is_str or (show_default and (default_value is not None)):
++        if show_default_is_str or (
++            show_default and (default_value is not None or self.is_dynamic_default)
++        ):
+             if show_default_is_str:
+                 default_string = f"({self.show_default})"
++            elif self.is_dynamic_default:
++                default_string = _("(dynamic)")
+             elif isinstance(default_value, (list, tuple)):
+                 default_string = ", ".join(str(d) for d in default_value)
+             elif inspect.isfunction(default_value):
+@@ -2912,6 +2947,18 @@ class Option(Parameter):
+     def get_default(
+         self, ctx: Context, call: bool = True
+     ) -> t.Any | t.Callable[[], t.Any] | None:
++        # A dynamic default isn't a usable value on its own. It's only a
++        # mapping used to resolve the actual default in a second pass once
++        # all other options have been processed, so don't treat it as the
++        # value here. ``ctx.default_map`` still takes precedence.
++        if self.is_dynamic_default:
++            value = ctx.lookup_default(self.name, call=False)  # type: ignore
++
++            if call and callable(value):
++                value = value()
++
++            return value
++
+         # If we're a non boolean flag our default is more complex because
+         # we need to look at all flags in the same group to figure out
+         # if we're the default one in which case we return the flag
+@@ -2925,6 +2972,51 @@ class Option(Parameter):
+ 
+         return super().get_default(ctx, call=call)
+ 
++    def resolve_dynamic_default(
++        self, ctx: Context, params: cabc.Sequence[Parameter]
++    ) -> None:
++        if not self.is_dynamic_default:
++            return
++
++        # Dynamic defaults only apply when no value was otherwise provided.
++        if ctx.get_parameter_source(self.name) is not ParameterSource.DEFAULT:  # type: ignore
++            return
++
++        result = None
++
++        # Later entries take precedence over earlier ones.
++        for opt_name, mapping in self.default.items():
++            source_param = next(
++                (
++                    param
++                    for param in params
++                    if opt_name in param.opts or opt_name in param.secondary_opts
++                ),
++                None,
++            )
++
++            if source_param is None:
++                continue
++
++            source_value = ctx.params.get(source_param.name)  # type: ignore
++            match = mapping.get(str(source_value))
++
++            if match is not None:
++                result = match
++
++        if result is not None:
++            with augment_usage_errors(ctx, param=self):
++                try:
++                    value = self.process_value(ctx, result)
++                except Exception:
++                    if not ctx.resilient_parsing:
++                        raise
++
++                    value = None
++
++            if self.expose_value:
++                ctx.params[self.name] = value  # type: ignore
++
+     def prompt_for_value(self, ctx: Context) -> t.Any:
+         """This is an alternative flow that can be activated in the full
+         value processing if a value does not exist.  It will prompt the

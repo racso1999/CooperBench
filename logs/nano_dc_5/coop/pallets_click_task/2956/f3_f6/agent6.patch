@@ -1,0 +1,107 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..09a6fb8 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -1272,6 +1272,42 @@ class Command:
+ 
+         return results
+ 
++    def _resolve_dynamic_defaults(self, ctx: Context) -> None:
++        """Resolve dict-based dynamic defaults on this command's options
++        using the final values of the options they depend on.
++
++        .. versionadded:: 8.3
++        """
++        params = self.get_params(ctx)
++
++        for param in params:
++            if not isinstance(param, Option) or not isinstance(param.default, dict):
++                continue
++
++            if ctx.get_parameter_source(param.name) != ParameterSource.DEFAULT:  # type: ignore
++                continue
++
++            resolved = None
++
++            for opt_name, mapping in param.default.items():
++                source_param = None
++
++                for other in params:
++                    if opt_name in other.opts or opt_name in other.secondary_opts:
++                        source_param = other
++                        break
++
++                if source_param is None:
++                    continue
++
++                key = str(ctx.params.get(source_param.name))  # type: ignore
++
++                if key in mapping:
++                    resolved = mapping[key]
++
++            if resolved is not None:
++                ctx.params[param.name] = param.type_cast_value(ctx, resolved)  # type: ignore
++
+     @t.overload
+     def main(
+         self,
+@@ -1360,6 +1396,7 @@ class Command:
+         try:
+             try:
+                 with self.make_context(prog_name, args, **extra) as ctx:
++                    self._resolve_dynamic_defaults(ctx)
+                     rv = self.invoke(ctx)
+                     if not standalone_mode:
+                         return rv
+@@ -2662,6 +2699,14 @@ class Option(Parameter):
+                 if self.is_flag:
+                     raise TypeError("'count' is not valid with 'is_flag'.")
+ 
++            if isinstance(self.default, dict):
++                for key, val in self.default.items():
++                    if not isinstance(key, str):
++                        raise TypeError("Dynamic default keys must be strings")
++
++                    if not isinstance(val, dict):
++                        raise TypeError("Dynamic default values must be dictionaries")
++
+     def to_info_dict(self) -> dict[str, t.Any]:
+         info_dict = super().to_info_dict()
+         info_dict.update(
+@@ -2868,6 +2913,8 @@ class Option(Parameter):
+                 default_string = ", ".join(str(d) for d in default_value)
+             elif inspect.isfunction(default_value):
+                 default_string = _("(dynamic)")
++            elif isinstance(default_value, dict):
++                default_string = _("(dynamic)")
+             elif self.is_bool_flag and self.secondary_opts:
+                 # For boolean flags that have distinct True/False opts,
+                 # use the opt without prefix instead of the value.
+@@ -3000,6 +3047,9 @@ class Option(Parameter):
+     ) -> tuple[t.Any, ParameterSource]:
+         value, source = super().consume_value(ctx, opts)
+ 
++        if source == ParameterSource.DEFAULT and isinstance(self.default, dict):
++            value = None
++
+         # The parser will emit a sentinel value if the option can be
+         # given as a flag without a value. This is different from None
+         # to distinguish from the flag not being given at all.
+diff --git a/src/click/types.py b/src/click/types.py
+index 684cb3b..7d05c35 100644
+--- a/src/click/types.py
++++ b/src/click/types.py
+@@ -1073,7 +1073,12 @@ def convert_type(ty: t.Any | None, default: t.Any | None = None) -> ParamType:
+     guessed_type = False
+ 
+     if ty is None and default is not None:
+-        if isinstance(default, (tuple, list)):
++        if isinstance(default, dict):
++            # Dynamic defaults (dict mapping other option values to a
++            # default) can't be used to guess a type; leave `ty` unset
++            # so this falls through to STRING below.
++            pass
++        elif isinstance(default, (tuple, list)):
+             # If the default is empty, ty will remain None and will
+             # return STRING.
+             if default:

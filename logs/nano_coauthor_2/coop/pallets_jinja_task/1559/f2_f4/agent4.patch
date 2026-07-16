@@ -1,0 +1,131 @@
+diff --git a/src/jinja2/ext.py b/src/jinja2/ext.py
+index d21b83aa..6a94d880 100644
+--- a/src/jinja2/ext.py
++++ b/src/jinja2/ext.py
+@@ -363,8 +363,10 @@ class InternationalizationExtension(Extension):
+         plural_expr_assignment: t.Optional[nodes.Assign] = None
+         variables: t.Dict[str, nodes.Expr] = {}
+         trimmed = None
++        domain: t.Optional[str] = None
++        metadata: t.Dict[str, str] = {}
+         while parser.stream.current.type != "block_end":
+-            if variables:
++            if variables or metadata or domain is not None:
+                 parser.stream.expect("comma")
+ 
+             # skip colon for python compatibility
+@@ -380,7 +382,52 @@ class InternationalizationExtension(Extension):
+                 )
+ 
+             # expressions
+-            if parser.stream.current.type == "assign":
++            if token.value == "domain" and parser.stream.current.type == "assign":
++                next(parser.stream)
++                if domain is not None:
++                    parser.fail(
++                        "translation domain specified twice.",
++                        token.lineno,
++                        exc=TemplateAssertionError,
++                    )
++                domain_expr = parser.parse_expression()
++                if not (
++                    isinstance(domain_expr, nodes.Const)
++                    and isinstance(domain_expr.value, str)
++                ):
++                    parser.fail(
++                        "translation domain must be a string literal constant.",
++                        token.lineno,
++                        exc=TemplateAssertionError,
++                    )
++                domain = domain_expr.value
++                continue
++            elif (
++                token.value in ("note", "created", "modified")
++                and parser.stream.current.type == "assign"
++            ):
++                next(parser.stream)
++                value_expr = parser.parse_expression()
++                if not (
++                    isinstance(value_expr, nodes.Const)
++                    and isinstance(value_expr.value, str)
++                ):
++                    parser.fail(
++                        f"metadata parameter {token.value!r} must be a"
++                        " string literal.",
++                        token.lineno,
++                        exc=TemplateAssertionError,
++                    )
++                metadata[token.value] = value_expr.value
++                continue
++            elif token.value in ("note", "created", "modified"):
++                parser.fail(
++                    f"metadata parameter {token.value!r} requires a value"
++                    " assignment.",
++                    token.lineno,
++                    exc=TemplateAssertionError,
++                )
++            elif parser.stream.current.type == "assign":
+                 next(parser.stream)
+                 variables[token.value] = var = parser.parse_expression()
+             elif trimmed is None and token.value in ("trimmed", "notrimmed"):
+@@ -459,6 +506,8 @@ class InternationalizationExtension(Extension):
+             plural_expr,
+             bool(referenced),
+             num_called_num and have_plural,
++            domain,
++            metadata,
+         )
+         node.set_lineno(lineno)
+         if plural_expr_assignment is not None:
+@@ -514,6 +563,8 @@ class InternationalizationExtension(Extension):
+         plural_expr: t.Optional[nodes.Expr],
+         vars_referenced: bool,
+         num_called_num: bool,
++        domain: t.Optional[str] = None,
++        metadata: t.Optional[t.Dict[str, str]] = None,
+     ) -> nodes.Output:
+         """Generates a useful node from the data provided."""
+         newstyle = self.environment.newstyle_gettext  # type: ignore
+@@ -526,17 +577,25 @@ class InternationalizationExtension(Extension):
+             if plural:
+                 plural = plural.replace("%%", "%")
+ 
++        func_args: t.List[nodes.Expr] = []
++        if domain is not None:
++            func_args.append(nodes.Const(domain))
++
+         # singular only:
+         if plural_expr is None:
+-            gettext = nodes.Name("gettext", "load")
+-            node = nodes.Call(gettext, [nodes.Const(singular)], [], None, None)
++            func_name = "dgettext" if domain is not None else "gettext"
++            gettext = nodes.Name(func_name, "load")
++            node = nodes.Call(
++                gettext, func_args + [nodes.Const(singular)], [], None, None
++            )
+ 
+         # singular and plural
+         else:
+-            ngettext = nodes.Name("ngettext", "load")
++            func_name = "dngettext" if domain is not None else "ngettext"
++            ngettext = nodes.Name(func_name, "load")
+             node = nodes.Call(
+                 ngettext,
+-                [nodes.Const(singular), nodes.Const(plural), plural_expr],
++                func_args + [nodes.Const(singular), nodes.Const(plural), plural_expr],
+                 [],
+                 None,
+                 None,
+@@ -568,7 +627,11 @@ class InternationalizationExtension(Extension):
+                         ]
+                     ),
+                 )
+-        return nodes.Output([node])
++
++        output_node = nodes.Output([node])
++        if metadata:
++            output_node.trans_metadata = metadata
++        return output_node
+ 
+ 
+ class ExprStmtExtension(Extension):

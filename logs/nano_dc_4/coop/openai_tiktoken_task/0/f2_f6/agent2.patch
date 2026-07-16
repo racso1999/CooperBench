@@ -1,0 +1,115 @@
+diff --git a/tiktoken/core.py b/tiktoken/core.py
+index 6bc9736..41f459f 100644
+--- a/tiktoken/core.py
++++ b/tiktoken/core.py
+@@ -2,7 +2,7 @@ from __future__ import annotations
+ 
+ import functools
+ from concurrent.futures import ThreadPoolExecutor
+-from typing import TYPE_CHECKING, AbstractSet, Collection, Literal, NoReturn, Sequence
++from typing import TYPE_CHECKING, AbstractSet, Callable, Collection, Literal, NoReturn, Sequence
+ 
+ import regex
+ 
+@@ -82,7 +82,9 @@ class Encoding:
+         *,
+         allowed_special: Literal["all"] | AbstractSet[str] = set(),  # noqa: B006
+         disallowed_special: Literal["all"] | Collection[str] = "all",
+-    ) -> list[int]:
++        transformers: Callable[[str], str] | Sequence[Callable[[str], str]] | None = None,
++        return_positions: bool = False,
++    ) -> list[int] | tuple[list[int], list[int]]:
+         """Encodes a string into tokens.
+ 
+         Special tokens are artificial tokens used to unlock capabilities from a model,
+@@ -97,6 +99,14 @@ class Encoding:
+         - Setting `allowed_special` to "all" will cause this function to treat all text
+           corresponding to special tokens to be encoded as special tokens.
+ 
++        `transformers`, if given, is a callable (or sequence of callables) applied to `text`, in
++        order, before encoding; the disallowed special token check and the encoding itself both
++        run against the transformed text.
++
++        If `return_positions` is True, this returns a tuple `(tokens, positions)` instead of just
++        `tokens`, where `positions[i]` is the starting character index of `tokens[i]` in the
++        (possibly transformed) text.
++
+         ```
+         >>> enc.encode("hello world")
+         [31373, 995]
+@@ -108,8 +118,15 @@ class Encoding:
+         # Raises ValueError
+         >>> enc.encode("<|endoftext|>", disallowed_special=())
+         [27, 91, 437, 1659, 5239, 91, 29]
++        >>> enc.encode("hello world", return_positions=True)
++        ([31373, 995], [0, 5])
+         ```
+         """
++        if transformers is not None:
++            transformer_seq = [transformers] if callable(transformers) else transformers
++            for transform in transformer_seq:
++                text = transform(text)
++
+         if allowed_special == "all":
+             allowed_special = self.special_tokens_set
+         if disallowed_special == "all":
+@@ -121,7 +138,7 @@ class Encoding:
+                 raise_disallowed_special_token(match.group())
+ 
+         try:
+-            return self._core_bpe.encode(text, allowed_special)
++            tokens = self._core_bpe.encode(text, allowed_special)
+         except UnicodeEncodeError:
+             # BPE operates on bytes, but the regex operates on unicode. If we pass a str that is
+             # invalid UTF-8 to Rust, it will rightfully complain. Here we do a quick and dirty
+@@ -130,7 +147,11 @@ class Encoding:
+             # string, but given that this is input we want to support, maybe that's okay.
+             # Also we use errors="replace" to handle weird things like lone surrogates.
+             text = text.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+-            return self._core_bpe.encode(text, allowed_special)
++            tokens = self._core_bpe.encode(text, allowed_special)
++
++        if return_positions:
++            return tokens, self._token_start_positions(tokens)
++        return tokens
+ 
+     def encode_to_numpy(
+         self,
+@@ -320,17 +341,31 @@ class Encoding:
+         ('hello world', [0, 5])
+         """
+         token_bytes = self.decode_tokens_bytes(tokens)
+-
+-        text_len = 0
+-        offsets = []
+-        for token in token_bytes:
+-            offsets.append(max(0, text_len - (0x80 <= token[0] < 0xC0)))
+-            text_len += sum(1 for c in token if not 0x80 <= c < 0xC0)
++        offsets = self._token_start_positions(tokens, token_bytes=token_bytes)
+ 
+         # TODO: assess correctness for errors="ignore" and errors="replace"
+         text = b"".join(token_bytes).decode("utf-8", errors="strict")
+         return text, offsets
+ 
++    def _token_start_positions(
++        self, tokens: Sequence[int], *, token_bytes: list[bytes] | None = None
++    ) -> list[int]:
++        """Returns the starting character index of each token, as if the tokens were decoded
++        and concatenated back into a string.
++
++        If UTF-8 character boundaries do not line up with token boundaries, the position is the
++        index of the first character that contains bytes from the token.
++        """
++        if token_bytes is None:
++            token_bytes = self.decode_tokens_bytes(tokens)
++
++        text_len = 0
++        positions = []
++        for token in token_bytes:
++            positions.append(max(0, text_len - (0x80 <= token[0] < 0xC0)))
++            text_len += sum(1 for c in token if not 0x80 <= c < 0xC0)
++        return positions
++
+     def decode_batch(
+         self, batch: Sequence[Sequence[int]], *, errors: str = "replace", num_threads: int = 8
+     ) -> list[str]:

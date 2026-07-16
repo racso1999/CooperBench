@@ -1,0 +1,89 @@
+diff --git a/src/datasets/features/features.py b/src/datasets/features/features.py
+index 6a0da6401..e059f7e3b 100644
+--- a/src/datasets/features/features.py
++++ b/src/datasets/features/features.py
+@@ -20,7 +20,7 @@ import re
+ import sys
+ from collections.abc import Iterable
+ from dataclasses import InitVar, _asdict_inner, dataclass, field, fields
+-from functools import reduce
++from functools import reduce, wraps
+ from operator import mul
+ from typing import Any, ClassVar, Dict, List, Optional
+ from typing import Sequence as Sequence_
+@@ -1198,6 +1198,29 @@ def require_decoding(feature: FeatureType, ignore_decode_attribute: bool = False
+         return hasattr(feature, "decode_example") and (feature.decode if not ignore_decode_attribute else True)
+ 
+ 
++def keep_features_dicts_synced(func):
++    """
++    Wrapper to keep the secondary dictionary, _column_requires_decoding, of the Features class synced with the main dictionary.
++    """
++
++    @wraps(func)
++    def wrapper(*args, **kwargs):
++        if args:
++            self: "Features" = args[0]
++            args = args[1:]
++        else:
++            self: "Features" = kwargs.pop("self")
++        out = func(self, *args, **kwargs)
++        self._column_requires_decoding = {
++            col: require_decoding(feature) for col, feature in self.items()
++        }
++        return out
++
++    wrapper.__name__ = func.__name__
++    wrapper.__qualname__ = func.__qualname__
++    return wrapper
++
++
+ class Features(dict):
+     """A special dictionary that defines the internal structure of a dataset.
+ 
+@@ -1231,29 +1254,40 @@ class Features(dict):
+         - :class:`datasets.Translation` and :class:`datasets.TranslationVariableLanguages`, the two features specific to Machine Translation
+     """
+ 
++    @keep_features_dicts_synced
+     def __init__(self, *args, **kwargs):
+         super().__init__(*args, **kwargs)
+         self._column_requires_decoding: Dict[str, bool] = {
+             col: require_decoding(feature) for col, feature in self.items()
+         }
+ 
++    @keep_features_dicts_synced
+     def __setitem__(self, column_name: str, feature: FeatureType):
+         super().__setitem__(column_name, feature)
+-        self._column_requires_decoding[column_name] = require_decoding(feature)
+ 
++    @keep_features_dicts_synced
+     def __delitem__(self, column_name: str):
+         super().__delitem__(column_name)
+-        del self._column_requires_decoding[column_name]
+ 
++    @keep_features_dicts_synced
+     def update(self, iterable, **kwds):
+         if hasattr(iterable, "keys"):
+             for key in iterable.keys():
+-                self[key] = iterable[key]
++                if key in self and isinstance(self[key], dict) and isinstance(iterable[key], dict):
++                    self[key].update(iterable[key])
++                else:
++                    self[key] = iterable[key]
+         else:
+             for key, value in iterable:
+-                self[key] = value
++                if key in self and isinstance(self[key], dict) and isinstance(value, dict):
++                    self[key].update(value)
++                else:
++                    self[key] = value
+         for key in kwds:
+-            self[key] = kwds[key]
++            if key in self and isinstance(self[key], dict) and isinstance(kwds[key], dict):
++                self[key].update(kwds[key])
++            else:
++                self[key] = kwds[key]
+ 
+     def __reduce__(self):
+         return Features, (dict(self),)

@@ -1,0 +1,135 @@
+diff --git a/dirty_equals/__init__.py b/dirty_equals/__init__.py
+index ba8214e..3bec5fa 100644
+--- a/dirty_equals/__init__.py
++++ b/dirty_equals/__init__.py
+@@ -18,7 +18,7 @@ from ._numeric import (
+     IsPositiveFloat,
+     IsPositiveInt,
+ )
+-from ._other import FunctionCheck, IsJson, IsUUID
++from ._other import FunctionCheck, IsJson, IsPhoneNumber, IsUUID
+ from ._sequence import Contains, HasLen, IsList, IsListOrTuple, IsTuple
+ from ._strings import IsAnyStr, IsBytes, IsStr
+ 
+@@ -68,6 +68,7 @@ __all__ = (
+     # other
+     'FunctionCheck',
+     'IsJson',
++    'IsPhoneNumber',
+     'IsUUID',
+     # strings
+     'IsStr',
+diff --git a/dirty_equals/_other.py b/dirty_equals/_other.py
+index b2b8379..ddcaf3f 100644
+--- a/dirty_equals/_other.py
++++ b/dirty_equals/_other.py
+@@ -1,5 +1,6 @@
+ import json
+-from typing import Any, Callable, TypeVar, overload
++import re
++from typing import Any, Callable, Optional, Tuple, TypeVar, overload
+ from uuid import UUID
+ 
+ from ._base import DirtyEquals
+@@ -145,3 +146,101 @@ class FunctionCheck(DirtyEquals[Any]):
+ 
+     def equals(self, other: Any) -> bool:
+         return self.func(other)
++
++
++class IsPhoneNumber(DirtyEquals[str]):
++    """
++    A class that checks if a value is a valid phone number, optionally restricted to a specific country.
++
++    This is intentionally pragmatic rather than exhaustive - it's intended to catch obviously invalid
++    phone numbers while accepting the formats people commonly use, including placeholder/example numbers.
++    """
++
++    # digits allowed after the country code, ignoring formatting characters
++    _cleanup_re = re.compile(r'[\s\-.()]')
++
++    _country_formats = {
++        'US': {
++            # 10 digit national number, e.g. 555-123-4567
++            'national': re.compile(r'^\d{10}$'),
++            # +1 followed by the 10 digit national number
++            'international': re.compile(r'^1\d{10}$'),
++        },
++        'GB': {
++            # national numbers start with a 0 trunk prefix, e.g. 020 7946 0958
++            'national': re.compile(r'^0\d{9,10}$'),
++            # +44 followed by the national number, without the leading 0
++            'international': re.compile(r'^44\d{9,10}$'),
++        },
++    }
++
++    def __init__(self, country_code: Optional[str] = None):
++        """
++        Args:
++            country_code: if provided, restrict validation to the national or international format of this
++                country. Currently `'US'` and `'GB'` have dedicated rules, any other country code falls back
++                to generic international validation (`+` followed by 7 to 15 digits). If omitted, generic
++                validation is used which accepts common national and international formats.
++
++        ```py title="IsPhoneNumber"
++        from dirty_equals import IsPhoneNumber
++
++        assert '+1-555-123-4567' == IsPhoneNumber
++        assert '555-123-4567' == IsPhoneNumber
++        assert 'not a phone number' != IsPhoneNumber
++        assert 1234567890 != IsPhoneNumber
++
++        assert '555-123-4567' == IsPhoneNumber('US')
++        assert '+1-555-123-4567' == IsPhoneNumber('US')
++        assert '020 7946 0958' == IsPhoneNumber('GB')
++        assert '+44 20 7946 0958' == IsPhoneNumber('GB')
++        assert '555-123-4567' != IsPhoneNumber('GB')
++        assert '020 7946 0958' != IsPhoneNumber('US')
++        assert '+33 1 23 45 67 89' == IsPhoneNumber('FR')
++        ```
++        """
++        self.country_code = country_code.upper() if country_code else None
++        super().__init__(plain_repr('*') if country_code is None else country_code)
++
++    def equals(self, other: Any) -> bool:
++        if not isinstance(other, str):
++            return False
++
++        digits, has_plus = self._normalize(other)
++        if digits is None:
++            return False
++
++        if self.country_code is None:
++            return self._check_generic(digits, has_plus)
++
++        formats = self._country_formats.get(self.country_code)
++        if formats is None:
++            return self._check_generic_international(digits, has_plus)
++
++        if has_plus:
++            return bool(formats['international'].match(digits))
++        else:
++            return bool(formats['national'].match(digits))
++
++    def _normalize(self, value: str) -> Tuple[Optional[str], bool]:
++        value = value.strip()
++        has_plus = value.startswith('+')
++        if has_plus:
++            value = value[1:]
++
++        cleaned = self._cleanup_re.sub('', value)
++        if not cleaned.isdigit():
++            return None, has_plus
++
++        return cleaned, has_plus
++
++    @staticmethod
++    def _check_generic(digits: str, has_plus: bool) -> bool:
++        if has_plus:
++            return 8 <= len(digits) <= 15
++        else:
++            return 7 <= len(digits) <= 15
++
++    @staticmethod
++    def _check_generic_international(digits: str, has_plus: bool) -> bool:
++        return has_plus and 8 <= len(digits) <= 15

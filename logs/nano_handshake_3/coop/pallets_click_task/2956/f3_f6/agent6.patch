@@ -1,0 +1,107 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..185c026 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -1272,6 +1272,49 @@ class Command:
+ 
+         return results
+ 
++    def _resolve_dynamic_defaults(self, ctx: Context) -> None:
++        """Resolve options whose ``default`` is a mapping of other
++        option names to value lookups, now that every parameter for
++        this context has been processed once.
++
++        Only applies to options whose value still comes from
++        :attr:`ParameterSource.DEFAULT`; explicit values (command line,
++        environment variable, default map, ...) are left untouched.
++        """
++        params = self.get_params(ctx)
++
++        for param in params:
++            if (
++                not isinstance(param, Option)
++                or not param.is_dynamic_default
++                or param.name is None
++                or ctx.get_parameter_source(param.name) != ParameterSource.DEFAULT
++            ):
++                continue
++
++            value = None
++
++            for source_opt, value_map in param.default.items():
++                source_param = next(
++                    (
++                        p
++                        for p in params
++                        if source_opt in p.opts or source_opt in p.secondary_opts
++                    ),
++                    None,
++                )
++
++                if source_param is None or source_param.name not in ctx.params:
++                    continue
++
++                source_key = str(ctx.params[source_param.name])
++
++                if source_key in value_map:
++                    value = value_map[source_key]
++
++            if value is not None:
++                ctx.params[param.name] = param.type_cast_value(ctx, value)
++
+     @t.overload
+     def main(
+         self,
+@@ -1360,6 +1403,7 @@ class Command:
+         try:
+             try:
+                 with self.make_context(prog_name, args, **extra) as ctx:
++                    self._resolve_dynamic_defaults(ctx)
+                     rv = self.invoke(ctx)
+                     if not standalone_mode:
+                         return rv
+@@ -2637,6 +2681,16 @@ class Option(Parameter):
+         self.show_choices = show_choices
+         self.show_envvar = show_envvar
+ 
++        self.is_dynamic_default = isinstance(self.default, dict)
++
++        if self.is_dynamic_default:
++            for dynamic_key, dynamic_value in self.default.items():
++                if not isinstance(dynamic_key, str):
++                    raise TypeError("Dynamic default keys must be strings")
++
++                if not isinstance(dynamic_value, dict):
++                    raise TypeError("Dynamic default values must be dictionaries")
++
+         if __debug__:
+             if deprecated and prompt:
+                 raise ValueError("`deprecated` options cannot use `prompt`.")
+@@ -2861,9 +2915,13 @@ class Option(Parameter):
+         elif ctx.show_default is not None:
+             show_default = ctx.show_default
+ 
+-        if show_default_is_str or (show_default and (default_value is not None)):
++        if show_default_is_str or (
++            show_default and (default_value is not None or self.is_dynamic_default)
++        ):
+             if show_default_is_str:
+                 default_string = f"({self.show_default})"
++            elif self.is_dynamic_default:
++                default_string = _("(dynamic)")
+             elif isinstance(default_value, (list, tuple)):
+                 default_string = ", ".join(str(d) for d in default_value)
+             elif inspect.isfunction(default_value):
+@@ -2923,6 +2981,12 @@ class Option(Parameter):
+ 
+             return None
+ 
++        if self.is_dynamic_default:
++            # The dynamic default is resolved in a second pass, once all
++            # other parameters have been processed, so it can't be
++            # produced here yet.
++            return None
++
+         return super().get_default(ctx, call=call)
+ 
+     def prompt_for_value(self, ctx: Context) -> t.Any:

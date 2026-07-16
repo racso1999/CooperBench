@@ -1,0 +1,108 @@
+diff --git a/Tests/test_image_quantize.py b/Tests/test_image_quantize.py
+index bd9db362c..ab2b20e33 100644
+--- a/Tests/test_image_quantize.py
++++ b/Tests/test_image_quantize.py
+@@ -77,6 +77,35 @@ def test_quantize_dither_diff():
+     assert dither.tobytes() != nodither.tobytes()
+ 
+ 
++def test_quantize_sort_palette_brightness():
++    image = hopper()
++    converted = image.quantize(100, sort_palette="brightness")
++    assert_image(converted, "P", converted.size)
++    assert_image_similar(converted.convert("RGB"), image, 20)
++
++    palette = converted.getpalette()
++    colors = [tuple(palette[i : i + 3]) for i in range(0, len(palette), 3)]
++    brightness = [r * 299 + g * 587 + b * 114 for r, g, b in colors]
++    assert brightness == sorted(brightness)
++
++
++def test_quantize_sort_palette_rgb():
++    image = hopper()
++    converted = image.quantize(100, sort_palette="rgb")
++    assert_image(converted, "P", converted.size)
++    assert_image_similar(converted.convert("RGB"), image, 20)
++
++    palette = converted.getpalette()
++    colors = [tuple(palette[i : i + 3]) for i in range(0, len(palette), 3)]
++    assert colors == sorted(colors)
++
++
++def test_quantize_sort_palette_invalid():
++    image = hopper()
++    with pytest.raises(ValueError):
++        image.quantize(100, sort_palette="bogus")
++
++
+ def test_transparent_colors_equal():
+     im = Image.new("RGBA", (1, 2), (0, 0, 0, 0))
+     px = im.load()
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..925467e60 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -1048,7 +1048,15 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        sort_palette=None,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1081,12 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param sort_palette: Reorders the palette after quantization, without
++           changing the appearance of the image. Accepts ``"brightness"`` to
++           sort colors from darkest to lightest, or ``"rgb"`` to sort colors
++           by their (r, g, b) value. If not given (the default), the palette
++           order produced by the quantization method is left unchanged. Has
++           no effect when ``palette`` is given.
+         :returns: A new image
+ 
+         """
+@@ -1113,8 +1127,33 @@ class Image:
+         mode = im.im.getpalettemode()
+         im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
+ 
++        if sort_palette:
++            im = im._sort_palette(sort_palette)
++
+         return im
+ 
++    def _sort_palette(self, sort_palette):
++        """
++        Reorders a "P" mode image's palette without changing its appearance,
++        remapping pixel values so that they still point at the same colors.
++
++        :param sort_palette: ``"brightness"`` to sort colors from darkest to
++           lightest, or ``"rgb"`` to sort colors by their (r, g, b) value.
++        :returns: A new image with the palette reordered.
++        """
++        palette = self.im.getpalette("RGB")
++        colors = [tuple(palette[i : i + 3]) for i in range(0, len(palette), 3)]
++
++        if sort_palette == "brightness":
++            keys = [r * 299 + g * 587 + b * 114 for r, g, b in colors]
++        elif sort_palette == "rgb":
++            keys = colors
++        else:
++            raise ValueError("sort_palette must be 'brightness' or 'rgb'")
++
++        dest_map = sorted(range(len(colors)), key=lambda i: keys[i])
++        return self.remap_palette(dest_map)
++
+     def copy(self):
+         """
+         Copies this image. Use this method if you wish to paste things

@@ -1,0 +1,119 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..61317fb 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -1196,6 +1196,11 @@ class Command:
+         for param in iter_params_for_processing(param_order, self.get_params(ctx)):
+             value, args = param.handle_parse_result(ctx, opts, args)
+ 
++        if not ctx.resilient_parsing:
++            for param in self.get_params(ctx):
++                if isinstance(param, Option):
++                    param.resolve_dynamic_default(ctx)
++
+         if args and not ctx.allow_extra_args and not ctx.resilient_parsing:
+             ctx.fail(
+                 ngettext(
+@@ -2462,6 +2467,21 @@ class Parameter:
+         return self.type.shell_complete(ctx, self, incomplete)
+ 
+ 
++def _validate_dynamic_default(value: dict[str, t.Any]) -> None:
++    """Validate the shape of a dynamic default mapping passed as an
++    :class:`Option`'s ``default``.
++
++    :raises TypeError: if a key is not a string, or a value is not a
++        dictionary.
++    """
++    for key, mapping in value.items():
++        if not isinstance(key, str):
++            raise TypeError("Dynamic default keys must be strings")
++
++        if not isinstance(mapping, dict):
++            raise TypeError("Dynamic default values must be dictionaries")
++
++
+ class Option(Parameter):
+     """Options are usually optional values on the command line and
+     have some extra features that arguments don't have.
+@@ -2555,6 +2575,10 @@ class Option(Parameter):
+             help = inspect.cleandoc(help)
+ 
+         default_is_missing = "default" not in attrs
++
++        if isinstance(attrs.get("default"), dict):
++            _validate_dynamic_default(attrs["default"])
++
+         super().__init__(
+             param_decls, type=type, multiple=multiple, deprecated=deprecated, **attrs
+         )
+@@ -2866,7 +2890,7 @@ class Option(Parameter):
+                 default_string = f"({self.show_default})"
+             elif isinstance(default_value, (list, tuple)):
+                 default_string = ", ".join(str(d) for d in default_value)
+-            elif inspect.isfunction(default_value):
++            elif inspect.isfunction(default_value) or isinstance(default_value, dict):
+                 default_string = _("(dynamic)")
+             elif self.is_bool_flag and self.secondary_opts:
+                 # For boolean flags that have distinct True/False opts,
+@@ -2923,8 +2947,60 @@ class Option(Parameter):
+ 
+             return None
+ 
++        if isinstance(self.default, dict):
++            # A dynamic default is resolved in a second pass, once all
++            # parameters have been parsed, by ``resolve_dynamic_default``.
++            # Until then it has no concrete value to offer.
++            if not call:
++                return self.default
++
++            return None
++
+         return super().get_default(ctx, call=call)
+ 
++    def resolve_dynamic_default(self, ctx: Context) -> None:
++        """Resolve a dynamic default: a mapping of other options' full
++        declarations (e.g. ``"--protocol"``) to a dictionary of
++        ``{value: default}`` pairs. This is called once all parameters
++        for the command have been parsed, so that the values of the
++        options it depends on are available.
++
++        Only takes effect if this option's value source is
++        :attr:`ParameterSource.DEFAULT`, i.e. no value was given on the
++        command line, in the environment, or in a default map. If none
++        of the mappings match, the value is left as ``None``.
++
++        .. versionadded:: 8.3
++        """
++        if not isinstance(self.default, dict):
++            return
++
++        if ctx.get_parameter_source(self.name) is not ParameterSource.DEFAULT:  # type: ignore[arg-type]
++            return
++
++        resolved = None
++
++        for decl, mapping in self.default.items():
++            source_param: Option | None = None
++
++            for param in ctx.command.params:
++                if isinstance(param, Option) and (
++                    decl in param.opts or decl in param.secondary_opts
++                ):
++                    source_param = param
++                    break
++
++            if source_param is None or source_param.name is None:
++                continue
++
++            source_value = str(ctx.params.get(source_param.name))
++
++            if source_value in mapping:
++                resolved = mapping[source_value]
++
++        if resolved is not None:
++            ctx.params[self.name] = self.type_cast_value(ctx, resolved)  # type: ignore[arg-type]
++
+     def prompt_for_value(self, ctx: Context) -> t.Any:
+         """This is an alternative flow that can be activated in the full
+         value processing if a value does not exist.  It will prompt the

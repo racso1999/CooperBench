@@ -1,0 +1,80 @@
+diff --git a/llama-index-core/llama_index/core/evaluation/retrieval/metrics.py b/llama-index-core/llama_index/core/evaluation/retrieval/metrics.py
+index 612e547ce..e84db7525 100644
+--- a/llama-index-core/llama_index/core/evaluation/retrieval/metrics.py
++++ b/llama-index-core/llama_index/core/evaluation/retrieval/metrics.py
+@@ -323,9 +323,10 @@ class NDCG(BaseRetrievalMetric):
+     The position `p` is taken as the size of the query results (which is usually
+     `top_k` of the retriever).
+ 
+-    Currently only supports binary relevance
+-    (``rel=1`` if document is in ``expected_ids``, otherwise ``rel=0``)
+-    since we assume that ``expected_ids`` is unordered.
++    By default, uses binary relevance (``rel=1`` if document is in ``expected_ids``,
++    otherwise ``rel=0``) since we assume that ``expected_ids`` is unordered. Graded
++    (non-binary) relevance is supported by passing a ``relevance_scores`` mapping
++    from ``expected_id`` to a float relevance score to ``compute``.
+ 
+     Attributes:
+         metric_name (str): The name of the metric.
+@@ -342,6 +343,7 @@ class NDCG(BaseRetrievalMetric):
+         retrieved_ids: Optional[List[str]] = None,
+         expected_texts: Optional[List[str]] = None,
+         retrieved_texts: Optional[List[str]] = None,
++        relevance_scores: Optional[Dict[str, float]] = None,
+         **kwargs: Any,
+     ) -> RetrievalMetricResult:
+         """Compute NDCG based on the provided inputs and selected method.
+@@ -352,6 +354,10 @@ class NDCG(BaseRetrievalMetric):
+             retrieved_ids (Optional[List[str]]): Retrieved document IDs, ordered by relevance from highest to lowest.
+             expected_texts (Optional[List[str]]): Expected texts (not used in the current implementation).
+             retrieved_texts (Optional[List[str]]): Retrieved texts (not used in the current implementation).
++            relevance_scores (Optional[Dict[str, float]]): Optional mapping from `expected_id` to a
++                float relevance score, enabling graded (non-binary) relevance. Ids in `expected_ids`
++                that are missing from this mapping default to a relevance of 1.0. If not provided,
++                binary relevance is used (rel=1.0 for every id in `expected_ids`).
+ 
+         Raises:
+             ValueError: If the necessary IDs are not provided.
+@@ -371,19 +377,37 @@ class NDCG(BaseRetrievalMetric):
+         mode = self.mode
+         expected_set = set(expected_ids)
+ 
++        def relevance_of(doc_id: str) -> float:
++            if doc_id not in expected_set:
++                return 0.0
++            if relevance_scores is not None:
++                return relevance_scores.get(doc_id, 1.0)
++            return 1.0
++
+         # Calculate DCG
+         dcg = sum(
+-            discounted_gain(rel=docid in expected_set, i=i, mode=mode)
++            discounted_gain(rel=relevance_of(docid), i=i, mode=mode)
+             for i, docid in enumerate(retrieved_ids, start=1)
+         )
+ 
+         # Calculate IDCG using min(len(retrieved_ids), len(expected_ids))
+         # Since we can't achieve better than perfect ranking of all relevant docs
+         ideal_length = min(len(retrieved_ids), len(expected_ids))
+-        idcg = sum(
+-            discounted_gain(rel=True, i=i, mode=mode)
+-            for i in range(1, ideal_length + 1)
+-        )
++        if relevance_scores is not None:
++            # Ideal ranking orders expected ids by relevance score, descending
++            ideal_relevances = sorted(
++                (relevance_scores.get(doc_id, 1.0) for doc_id in expected_ids),
++                reverse=True,
++            )
++            idcg = sum(
++                discounted_gain(rel=ideal_relevances[i - 1], i=i, mode=mode)
++                for i in range(1, ideal_length + 1)
++            )
++        else:
++            idcg = sum(
++                discounted_gain(rel=True, i=i, mode=mode)
++                for i in range(1, ideal_length + 1)
++            )
+ 
+         # Handle edge case where there are no relevant documents
+         if idcg == 0:

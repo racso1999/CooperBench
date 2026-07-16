@@ -1,0 +1,183 @@
+diff --git a/Tests/test_imageops.py b/Tests/test_imageops.py
+index 3621aa50f..3c4588657 100644
+--- a/Tests/test_imageops.py
++++ b/Tests/test_imageops.py
+@@ -470,6 +470,70 @@ def test_exif_transpose_in_place() -> None:
+         assert_image_equal(im, expected)
+ 
+ 
++def test_exif_transpose_transform_callback_basic() -> None:
++    # A callback that reproduces the default orientation-to-method mapping
++    # should give the same result as not passing a callback at all.
++    method = Image.Transpose.ROTATE_270
++
++    def transform_callback(orientation: int) -> Image.Transpose | None:
++        assert orientation == 6
++        return method
++
++    with Image.open("Tests/images/hopper_orientation_6.jpg") as im:
++        expected = ImageOps.exif_transpose(im)
++
++    with Image.open("Tests/images/hopper_orientation_6.jpg") as im:
++        actual = ImageOps.exif_transpose(im, transform_callback=transform_callback)
++
++    assert_image_equal(actual, expected)
++    assert 0x0112 not in actual.getexif()
++
++
++def test_exif_transpose_transform_callback_sequence() -> None:
++    methods = [Image.Transpose.FLIP_LEFT_RIGHT, Image.Transpose.ROTATE_180]
++
++    def transform_callback(orientation: int) -> list[Image.Transpose]:
++        return methods
++
++    with Image.open("Tests/images/hopper_orientation_6.jpg") as im:
++        actual = ImageOps.exif_transpose(im, transform_callback=transform_callback)
++
++    with Image.open("Tests/images/hopper_orientation_6.jpg") as im:
++        expected = im.transpose(methods[0]).transpose(methods[1])
++
++    assert_image_equal(actual, expected)
++    assert 0x0112 not in actual.getexif()
++
++
++def test_exif_transpose_transform_callback_none() -> None:
++    def transform_callback(orientation: int) -> None:
++        return None
++
++    with Image.open("Tests/images/hopper_orientation_6.jpg") as im:
++        original = im.copy()
++        actual = ImageOps.exif_transpose(im, transform_callback=transform_callback)
++
++    # No transposition should have been applied, and since nothing was
++    # transposed, the orientation tag is left untouched, same as when the
++    # default mapping yields no method (e.g. orientation 1).
++    assert_image_equal(actual, original)
++    assert actual.getexif()[0x0112] == 6
++
++
++def test_exif_transpose_transform_callback_receives_orientation() -> None:
++    seen_orientations = []
++
++    def transform_callback(orientation: int) -> Image.Transpose | None:
++        seen_orientations.append(orientation)
++        return None
++
++    for i in range(2, 9):
++        with Image.open(f"Tests/images/hopper_orientation_{i}.jpg") as im:
++            ImageOps.exif_transpose(im, transform_callback=transform_callback)
++
++    assert seen_orientations == list(range(2, 9))
++
++
+ def test_autocontrast_unsupported_mode() -> None:
+     im = Image.new("RGBA", (1, 1))
+     with pytest.raises(OSError):
+diff --git a/src/PIL/ImageOps.py b/src/PIL/ImageOps.py
+index fef1d7328..a438d9f85 100644
+--- a/src/PIL/ImageOps.py
++++ b/src/PIL/ImageOps.py
+@@ -21,8 +21,8 @@ from __future__ import annotations
+ import functools
+ import operator
+ import re
+-from collections.abc import Sequence
+-from typing import Literal, Protocol, cast, overload
++from collections.abc import Callable, Sequence
++from typing import Literal, Protocol, Union, cast, overload
+ 
+ from . import ExifTags, Image, ImagePalette
+ 
+@@ -673,17 +673,33 @@ def solarize(image: Image.Image, threshold: int = 128) -> Image.Image:
+     return _lut(image, lut)
+ 
+ 
++TransposeMethods = Union[Image.Transpose, Sequence[Image.Transpose], None]
++
++
+ @overload
+-def exif_transpose(image: Image.Image, *, in_place: Literal[True]) -> None: ...
++def exif_transpose(
++    image: Image.Image,
++    *,
++    in_place: Literal[True],
++    transform_callback: Callable[[int], TransposeMethods] | None = ...,
++) -> None: ...
+ 
+ 
+ @overload
+ def exif_transpose(
+-    image: Image.Image, *, in_place: Literal[False] = False
++    image: Image.Image,
++    *,
++    in_place: Literal[False] = False,
++    transform_callback: Callable[[int], TransposeMethods] | None = ...,
+ ) -> Image.Image: ...
+ 
+ 
+-def exif_transpose(image: Image.Image, *, in_place: bool = False) -> Image.Image | None:
++def exif_transpose(
++    image: Image.Image,
++    *,
++    in_place: bool = False,
++    transform_callback: Callable[[int], TransposeMethods] | None = None,
++) -> Image.Image | None:
+     """
+     If an image has an EXIF Orientation tag, other than 1, transpose the image
+     accordingly, and remove the orientation data.
+@@ -694,25 +710,43 @@ def exif_transpose(image: Image.Image, *, in_place: bool = False) -> Image.Image
+         If ``False`` (default), a new :py:class:`~PIL.Image.Image` object is returned
+         with the transposition applied. If there is no transposition, a copy of the
+         image will be returned.
++    :param transform_callback: A callable, taking the EXIF orientation value, and
++        returning the transposition method(s) to apply. It may return a single
++        :py:class:`~PIL.Image.Transpose` method, a sequence of methods to be applied
++        in order, or ``None`` if no transposition should be applied. If given, this
++        overrides the default orientation-to-method mapping. Keyword-only argument.
+     """
+     image.load()
+     image_exif = image.getexif()
+     orientation = image_exif.get(ExifTags.Base.Orientation, 1)
+-    method = {
+-        2: Image.Transpose.FLIP_LEFT_RIGHT,
+-        3: Image.Transpose.ROTATE_180,
+-        4: Image.Transpose.FLIP_TOP_BOTTOM,
+-        5: Image.Transpose.TRANSPOSE,
+-        6: Image.Transpose.ROTATE_270,
+-        7: Image.Transpose.TRANSVERSE,
+-        8: Image.Transpose.ROTATE_90,
+-    }.get(orientation)
+-    if method is not None:
++    if transform_callback is not None:
++        methods = transform_callback(orientation)
++    else:
++        methods = {
++            2: Image.Transpose.FLIP_LEFT_RIGHT,
++            3: Image.Transpose.ROTATE_180,
++            4: Image.Transpose.FLIP_TOP_BOTTOM,
++            5: Image.Transpose.TRANSPOSE,
++            6: Image.Transpose.ROTATE_270,
++            7: Image.Transpose.TRANSVERSE,
++            8: Image.Transpose.ROTATE_90,
++        }.get(orientation)
++    if methods is None:
++        method_list: list[Image.Transpose] = []
++    elif isinstance(methods, Image.Transpose):
++        method_list = [methods]
++    else:
++        method_list = list(methods)
++
++    if method_list:
+         if in_place:
+-            image.im = image.im.transpose(method)
++            for method in method_list:
++                image.im = image.im.transpose(method)
+             image._size = image.im.size
+         else:
+-            transposed_image = image.transpose(method)
++            transposed_image = image
++            for method in method_list:
++                transposed_image = transposed_image.transpose(method)
+         exif_image = image if in_place else transposed_image
+ 
+         exif = exif_image.getexif()

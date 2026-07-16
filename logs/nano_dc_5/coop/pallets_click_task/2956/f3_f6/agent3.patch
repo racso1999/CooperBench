@@ -1,0 +1,132 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..1562125 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -1272,6 +1272,37 @@ class Command:
+ 
+         return results
+ 
++    def _resolve_dynamic_defaults(self, ctx: Context) -> None:
++        params = self.get_params(ctx)
++
++        for param in params:
++            if not isinstance(param, Option) or not isinstance(param.default, dict):
++                continue
++
++            if ctx.get_parameter_source(param.name) != ParameterSource.DEFAULT:  # type: ignore
++                continue
++
++            resolved = None
++
++            for opt_name, mapping in param.default.items():
++                source_param = None
++
++                for other in params:
++                    if opt_name in other.opts or opt_name in other.secondary_opts:
++                        source_param = other
++                        break
++
++                if source_param is None:
++                    continue
++
++                key = str(ctx.params.get(source_param.name))
++
++                if key in mapping:
++                    resolved = mapping[key]
++
++            if resolved is not None:
++                ctx.params[param.name] = param.type_cast_value(ctx, resolved)  # type: ignore
++
+     @t.overload
+     def main(
+         self,
+@@ -1360,6 +1391,7 @@ class Command:
+         try:
+             try:
+                 with self.make_context(prog_name, args, **extra) as ctx:
++                    self._resolve_dynamic_defaults(ctx)
+                     rv = self.invoke(ctx)
+                     if not standalone_mode:
+                         return rv
+@@ -2332,7 +2364,16 @@ class Parameter:
+                 return tuple(self.type(x, self, ctx) for x in value)
+ 
+         if self.multiple:
+-            return tuple(convert(x) for x in check_iter(value))
++            converted = tuple(convert(x) for x in check_iter(value))
++
++            batch_size = getattr(self, "batch_size", None)
++            if batch_size:
++                return tuple(
++                    converted[i : i + batch_size]
++                    for i in range(0, len(converted), batch_size)
++                )
++
++            return converted
+ 
+         return convert(value)
+ 
+@@ -2542,6 +2583,7 @@ class Option(Parameter):
+         flag_value: t.Any | None = None,
+         multiple: bool = False,
+         count: bool = False,
++        batch_size: int | None = None,
+         allow_from_autoenv: bool = True,
+         type: types.ParamType | t.Any | None = None,
+         help: str | None = None,
+@@ -2625,6 +2667,11 @@ class Option(Parameter):
+ 
+         # Counting
+         self.count = count
++        self.batch_size = batch_size
++
++        if batch_size is not None and batch_size < 0:
++            raise ValueError("'batch_size' must be a positive integer.")
++
+         if count:
+             if type is None:
+                 self.type = types.IntRange(min=0)
+@@ -2662,6 +2709,16 @@ class Option(Parameter):
+                 if self.is_flag:
+                     raise TypeError("'count' is not valid with 'is_flag'.")
+ 
++            if self.batch_size is not None and not self.multiple:
++                raise TypeError("'batch_size' is only valid with 'multiple'.")
++
++            if isinstance(self.default, dict):
++                for key, val in self.default.items():
++                    if not isinstance(key, str):
++                        raise TypeError("Dynamic default keys must be strings")
++                    if not isinstance(val, dict):
++                        raise TypeError("Dynamic default values must be dictionaries")
++
+     def to_info_dict(self) -> dict[str, t.Any]:
+         info_dict = super().to_info_dict()
+         info_dict.update(
+@@ -2671,6 +2728,7 @@ class Option(Parameter):
+             flag_value=self.flag_value,
+             count=self.count,
+             hidden=self.hidden,
++            batch_size=self.batch_size,
+         )
+         return info_dict
+ 
+@@ -2868,6 +2926,8 @@ class Option(Parameter):
+                 default_string = ", ".join(str(d) for d in default_value)
+             elif inspect.isfunction(default_value):
+                 default_string = _("(dynamic)")
++            elif isinstance(default_value, dict):
++                default_string = _("(dynamic)")
+             elif self.is_bool_flag and self.secondary_opts:
+                 # For boolean flags that have distinct True/False opts,
+                 # use the opt without prefix instead of the value.
+@@ -3000,6 +3060,9 @@ class Option(Parameter):
+     ) -> tuple[t.Any, ParameterSource]:
+         value, source = super().consume_value(ctx, opts)
+ 
++        if source == ParameterSource.DEFAULT and isinstance(self.default, dict):
++            value = None
++
+         # The parser will emit a sentinel value if the option can be
+         # given as a flag without a value. This is different from None
+         # to distinguish from the flag not being given at all.

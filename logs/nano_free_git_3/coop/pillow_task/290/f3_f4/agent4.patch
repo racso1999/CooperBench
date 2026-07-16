@@ -1,0 +1,210 @@
+diff --git a/Tests/test_image_quantize.py b/Tests/test_image_quantize.py
+index bd9db362c..eb7be3817 100644
+--- a/Tests/test_image_quantize.py
++++ b/Tests/test_image_quantize.py
+@@ -77,6 +77,71 @@ def test_quantize_dither_diff():
+     assert dither.tobytes() != nodither.tobytes()
+ 
+ 
++def test_quantize_error_threshold():
++    image = hopper()
++
++    # A high threshold should be satisfied with very few colors.
++    low_quality = image.quantize(colors=256, error_threshold=1000)
++    assert_image(low_quality, "P", low_quality.size)
++    assert len(low_quality.getcolors()) <= 256
++
++    # A threshold of 0 can't be satisfied below the colors limit, so the
++    # colors limit should be used instead.
++    capped = image.quantize(colors=4, error_threshold=0)
++    assert_image(capped, "P", capped.size)
++    assert len(capped.getcolors()) <= 4
++
++    # Without a threshold, behaviour should match plain quantize().
++    plain = image.quantize(colors=64)
++    unthresholded = image.quantize(colors=64, error_threshold=None)
++    assert plain.tobytes() == unthresholded.tobytes()
++
++
++def test_quantize_sort_palette_brightness():
++    image = hopper()
++    converted = image.quantize(100, Image.FASTOCTREE, sort_palette=Image.SORT_BRIGHTNESS)
++    assert_image(converted, "P", converted.size)
++    assert_image_similar(converted.convert("RGB"), image, 20)
++    assert len(converted.getcolors()) == 100
++
++    mode = converted.im.getpalettemode()
++    palette = converted.im.getpalette(mode, mode)
++    channels = len(mode)
++    colors = [palette[i : i + channels] for i in range(0, len(palette), channels)]
++    brightness = [sum(color) / len(color) for color in colors]
++    assert brightness == sorted(brightness)
++
++
++def test_quantize_sort_palette_rgb():
++    image = hopper()
++    converted = image.quantize(100, Image.FASTOCTREE, sort_palette=Image.SORT_RGB)
++    assert_image(converted, "P", converted.size)
++    assert_image_similar(converted.convert("RGB"), image, 20)
++    assert len(converted.getcolors()) == 100
++
++    mode = converted.im.getpalettemode()
++    palette = converted.im.getpalette(mode, mode)
++    channels = len(mode)
++    colors = [
++        tuple(palette[i : i + channels]) for i in range(0, len(palette), channels)
++    ]
++    assert colors == sorted(colors)
++
++
++def test_quantize_sort_palette_none():
++    image = hopper()
++    default = image.quantize(100, Image.FASTOCTREE)
++    unsorted = image.quantize(100, Image.FASTOCTREE, sort_palette=Image.SORT_NONE)
++    assert default.tobytes() == unsorted.tobytes()
++    assert default.palette.palette == unsorted.palette.palette
++
++
++def test_quantize_sort_palette_invalid_method():
++    image = hopper()
++    with pytest.raises(ValueError):
++        image.quantize(100, Image.FASTOCTREE, sort_palette=99)
++
++
+ def test_transparent_colors_equal():
+     im = Image.new("RGBA", (1, 2), (0, 0, 0, 0))
+     px = im.load()
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..4e172175b 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -182,6 +182,11 @@ MAXCOVERAGE = 1
+ FASTOCTREE = 2
+ LIBIMAGEQUANT = 3
+ 
++# palette sorting methods, used by Image.quantize
++SORT_NONE = 0
++SORT_BRIGHTNESS = 1
++SORT_RGB = 2
++
+ if hasattr(core, "DEFAULT_STRATEGY"):
+     DEFAULT_STRATEGY = core.DEFAULT_STRATEGY
+     FILTERED = core.FILTERED
+@@ -1048,7 +1053,16 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        error_threshold=None,
++        sort_palette=SORT_NONE,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1087,20 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param error_threshold: The maximum acceptable mean square error (MSE),
++           measured in RGB space, between the original image and the quantized
++           result. When given (and ``palette`` is not), the number of colors
++           used is increased from 2 up to ``colors``, stopping as soon as the
++           error falls at or below this threshold. This means fewer colors
++           than ``colors`` may be used if that is enough to satisfy the
++           threshold. If the threshold cannot be met within the ``colors``
++           limit, the image is quantized using ``colors`` colors.
++        :param sort_palette: Sort the palette colors after quantization.
++           Available methods are :data:`SORT_NONE` (default, palette order is
++           left as produced by the quantizer), :data:`SORT_BRIGHTNESS`
++           (sort by color brightness) or :data:`SORT_RGB` (sort by RGB
++           value). Ignored when ``palette`` is given, since the palette
++           order is then taken from the reference image.
+         :returns: A new image
+ 
+         """
+@@ -1106,15 +1134,77 @@ class Image:
+             new_im.palette = palette.palette.copy()
+             return new_im
+ 
++        if error_threshold is not None:
++            return self._quantize_to_error_threshold(
++                colors, method, kmeans, dither, error_threshold, sort_palette
++            )
++
+         im = self._new(self.im.quantize(colors, method, kmeans))
+ 
+         from . import ImagePalette
+ 
+         mode = im.im.getpalettemode()
+-        im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
++        raw_palette = im.im.getpalette(mode, mode)
++        im.palette = ImagePalette.ImagePalette(mode, raw_palette)
++
++        if sort_palette:
++            channels = len(mode)
++            palette_colors = [
++                raw_palette[i : i + channels]
++                for i in range(0, len(raw_palette), channels)
++            ]
++            if sort_palette == SORT_BRIGHTNESS:
++
++                def sort_key(color):
++                    return sum(color) / len(color)
++
++            elif sort_palette == SORT_RGB:
++
++                def sort_key(color):
++                    return tuple(color)
++
++            else:
++                raise ValueError("bad sort_palette method")
++
++            order = sorted(
++                range(len(palette_colors)), key=lambda i: sort_key(palette_colors[i])
++            )
++            mapping = [0] * len(order)
++            for new_index, old_index in enumerate(order):
++                mapping[old_index] = new_index
++
++            im = im.point(mapping)
++            im.putpalette(b"".join(bytes(palette_colors[i]) for i in order), mode)
+ 
+         return im
+ 
++    def _quantize_to_error_threshold(
++        self, colors, method, kmeans, dither, threshold, sort_palette=SORT_NONE
++    ):
++        """
++        Quantizes the image using as few colors as possible (up to
++        ``colors``) such that the mean square error between the original
++        image and the quantized image is at or below ``threshold``.
++        """
++        from . import ImageChops, ImageStat
++
++        original_rgb = self.convert("RGB")
++
++        def mean_square_error(im):
++            diff = ImageChops.difference(original_rgb, im.convert("RGB"))
++            stat = ImageStat.Stat(diff)
++            return sum(rms**2 for rms in stat.rms) / len(stat.rms)
++
++        color_count = 2
++        while True:
++            color_count = min(color_count, colors)
++            candidate = self.quantize(
++                color_count, method, kmeans, dither=dither, sort_palette=sort_palette
++            )
++            if color_count >= colors or mean_square_error(candidate) <= threshold:
++                return candidate
++            color_count *= 2
++
+     def copy(self):
+         """
+         Copies this image. Use this method if you wish to paste things

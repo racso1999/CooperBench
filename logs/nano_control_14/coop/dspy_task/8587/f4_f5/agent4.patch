@@ -1,0 +1,98 @@
+diff --git a/dspy/streaming/streaming_listener.py b/dspy/streaming/streaming_listener.py
+index 98fd4aca..ba6be235 100644
+--- a/dspy/streaming/streaming_listener.py
++++ b/dspy/streaming/streaming_listener.py
+@@ -1,4 +1,5 @@
+ import re
++import time
+ from collections import defaultdict
+ from queue import Queue
+ from typing import TYPE_CHECKING, Any
+@@ -26,6 +27,7 @@ class StreamListener:
+         predict: Any = None,
+         predict_name: str | None = None,
+         allow_reuse: bool = False,
++        idle_timeout_s: float | None = None,
+     ):
+         """
+         Args:
+@@ -36,6 +38,9 @@ class StreamListener:
+                 automatically look for the predictor that has the `signature_field_name` in its signature.
+             allow_reuse: If True, the stream listener can be reused for multiple streams. Please note that this could
+                 hurt the performance because the same stream chunk is sent to multiple listeners.
++            idle_timeout_s: If set, `tick()` will emit a final empty chunk and reset the listener state when no
++                chunk has been received for this many seconds while a stream is in progress. This guards against
++                the stream getting stuck indefinitely when the upstream source stalls.
+         """
+         self.signature_field_name = signature_field_name
+         self.predict = predict
+@@ -47,6 +52,8 @@ class StreamListener:
+         self.stream_end = False
+         self.cache_hit = False
+         self.allow_reuse = allow_reuse
++        self.idle_timeout_s = idle_timeout_s
++        self._last_chunk_ts: float | None = None
+ 
+         self.adapter_identifiers = {
+             "ChatAdapter": {
+@@ -86,11 +93,7 @@ class StreamListener:
+         if self.stream_end:
+             if self.allow_reuse:
+                 # Clear up the state for the next stream.
+-                self.stream_end = False
+-                self.cache_hit = False
+-                self.field_start_queue = []
+-                self.field_end_queue = Queue()
+-                self.stream_start = False
++                self._reset_state()
+             else:
+                 return
+ 
+@@ -101,6 +104,9 @@ class StreamListener:
+         except Exception:
+             return
+ 
++        if chunk_message:
++            self._last_chunk_ts = time.time()
++
+         if chunk_message and start_identifier in chunk_message:
+             # If the cache is hit, the chunk_message could be the full response. When it happens we can
+             # directly end the stream listening. In some models like gemini, each stream chunk can be multiple
+@@ -168,6 +174,37 @@ class StreamListener:
+             if token:
+                 return StreamResponse(self.predict_name, self.signature_field_name, token)
+ 
++    def _reset_state(self):
++        """Reset all per-stream state so the listener is ready for a new stream."""
++        self.stream_start = False
++        self.stream_end = False
++        self.cache_hit = False
++        self.field_start_queue = []
++        self.field_end_queue = Queue()
++        self._last_chunk_ts = None
++
++    def tick(self, now_ts: float | None = None) -> StreamResponse | None:
++        """Check whether the stream has gone idle for longer than `idle_timeout_s`.
++
++        This should be called periodically by the streaming system. If a stream is in progress (started but not
++        yet ended) and no chunk has been received for `idle_timeout_s` seconds, this emits a `StreamResponse` with
++        an empty `chunk` to signal termination, and unconditionally resets the listener state, regardless of
++        `allow_reuse`, so it isn't left stuck in a started state.
++        """
++        if self.idle_timeout_s is None or self._last_chunk_ts is None:
++            return None
++
++        if not self.stream_start or self.stream_end:
++            return None
++
++        current_ts = now_ts if now_ts is not None else time.time()
++        if current_ts - self._last_chunk_ts < self.idle_timeout_s:
++            return None
++
++        response = StreamResponse(self.predict_name, self.signature_field_name, "")
++        self._reset_state()
++        return response
++
+     def flush(self) -> str:
+         """Flush all tokens in the field end queue.
+ 

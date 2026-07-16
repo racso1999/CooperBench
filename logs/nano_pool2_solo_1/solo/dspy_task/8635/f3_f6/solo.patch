@@ -1,0 +1,163 @@
+diff --git a/dspy/propose/grounded_proposer.py b/dspy/propose/grounded_proposer.py
+index 13722b4b..1f8545f1 100644
+--- a/dspy/propose/grounded_proposer.py
++++ b/dspy/propose/grounded_proposer.py
+@@ -72,6 +72,26 @@ class DescribeModule(dspy.Signature):
+     )
+ 
+ 
++class ShortenInstruction(dspy.Signature):
++    (
++        """Rewrite the given instruction so that it is more concise, while preserving its meaning and intent."""
++    )
++    instruction = dspy.InputField(
++        format=str,
++        desc="The instruction to shorten.",
++        prefix="INSTRUCTION:",
++    )
++    max_chars = dspy.InputField(
++        format=str,
++        desc="The maximum number of characters allowed in the proposed instruction.",
++        prefix="MAX CHARACTERS:",
++    )
++    proposed_instruction = dspy.OutputField(
++        desc="A more concise version of the instruction that fits within the character limit.",
++        prefix="PROPOSED INSTRUCTION:",
++    )
++
++
+ def generate_instruction_class(
+     use_dataset_summary=True,
+     program_aware=True,
+@@ -284,7 +304,11 @@ class GroundedProposer(Proposer):
+         set_tip_randomly=True,
+         set_history_randomly=True,
+         verbose=False,
+-        rng=None
++        rng=None,
++        tip_weights=None,
++        min_instr_chars=30,
++        max_instr_chars=600,
++        rephrase_when_too_long=False,
+     ):
+         super().__init__()
+         self.program_aware = program_aware
+@@ -297,6 +321,10 @@ class GroundedProposer(Proposer):
+         self.set_history_randomly=set_history_randomly
+         self.verbose = verbose
+         self.rng = rng or random
++        self.tip_weights = tip_weights
++        self.min_instr_chars = min_instr_chars
++        self.max_instr_chars = max_instr_chars
++        self.rephrase_when_too_long = rephrase_when_too_long
+ 
+         self.prompt_model = get_prompt_model(prompt_model)
+ 
+@@ -323,6 +351,89 @@ class GroundedProposer(Proposer):
+                 self.use_dataset_summary = False
+                 print("")
+ 
++    def _select_tip_with_weights(self):
++        """Select a tip key from TIPS, optionally biased by self.tip_weights.
++
++        When self.tip_weights is None, this preserves the original uniform draw. Otherwise,
++        weights are normalized into probabilities and a tip is selected using self.rng.random()
++        against the cumulative distribution, so selection remains deterministic for a fixed seed.
++        """
++        tip_keys = list(TIPS.keys())
++
++        if self.tip_weights is None:
++            return self.rng.choice(tip_keys)
++
++        weights = [max(self.tip_weights.get(key, 1.0), 0.0) for key in tip_keys]
++        total_weight = sum(weights)
++        if total_weight <= 0:
++            return self.rng.choice(tip_keys)
++
++        threshold = self.rng.random()
++        cumulative = 0.0
++        for key, weight in zip(tip_keys, weights):
++            cumulative += weight / total_weight
++            if threshold < cumulative:
++                return key
++
++        return tip_keys[-1]
++
++    def _trim_to_sentence_boundary(self, instruction):
++        """Trim instruction to fit under max_instr_chars, preferring the last sentence boundary."""
++        limit = self.max_instr_chars - 1
++        window = instruction[:limit]
++
++        boundary_idx = -1
++        for punct in (".", "!", "?"):
++            idx = window.rfind(punct)
++            if idx > boundary_idx:
++                boundary_idx = idx
++
++        if boundary_idx != -1:
++            return instruction[:boundary_idx + 1] + "…"
++
++        return window + "…"
++
++    def _enforce_instruction_length_bounds(self, proposed_instruction, predictor):
++        """Ensure a proposed instruction falls within [min_instr_chars, max_instr_chars]."""
++        length = len(proposed_instruction)
++
++        if length < self.min_instr_chars:
++            basic_instruction = get_signature(predictor).instructions
++            if self.verbose:
++                print(
++                    f"Proposed instruction length ({length}) is below min_instr_chars "
++                    f"({self.min_instr_chars}). Falling back to the predictor's basic instruction.",
++                )
++            return basic_instruction
++
++        if length > self.max_instr_chars:
++            if self.rephrase_when_too_long:
++                if self.verbose:
++                    print(
++                        f"Proposed instruction length ({length}) exceeds max_instr_chars "
++                        f"({self.max_instr_chars}). Rephrasing via ShortenInstruction.",
++                    )
++                shorten = dspy.Predict(ShortenInstruction)
++                with dspy.settings.context(lm=self.prompt_model):
++                    shortened_instruction = strip_prefix(
++                        shorten(
++                            instruction=proposed_instruction,
++                            max_chars=str(self.max_instr_chars),
++                        ).proposed_instruction,
++                    )
++                if len(shortened_instruction) > self.max_instr_chars:
++                    shortened_instruction = shortened_instruction[: self.max_instr_chars]
++                return shortened_instruction
++            else:
++                if self.verbose:
++                    print(
++                        f"Proposed instruction length ({length}) exceeds max_instr_chars "
++                        f"({self.max_instr_chars}). Trimming at the last sentence boundary.",
++                    )
++                return self._trim_to_sentence_boundary(proposed_instruction)
++
++        return proposed_instruction
++
+     def propose_instructions_for_program(
+         self,
+         trainset,
+@@ -361,8 +472,8 @@ class GroundedProposer(Proposer):
+                 if self.set_tip_randomly:
+                     if self.verbose:
+                         print("Using a randomly generated configuration for our grounded proposer.")
+-                    # Randomly select the tip
+-                    selected_tip_key = self.rng.choice(list(TIPS.keys()))
++                    # Randomly select the tip, optionally biased by tip_weights
++                    selected_tip_key = self._select_tip_with_weights()
+                     selected_tip = TIPS[selected_tip_key]
+                     self.use_tip = bool(
+                         selected_tip,
+@@ -439,4 +550,5 @@ class GroundedProposer(Proposer):
+             self.prompt_model.inspect_history(n=1)
+             print(f"PROPOSED INSTRUCTION: {proposed_instruction}")
+ 
+-        return strip_prefix(proposed_instruction)
++        proposed_instruction = strip_prefix(proposed_instruction)
++        return self._enforce_instruction_length_bounds(proposed_instruction, predictor)

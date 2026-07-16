@@ -1,0 +1,113 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..1331358 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -1207,8 +1207,55 @@ class Command:
+ 
+         ctx.args = args
+         ctx._opt_prefixes.update(parser._opt_prefixes)
++        self._resolve_dynamic_defaults(ctx)
+         return args
+ 
++    def _resolve_dynamic_defaults(self, ctx: Context) -> None:
++        """Second-pass resolution for options whose ``default`` is a
++        dynamic default mapping (see :class:`Option`). This runs after
++        all parameters have been parsed so that dynamic defaults can be
++        resolved based on the final values of the options they depend on.
++        """
++        params = self.get_params(ctx)
++
++        for param in params:
++            dynamic_default = getattr(param, "_dynamic_default", None)
++
++            if not dynamic_default:
++                continue
++
++            if ctx.get_parameter_source(param.name) != ParameterSource.DEFAULT:  # type: ignore[arg-type]
++                continue
++
++            resolved_value = None
++
++            for source_opt, mapping in dynamic_default.items():
++                source_param = next(
++                    (
++                        p
++                        for p in params
++                        if source_opt in p.opts or source_opt in p.secondary_opts
++                    ),
++                    None,
++                )
++
++                if source_param is None or source_param.name not in ctx.params:
++                    continue
++
++                source_value = str(ctx.params[source_param.name])
++
++                if source_value in mapping:
++                    resolved_value = mapping[source_value]
++
++            if resolved_value is None:
++                continue
++
++            with augment_usage_errors(ctx, param=param):
++                resolved_value = param.process_value(ctx, resolved_value)
++
++            if param.expose_value:
++                ctx.params[param.name] = resolved_value  # type: ignore[index]
++
+     def invoke(self, ctx: Context) -> t.Any:
+         """Given a context, this invokes the attached callback (if it exists)
+         in the right way.
+@@ -2555,9 +2602,37 @@ class Option(Parameter):
+             help = inspect.cleandoc(help)
+ 
+         default_is_missing = "default" not in attrs
++        dynamic_default: dict[str, dict[str, t.Any]] | None = None
++
++        if not default_is_missing and isinstance(attrs["default"], dict):
++            dynamic_default = attrs["default"]
++
++            for key, mapping in dynamic_default.items():
++                if not isinstance(key, str):
++                    raise TypeError("Dynamic default keys must be strings")
++
++                if not isinstance(mapping, dict):
++                    raise TypeError("Dynamic default values must be dictionaries")
++
++            attrs["default"] = None
++
+         super().__init__(
+             param_decls, type=type, multiple=multiple, deprecated=deprecated, **attrs
+         )
++        self._dynamic_default = dynamic_default
++
++        if dynamic_default is not None and type is None:
++            sample_value = next(
++                (
++                    value
++                    for mapping in dynamic_default.values()
++                    for value in mapping.values()
++                ),
++                None,
++            )
++
++            if sample_value is not None:
++                self.type = types.convert_type(None, sample_value)
+ 
+         if prompt is True:
+             if self.name is None:
+@@ -2861,9 +2936,13 @@ class Option(Parameter):
+         elif ctx.show_default is not None:
+             show_default = ctx.show_default
+ 
+-        if show_default_is_str or (show_default and (default_value is not None)):
++        if show_default_is_str or (
++            show_default and (default_value is not None or self._dynamic_default)
++        ):
+             if show_default_is_str:
+                 default_string = f"({self.show_default})"
++            elif self._dynamic_default:
++                default_string = _("(dynamic)")
+             elif isinstance(default_value, (list, tuple)):
+                 default_string = ", ".join(str(d) for d in default_value)
+             elif inspect.isfunction(default_value):

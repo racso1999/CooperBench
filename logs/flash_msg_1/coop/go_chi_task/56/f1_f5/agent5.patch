@@ -1,0 +1,285 @@
+diff --git a/context.go b/context.go
+index e78a238..cdaac9a 100644
+--- a/context.go
++++ b/context.go
+@@ -76,6 +76,12 @@ type Context struct {
+ 
+ 	// methodNotAllowed hint
+ 	methodNotAllowed bool
++
++	// methodsAllowed is the list of HTTP methods registered on the endpoint
++	// matched while routing, recorded whenever the request's method wasn't
++	// one of them. Exposed via AllowedMethods() for building Allow and
++	// CORS Access-Control-Allow-Methods headers.
++	methodsAllowed []string
+ }
+ 
+ // Reset a routing context to its initial state.
+@@ -91,6 +97,7 @@ func (x *Context) Reset() {
+ 	x.routeParams.Keys = x.routeParams.Keys[:0]
+ 	x.routeParams.Values = x.routeParams.Values[:0]
+ 	x.methodNotAllowed = false
++	x.methodsAllowed = nil
+ 	x.parentCtx = nil
+ }
+ 
+@@ -105,6 +112,14 @@ func (x *Context) URLParam(key string) string {
+ 	return ""
+ }
+ 
++// AllowedMethods returns the HTTP methods registered for the route that
++// matched during routing, whenever the request's method wasn't one of them.
++// It's used to build the Allow header on 405 responses and the
++// Access-Control-Allow-Methods header for chi's built-in CORS support.
++func (x *Context) AllowedMethods() []string {
++	return x.methodsAllowed
++}
++
+ // RoutePattern builds the routing pattern string for the particular
+ // request, at the particular point during routing. This means, the value
+ // will change throughout the execution of a request in a router. That is
+diff --git a/cors.go b/cors.go
+new file mode 100644
+index 0000000..94022a0
+--- /dev/null
++++ b/cors.go
+@@ -0,0 +1,120 @@
++package chi
++
++import (
++	"net/http"
++	"strconv"
++	"strings"
++)
++
++// CORSOptions describes the configuration for chi's built-in Cross-Origin
++// Resource Sharing (CORS) support.
++type CORSOptions struct {
++	// AllowOrigin sets the Access-Control-Allow-Origin header value.
++	AllowOrigin string
++
++	// AllowMethods sets the Access-Control-Allow-Methods header value used
++	// for preflight requests whenever the methods available on the matched
++	// route cannot be detected.
++	AllowMethods []string
++
++	// AllowHeaders sets the Access-Control-Allow-Headers header value.
++	AllowHeaders []string
++
++	// ExposeHeaders sets the Access-Control-Expose-Headers header value.
++	ExposeHeaders []string
++
++	// MaxAge sets the Access-Control-Max-Age header value, in seconds.
++	MaxAge int
++
++	// AllowCredentials sets the Access-Control-Allow-Credentials header value.
++	AllowCredentials bool
++}
++
++// DefaultCORSOptions returns a CORSOptions with sensible defaults: a
++// wildcard origin, a common set of allowed headers/methods, and a 1 hour
++// (3600 second) max age for preflight caching.
++func DefaultCORSOptions() CORSOptions {
++	return CORSOptions{
++		AllowOrigin: "*",
++		AllowMethods: []string{
++			http.MethodGet,
++			http.MethodHead,
++			http.MethodPost,
++			http.MethodPut,
++			http.MethodPatch,
++			http.MethodDelete,
++			http.MethodOptions,
++		},
++		AllowHeaders: []string{
++			"Accept",
++			"Authorization",
++			"Content-Type",
++			"X-CSRF-Token",
++		},
++		ExposeHeaders:    []string{},
++		MaxAge:           3600,
++		AllowCredentials: false,
++	}
++}
++
++// CORS returns a middleware that applies Cross-Origin Resource Sharing
++// response headers to every request, based on options.
++//
++// CORS only sets the "always on" response headers (Access-Control-Allow-Origin,
++// Access-Control-Allow-Credentials and Access-Control-Expose-Headers). Preflight
++// OPTIONS requests and the Access-Control-Allow-Methods/-Allow-Headers/-Max-Age
++// headers they require are handled by the router's MethodNotAllowed handler,
++// see Mux.EnableCORS and Mux.EnableCORSWithOptions which wire this up
++// automatically.
++func CORS(options CORSOptions) func(http.Handler) http.Handler {
++	exposeHeaders := strings.Join(options.ExposeHeaders, ", ")
++
++	return func(next http.Handler) http.Handler {
++		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++			header := w.Header()
++
++			header.Set("Access-Control-Allow-Origin", options.AllowOrigin)
++			if exposeHeaders != "" {
++				header.Set("Access-Control-Expose-Headers", exposeHeaders)
++			}
++			if options.AllowCredentials {
++				header.Set("Access-Control-Allow-Credentials", "true")
++			}
++
++			next.ServeHTTP(w, r)
++		})
++	}
++}
++
++// corsPreflightHandler builds the handler chi's router calls whenever a
++// request's method didn't match a registered route (see Mux.MethodNotAllowed).
++// It answers preflight OPTIONS requests with a 204 and the CORS headers
++// browsers require, detecting Access-Control-Allow-Methods from the matched
++// route when possible, and otherwise responds with a plain 405 plus an Allow
++// header, as chi does by default.
++func corsPreflightHandler(options CORSOptions) http.HandlerFunc {
++	allowHeaders := strings.Join(options.AllowHeaders, ", ")
++	maxAge := strconv.Itoa(options.MaxAge)
++	defaultAllowMethods := strings.Join(options.AllowMethods, ", ")
++
++	return func(w http.ResponseWriter, r *http.Request) {
++		allowMethods := defaultAllowMethods
++		if rctx := RouteContext(r.Context()); rctx != nil {
++			if methods := rctx.AllowedMethods(); len(methods) > 0 {
++				allowMethods = strings.Join(methods, ", ")
++			}
++		}
++
++		if r.Method == http.MethodOptions {
++			header := w.Header()
++			header.Set("Access-Control-Allow-Methods", allowMethods)
++			header.Set("Access-Control-Allow-Headers", allowHeaders)
++			header.Set("Access-Control-Max-Age", maxAge)
++			w.WriteHeader(http.StatusNoContent)
++			return
++		}
++
++		w.Header().Set("Allow", allowMethods)
++		w.WriteHeader(http.StatusMethodNotAllowed)
++	}
++}
+diff --git a/mux.go b/mux.go
+index 0d1caa6..5131f87 100644
+--- a/mux.go
++++ b/mux.go
+@@ -226,6 +226,33 @@ func (mx *Mux) MethodNotAllowed(handlerFn http.HandlerFunc) {
+ 	})
+ }
+ 
++// EnableCORS enables chi's built-in CORS support on the Mux using
++// DefaultCORSOptions().
++func (mx *Mux) EnableCORS() {
++	mx.EnableCORSWithOptions(DefaultCORSOptions())
++}
++
++// EnableCORSWithOptions enables chi's built-in CORS support on the Mux with
++// the given options. It registers the CORS middleware, which sets the
++// "always on" CORS response headers, and a MethodNotAllowed handler that
++// answers preflight OPTIONS requests (204, detecting Access-Control-Allow-Methods
++// from the matched route when possible) and reports the Allow header for
++// genuine method-not-allowed responses.
++func (mx *Mux) EnableCORSWithOptions(options CORSOptions) {
++	mx.Use(CORS(options))
++	mx.MethodNotAllowed(corsPreflightHandler(options))
++}
++
++// WithCORS returns a grouped Router with chi's built-in CORS support enabled
++// using DefaultCORSOptions().
++func (mx *Mux) WithCORS() Router {
++	return mx.Group(func(r Router) {
++		if sub, ok := r.(*Mux); ok {
++			sub.EnableCORSWithOptions(DefaultCORSOptions())
++		}
++	})
++}
++
+ // With adds inline middlewares for an endpoint handler.
+ func (mx *Mux) With(middlewares ...func(http.Handler) http.Handler) Router {
+ 	// Similarly as in handle(), we must build the mux handler once additional
+diff --git a/tree.go b/tree.go
+index 4189b52..89fe146 100644
+--- a/tree.go
++++ b/tree.go
+@@ -43,6 +43,27 @@ var methodMap = map[string]methodTyp{
+ 	http.MethodTrace:   mTRACE,
+ }
+ 
++// methodNames maps a chi internal method type back to its canonical HTTP
++// method string. It's used to build the Access-Control-Allow-Methods and
++// Allow headers for chi's built-in CORS support.
++var methodNames = map[methodTyp]string{
++	mCONNECT: http.MethodConnect,
++	mDELETE:  http.MethodDelete,
++	mGET:     http.MethodGet,
++	mHEAD:    http.MethodHead,
++	mOPTIONS: http.MethodOptions,
++	mPATCH:   http.MethodPatch,
++	mPOST:    http.MethodPost,
++	mPUT:     http.MethodPut,
++	mTRACE:   http.MethodTrace,
++}
++
++// GetMethodName returns the canonical HTTP method string for a chi internal
++// method type, or "" if the method type is unknown.
++func GetMethodName(method methodTyp) string {
++	return methodNames[method]
++}
++
+ // RegisterMethod adds support for custom HTTP method handlers, available
+ // via Router#Method and Router#MethodFunc
+ func RegisterMethod(method string) {
+@@ -59,6 +80,7 @@ func RegisterMethod(method string) {
+ 	}
+ 	mt := methodTyp(2 << n)
+ 	methodMap[method] = mt
++	methodNames[mt] = method
+ 	mALL |= mt
+ }
+ 
+@@ -457,6 +479,7 @@ func (n *node) findRoute(rctx *Context, method methodTyp, path string) *node {
+ 						// flag that the routing context found a route, but not a corresponding
+ 						// supported method
+ 						rctx.methodNotAllowed = true
++						rctx.methodsAllowed = xn.allowedMethods()
+ 					}
+ 				}
+ 
+@@ -496,6 +519,7 @@ func (n *node) findRoute(rctx *Context, method methodTyp, path string) *node {
+ 				// flag that the routing context found a route, but not a corresponding
+ 				// supported method
+ 				rctx.methodNotAllowed = true
++				rctx.methodsAllowed = xn.allowedMethods()
+ 			}
+ 		}
+ 
+@@ -549,6 +573,24 @@ func (n *node) isLeaf() bool {
+ 	return n.endpoints != nil
+ }
+ 
++// allowedMethods returns the sorted, canonical HTTP method names registered
++// as handlers on this leaf node. It's used to populate the Allow header on
++// 405 responses and the Access-Control-Allow-Methods header for chi's
++// built-in CORS preflight support.
++func (n *node) allowedMethods() []string {
++	methods := make([]string, 0, len(n.endpoints))
++	for mt, h := range n.endpoints {
++		if mt == mALL || mt == mSTUB || h == nil || h.handler == nil {
++			continue
++		}
++		if name := GetMethodName(mt); name != "" {
++			methods = append(methods, name)
++		}
++	}
++	sort.Strings(methods)
++	return methods
++}
++
+ func (n *node) findPattern(pattern string) bool {
+ 	nn := n
+ 	for _, nds := range nn.children {

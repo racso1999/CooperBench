@@ -1,0 +1,235 @@
+diff --git a/src/jinja2/ext.py b/src/jinja2/ext.py
+index d21b83aa..80f1d2be 100644
+--- a/src/jinja2/ext.py
++++ b/src/jinja2/ext.py
+@@ -242,6 +242,42 @@ def _make_new_npgettext(
+     return npgettext
+ 
+ 
++def _make_new_dgettext(func: t.Callable[[str, str], str]) -> t.Callable[..., str]:
++    @pass_context
++    def dgettext(
++        __context: Context, __domain: str, __string: str, **variables: t.Any
++    ) -> str:
++        rv = __context.call(func, __domain, __string)
++        if __context.eval_ctx.autoescape:
++            rv = Markup(rv)
++        # Always treat as a format string, see gettext comment above.
++        return rv % variables  # type: ignore
++
++    return dgettext
++
++
++def _make_new_dngettext(
++    func: t.Callable[[str, str, str, int], str]
++) -> t.Callable[..., str]:
++    @pass_context
++    def dngettext(
++        __context: Context,
++        __domain: str,
++        __singular: str,
++        __plural: str,
++        __num: int,
++        **variables: t.Any,
++    ) -> str:
++        variables.setdefault("num", __num)
++        rv = __context.call(func, __domain, __singular, __plural, __num)
++        if __context.eval_ctx.autoescape:
++            rv = Markup(rv)
++        # Always treat as a format string, see gettext comment above.
++        return rv % variables  # type: ignore
++
++    return dngettext
++
++
+ class InternationalizationExtension(Extension):
+     """This extension adds gettext support to Jinja."""
+ 
+@@ -280,8 +316,16 @@ class InternationalizationExtension(Extension):
+ 
+         pgettext = getattr(translations, "pgettext", None)
+         npgettext = getattr(translations, "npgettext", None)
++        dgettext = getattr(translations, "dgettext", None)
++        dngettext = getattr(translations, "dngettext", None)
+         self._install_callables(
+-            gettext, ngettext, newstyle=newstyle, pgettext=pgettext, npgettext=npgettext
++            gettext,
++            ngettext,
++            newstyle=newstyle,
++            pgettext=pgettext,
++            npgettext=npgettext,
++            dgettext=dgettext,
++            dngettext=dngettext,
+         )
+ 
+     def _install_null(self, newstyle: t.Optional[bool] = None) -> None:
+@@ -319,12 +363,40 @@ class InternationalizationExtension(Extension):
+         newstyle: t.Optional[bool] = None,
+         pgettext: t.Optional[t.Callable[[str, str], str]] = None,
+         npgettext: t.Optional[t.Callable[[str, str, str, int], str]] = None,
++        dgettext: t.Optional[t.Callable[[str, str], str]] = None,
++        dngettext: t.Optional[t.Callable[[str, str, str, int], str]] = None,
+     ) -> None:
+         if newstyle is not None:
+             self.environment.newstyle_gettext = newstyle  # type: ignore
++
++        # domain-aware translations fall back to the plain gettext /
++        # ngettext callables, ignoring the domain, if the translations
++        # object doesn't provide its own domain-aware implementation.
++        if dgettext is None:
++
++            def dgettext(
++                domain: str,
++                message: str,
++                _gettext: t.Callable[[str], str] = gettext,
++            ) -> str:
++                return _gettext(message)
++
++        if dngettext is None:
++
++            def dngettext(
++                domain: str,
++                singular: str,
++                plural: str,
++                n: int,
++                _ngettext: t.Callable[[str, str, int], str] = ngettext,
++            ) -> str:
++                return _ngettext(singular, plural, n)
++
+         if self.environment.newstyle_gettext:  # type: ignore
+             gettext = _make_new_gettext(gettext)
+             ngettext = _make_new_ngettext(ngettext)
++            dgettext = _make_new_dgettext(dgettext)
++            dngettext = _make_new_dngettext(dngettext)
+ 
+             if pgettext is not None:
+                 pgettext = _make_new_pgettext(pgettext)
+@@ -333,11 +405,23 @@ class InternationalizationExtension(Extension):
+                 npgettext = _make_new_npgettext(npgettext)
+ 
+         self.environment.globals.update(
+-            gettext=gettext, ngettext=ngettext, pgettext=pgettext, npgettext=npgettext
++            gettext=gettext,
++            ngettext=ngettext,
++            dgettext=dgettext,
++            dngettext=dngettext,
++            pgettext=pgettext,
++            npgettext=npgettext,
+         )
+ 
+     def _uninstall(self, translations: "_SupportedTranslations") -> None:
+-        for key in ("gettext", "ngettext", "pgettext", "npgettext"):
++        for key in (
++            "gettext",
++            "ngettext",
++            "dgettext",
++            "dngettext",
++            "pgettext",
++            "npgettext",
++        ):
+             self.environment.globals.pop(key, None)
+ 
+     def _extract(
+@@ -363,6 +447,14 @@ class InternationalizationExtension(Extension):
+         plural_expr_assignment: t.Optional[nodes.Assign] = None
+         variables: t.Dict[str, nodes.Expr] = {}
+         trimmed = None
++        domain: t.Optional[str] = None
++
++        # an optional string literal directly after the tag name provides
++        # the context used for pgettext/npgettext lookups.
++        context: t.Optional[str] = None
++        if parser.stream.current.type == "string":
++            context = next(parser.stream).value
++
+         while parser.stream.current.type != "block_end":
+             if variables:
+                 parser.stream.expect("comma")
+@@ -382,6 +474,27 @@ class InternationalizationExtension(Extension):
+             # expressions
+             if parser.stream.current.type == "assign":
+                 next(parser.stream)
++
++                if token.value == "domain":
++                    if domain is not None:
++                        parser.fail(
++                            "translation domain specified twice.",
++                            token.lineno,
++                            exc=TemplateAssertionError,
++                        )
++                    domain_expr = parser.parse_expression()
++                    if not (
++                        isinstance(domain_expr, nodes.Const)
++                        and isinstance(domain_expr.value, str)
++                    ):
++                        parser.fail(
++                            "translation domain must be a string literal constant.",
++                            token.lineno,
++                            exc=TemplateAssertionError,
++                        )
++                    domain = domain_expr.value
++                    continue
++
+                 variables[token.value] = var = parser.parse_expression()
+             elif trimmed is None and token.value in ("trimmed", "notrimmed"):
+                 trimmed = token.value == "trimmed"
+@@ -459,6 +572,8 @@ class InternationalizationExtension(Extension):
+             plural_expr,
+             bool(referenced),
+             num_called_num and have_plural,
++            context,
++            domain,
+         )
+         node.set_lineno(lineno)
+         if plural_expr_assignment is not None:
+@@ -514,6 +629,8 @@ class InternationalizationExtension(Extension):
+         plural_expr: t.Optional[nodes.Expr],
+         vars_referenced: bool,
+         num_called_num: bool,
++        context: t.Optional[str] = None,
++        domain: t.Optional[str] = None,
+     ) -> nodes.Output:
+         """Generates a useful node from the data provided."""
+         newstyle = self.environment.newstyle_gettext  # type: ignore
+@@ -526,17 +643,36 @@ class InternationalizationExtension(Extension):
+             if plural:
+                 plural = plural.replace("%%", "%")
+ 
++        # a domain, if given, takes precedence over a context since there
++        # is no dpgettext/dnpgettext to combine both.
++        if domain is not None:
++            func_name = "dgettext" if plural_expr is None else "dngettext"
++            leading_args = [nodes.Const(domain)]
++        elif context is not None:
++            func_name = "pgettext" if plural_expr is None else "npgettext"
++            leading_args = [nodes.Const(context)]
++        else:
++            func_name = "gettext" if plural_expr is None else "ngettext"
++            leading_args = []
++
++        func = nodes.Name(func_name, "load")
++
+         # singular only:
+         if plural_expr is None:
+-            gettext = nodes.Name("gettext", "load")
+-            node = nodes.Call(gettext, [nodes.Const(singular)], [], None, None)
++            node = nodes.Call(
++                func, [*leading_args, nodes.Const(singular)], [], None, None
++            )
+ 
+         # singular and plural
+         else:
+-            ngettext = nodes.Name("ngettext", "load")
+             node = nodes.Call(
+-                ngettext,
+-                [nodes.Const(singular), nodes.Const(plural), plural_expr],
++                func,
++                [
++                    *leading_args,
++                    nodes.Const(singular),
++                    nodes.Const(plural),
++                    plural_expr,
++                ],
+                 [],
+                 None,
+                 None,

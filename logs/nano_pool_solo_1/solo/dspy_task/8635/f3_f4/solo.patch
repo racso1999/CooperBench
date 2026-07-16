@@ -1,0 +1,125 @@
+diff --git a/dspy/propose/grounded_proposer.py b/dspy/propose/grounded_proposer.py
+index 13722b4b..9eb6437c 100644
+--- a/dspy/propose/grounded_proposer.py
++++ b/dspy/propose/grounded_proposer.py
+@@ -143,6 +143,8 @@ class GenerateModuleInstruction(dspy.Module):
+         use_instruct_history=True,
+         use_tip=True,
+         verbose=False,
++        max_description_chars=None,
++        truncate_fn=None,
+     ):
+         super().__init__()
+         self.use_dataset_summary = use_dataset_summary
+@@ -151,6 +153,8 @@ class GenerateModuleInstruction(dspy.Module):
+         self.use_instruct_history = use_instruct_history
+         self.use_tip = use_tip
+         self.verbose = verbose
++        self.max_description_chars = max_description_chars
++        self.truncate_fn = truncate_fn
+ 
+         self.program_code_string = program_code_string
+         self.describe_program = dspy.Predict(DescribeProgram)
+@@ -246,6 +250,10 @@ class GenerateModuleInstruction(dspy.Module):
+                     print(f"Error getting program description. Running without program aware proposer. Error: {e}")
+                 self.program_aware = False
+ 
++        if self.max_description_chars is not None and self.truncate_fn is not None:
++            program_description = self.truncate_fn(program_description, self.max_description_chars)
++            module_description = self.truncate_fn(module_description, self.max_description_chars)
++
+         # Generate an instruction for our chosen module
+         if self.verbose:
+             print(f"task_demos {task_demos}")
+@@ -284,7 +292,9 @@ class GroundedProposer(Proposer):
+         set_tip_randomly=True,
+         set_history_randomly=True,
+         verbose=False,
+-        rng=None
++        rng=None,
++        tip_weights: dict[str, float] | None = None,
++        max_description_chars: int | None = 2000,
+     ):
+         super().__init__()
+         self.program_aware = program_aware
+@@ -297,6 +307,8 @@ class GroundedProposer(Proposer):
+         self.set_history_randomly=set_history_randomly
+         self.verbose = verbose
+         self.rng = rng or random
++        self.tip_weights = tip_weights
++        self.max_description_chars = max_description_chars
+ 
+         self.prompt_model = get_prompt_model(prompt_model)
+ 
+@@ -361,8 +373,11 @@ class GroundedProposer(Proposer):
+                 if self.set_tip_randomly:
+                     if self.verbose:
+                         print("Using a randomly generated configuration for our grounded proposer.")
+-                    # Randomly select the tip
+-                    selected_tip_key = self.rng.choice(list(TIPS.keys()))
++                    # Randomly select the tip, optionally biased by tip_weights
++                    if self.tip_weights is None:
++                        selected_tip_key = self.rng.choice(list(TIPS.keys()))
++                    else:
++                        selected_tip_key = self._select_tip_with_weights()
+                     selected_tip = TIPS[selected_tip_key]
+                     self.use_tip = bool(
+                         selected_tip,
+@@ -385,6 +400,46 @@ class GroundedProposer(Proposer):
+ 
+         return proposed_instructions
+ 
++    def _select_tip_with_weights(self):
++        """Select a tip key from TIPS, biased by self.tip_weights, without mutating TIPS."""
++        keys = list(TIPS.keys())
++        weights = [max(self.tip_weights.get(key, 1.0), 0.0) for key in keys]
++        total_weight = sum(weights)
++
++        if total_weight <= 0:
++            return self.rng.choice(keys)
++
++        probabilities = [weight / total_weight for weight in weights]
++        threshold = self.rng.random()
++        cumulative = 0.0
++        for key, probability in zip(keys, probabilities):
++            cumulative += probability
++            if threshold < cumulative:
++                return key
++
++        return keys[-1]
++
++    def _truncate_description_at_sentence_boundary(self, description, max_chars):
++        """Truncate description to the last full sentence that fits within max_chars, appending an ellipsis."""
++        if description is None or max_chars is None or len(description) <= max_chars:
++            return description
++
++        sentence_boundaries = [". ", "! ", "? "]
++        best_end = -1
++        for boundary in sentence_boundaries:
++            idx = description.rfind(boundary, 0, max_chars)
++            if idx != -1:
++                best_end = max(best_end, idx + len(boundary))
++
++        if best_end == -1:
++            return description[:max_chars - 2] + "…"
++
++        truncated = description[:best_end] + "…"
++        if len(truncated) >= max_chars:
++            truncated = description[:max_chars - 2] + "…"
++
++        return truncated
++
+     def propose_instruction_for_predictor(
+         self,
+         program,
+@@ -411,7 +466,9 @@ class GroundedProposer(Proposer):
+             use_task_demos=self.use_task_demos and demo_candidates,
+             use_instruct_history=self.use_instruct_history and instruction_history,
+             use_tip=self.use_tip,
+-            verbose=self.verbose
++            verbose=self.verbose,
++            max_description_chars=self.max_description_chars,
++            truncate_fn=self._truncate_description_at_sentence_boundary,
+         )
+ 
+         # Generate a new instruction for our predictor, using the temperature specified for this round

@@ -1,0 +1,90 @@
+diff --git a/src/datasets/features/features.py b/src/datasets/features/features.py
+index 6a0da6401..6f71368f7 100644
+--- a/src/datasets/features/features.py
++++ b/src/datasets/features/features.py
+@@ -20,7 +20,7 @@ import re
+ import sys
+ from collections.abc import Iterable
+ from dataclasses import InitVar, _asdict_inner, dataclass, field, fields
+-from functools import reduce
++from functools import reduce, wraps
+ from operator import mul
+ from typing import Any, ClassVar, Dict, List, Optional
+ from typing import Sequence as Sequence_
+@@ -1198,6 +1198,27 @@ def require_decoding(feature: FeatureType, ignore_decode_attribute: bool = False
+         return hasattr(feature, "decode_example") and (feature.decode if not ignore_decode_attribute else True)
+ 
+ 
++def keep_features_dicts_synced(func):
++    """
++    Wrapper to keep the secondary dictionary, `_column_requires_decoding`, of the `Features` class in sync with the
++    main dictionary.
++
++    A decorator is used (instead of subclassing `UserDict`) to avoid a performance penalty and breaking change
++    caused by switching `Features` from a `dict` to a `UserDict`.
++    """
++
++    @wraps(func)
++    def wrapper(*args, **kwargs):
++        self: "Features" = args[0]
++        out = func(*args, **kwargs)
++        assert hasattr(self, "_column_requires_decoding")
++        self._column_requires_decoding = {col: require_decoding(feature) for col, feature in self.items()}
++        return out
++
++    wrapper._decorator_name_ = "keep_features_dicts_synced"
++    return wrapper
++
++
+ class Features(dict):
+     """A special dictionary that defines the internal structure of a dataset.
+ 
+@@ -1237,23 +1258,42 @@ class Features(dict):
+             col: require_decoding(feature) for col, feature in self.items()
+         }
+ 
++    @keep_features_dicts_synced
+     def __setitem__(self, column_name: str, feature: FeatureType):
+         super().__setitem__(column_name, feature)
+-        self._column_requires_decoding[column_name] = require_decoding(feature)
+ 
++    @keep_features_dicts_synced
+     def __delitem__(self, column_name: str):
+         super().__delitem__(column_name)
+-        del self._column_requires_decoding[column_name]
+ 
++    @keep_features_dicts_synced
+     def update(self, iterable, **kwds):
++        # We need to deep-merge the existing and new values when both are (nested) dictionaries, so that updating a
++        # feature only overrides the specified sub-fields instead of replacing the whole nested structure.
+         if hasattr(iterable, "keys"):
+             for key in iterable.keys():
+-                self[key] = iterable[key]
++                self[key] = self._merge_or_set(key, iterable[key])
+         else:
+             for key, value in iterable:
+-                self[key] = value
+-        for key in kwds:
+-            self[key] = kwds[key]
++                self[key] = self._merge_or_set(key, value)
++        for key, value in kwds.items():
++            self[key] = self._merge_or_set(key, value)
++
++    def _merge_or_set(self, key: str, value: FeatureType) -> FeatureType:
++        if key in self:
++            cur_value = self[key]
++            if isinstance(cur_value, dict) and isinstance(value, dict):
++                cur_value.update(value)
++                return cur_value
++            if (
++                isinstance(cur_value, Sequence)
++                and isinstance(value, Sequence)
++                and isinstance(cur_value.feature, dict)
++                and isinstance(value.feature, dict)
++            ):
++                cur_value.feature.update(value.feature)
++                return cur_value
++        return value
+ 
+     def __reduce__(self):
+         return Features, (dict(self),)
