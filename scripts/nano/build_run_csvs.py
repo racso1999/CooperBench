@@ -142,6 +142,8 @@ def family_of(arm: str) -> str:
         return "coop_nogit"
     if arm in GIT_ARMS:
         return "coop_git"
+    if arm.startswith("flash_"):  # flash runs follow the same arm_repeat naming
+        return "coop_git" if arm.endswith("_git") else "coop_nogit"
     if "solo" in arm:
         return "solo"
     if arm.startswith("smoke"):
