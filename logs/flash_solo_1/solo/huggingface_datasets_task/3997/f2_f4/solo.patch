@@ -1,0 +1,77 @@
+diff --git a/src/datasets/features/features.py b/src/datasets/features/features.py
+index 6a0da6401..72c849cbf 100644
+--- a/src/datasets/features/features.py
++++ b/src/datasets/features/features.py
+@@ -22,7 +22,7 @@ from collections.abc import Iterable
+ from dataclasses import InitVar, _asdict_inner, dataclass, field, fields
+ from functools import reduce
+ from operator import mul
+-from typing import Any, ClassVar, Dict, List, Optional
++from typing import Any, Callable, ClassVar, Dict, List, Optional
+ from typing import Sequence as Sequence_
+ from typing import Tuple, Union
+ 
+@@ -1178,22 +1178,36 @@ def list_of_np_array_to_pyarrow_listarray(l_arr: List[np.ndarray], type: pa.Data
+         return pa.array([], type=type)
+ 
+ 
+-def require_decoding(feature: FeatureType, ignore_decode_attribute: bool = False) -> bool:
++def require_decoding(
++    feature: FeatureType,
++    ignore_decode_attribute: bool = False,
++    custom_decode_condition: Optional[Callable[[FeatureType], Optional[bool]]] = None,
++) -> bool:
+     """Check if a (possibly nested) feature requires decoding.
+ 
+     Args:
+         feature (FeatureType): the feature type to be checked
+         ignore_decode_attribute (:obj:`bool`, default ``False``): Whether to ignore the current value
+             of the `decode` attribute of the decodable feature types.
++        custom_decode_condition (:obj:`Callable`, *optional*): A function called on `feature` before applying
++            the default rules. It should return `True` or `False` to override the default decoding decision
++            for that feature (e.g. based on metadata or feature-specific properties), or `None` to fall back
++            to the default logic below.
+     Returns:
+         :obj:`bool`
+     """
++    if custom_decode_condition is not None:
++        decision = custom_decode_condition(feature)
++        if decision is not None:
++            return decision
+     if isinstance(feature, dict):
+-        return any(require_decoding(f) for f in feature.values())
++        return any(
++            require_decoding(f, ignore_decode_attribute, custom_decode_condition) for f in feature.values()
++        )
+     elif isinstance(feature, (list, tuple)):
+-        return require_decoding(feature[0])
++        return require_decoding(feature[0], ignore_decode_attribute, custom_decode_condition)
+     elif isinstance(feature, Sequence):
+-        return require_decoding(feature.feature)
++        return require_decoding(feature.feature, ignore_decode_attribute, custom_decode_condition)
+     else:
+         return hasattr(feature, "decode_example") and (feature.decode if not ignore_decode_attribute else True)
+ 
+@@ -1245,8 +1259,20 @@ class Features(dict):
+         super().__delitem__(column_name)
+         del self._column_requires_decoding[column_name]
+ 
+-    def update(self, iterable, **kwds):
+-        if hasattr(iterable, "keys"):
++    def update(self, iterable=(), **kwds):
++        """Update the features, in-place.
++
++        In addition to the usual ``dict.update`` inputs (a mapping, an iterable of
++        ``(key, value)`` pairs, or keyword arguments), this also accepts:
++            - a JSON string encoding a mapping of column names to feature dicts
++            - an iterable of mappings, applied one after another (batch update)
++        """
++        if isinstance(iterable, str):
++            iterable = json.loads(iterable)
++        if isinstance(iterable, (list, tuple)) and iterable and all(hasattr(item, "keys") for item in iterable):
++            for item in iterable:
++                self.update(item)
++        elif hasattr(iterable, "keys"):
+             for key in iterable.keys():
+                 self[key] = iterable[key]
+         else:

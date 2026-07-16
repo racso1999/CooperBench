@@ -1,0 +1,104 @@
+diff --git a/CHANGES.rst b/CHANGES.rst
+index 2db769f..76f4c38 100644
+--- a/CHANGES.rst
++++ b/CHANGES.rst
+@@ -62,6 +62,11 @@ Unreleased
+ -   Contexts created during shell completion are closed properly, fixing
+     ``ResourceWarning``s when using ``click.File``. :issue:`2644` :pr:`2800`
+     :pr:`2767`
++-   Add ``escape_shell`` parameter to ``click.edit()`` to escape special shell
++    characters in the filename and editor command using ``shlex.quote``,
++    preventing shell command injection when editing untrusted filenames.
++-   Add ``working_dir`` parameter to ``click.edit()`` to set the current
++    working directory of the launched editor process.
+ 
+ 
+ Version 8.1.8
+diff --git a/src/click/_termui_impl.py b/src/click/_termui_impl.py
+index 7b97bfb..4c08886 100644
+--- a/src/click/_termui_impl.py
++++ b/src/click/_termui_impl.py
+@@ -485,11 +485,15 @@ class Editor:
+         env: cabc.Mapping[str, str] | None = None,
+         require_save: bool = True,
+         extension: str = ".txt",
++        escape_shell: bool = False,
++        working_dir: str | None = None,
+     ) -> None:
+         self.editor = editor
+         self.env = env
+         self.require_save = require_save
+         self.extension = extension
++        self.escape_shell = escape_shell
++        self.working_dir = working_dir
+ 
+     def get_editor(self) -> str:
+         if self.editor is not None:
+@@ -515,8 +519,21 @@ class Editor:
+             environ = os.environ.copy()
+             environ.update(self.env)
+ 
++        if self.escape_shell:
++            import shlex
++
++            editor_parts = " ".join(shlex.quote(part) for part in shlex.split(editor))
++            command = f"{editor_parts} {shlex.quote(filename)}"
++        else:
++            command = f'{editor} "{filename}"'
++
+         try:
+-            c = subprocess.Popen(f'{editor} "{filename}"', env=environ, shell=True)
++            c = subprocess.Popen(
++                command,
++                env=environ,
++                shell=True,
++                cwd=self.working_dir,
++            )
+             exit_code = c.wait()
+             if exit_code != 0:
+                 raise ClickException(
+diff --git a/src/click/termui.py b/src/click/termui.py
+index e14e670..9533653 100644
+--- a/src/click/termui.py
++++ b/src/click/termui.py
+@@ -650,6 +650,8 @@ def edit(
+     require_save: bool = True,
+     extension: str = ".txt",
+     filename: str | None = None,
++    escape_shell: bool = False,
++    working_dir: str | None = None,
+ ) -> t.AnyStr | None:
+     r"""Edits the given text in the defined editor.  If an editor is given
+     (should be the full path to the executable but the regular operating
+@@ -677,10 +679,30 @@ def edit(
+     :param filename: if provided it will edit this file instead of the
+                      provided text contents.  It will not use a temporary
+                      file as an indirection in that case.
++    :param escape_shell: if this is true, the filename and editor command
++                         are escaped using :func:`shlex.quote` before being
++                         passed to the shell. This helps prevent shell
++                         command injection when the filename or editor is
++                         derived from untrusted input. Defaults to `False`
++                         for backwards compatibility.
++    :param working_dir: if provided, the editor process is launched with
++                        this directory as its current working directory.
++                        Defaults to `None`, which preserves the calling
++                        process's current working directory.
++
++    .. versionadded:: 8.2
++        Added the ``escape_shell`` and ``working_dir`` parameters.
+     """
+     from ._termui_impl import Editor
+ 
+-    ed = Editor(editor=editor, env=env, require_save=require_save, extension=extension)
++    ed = Editor(
++        editor=editor,
++        env=env,
++        require_save=require_save,
++        extension=extension,
++        escape_shell=escape_shell,
++        working_dir=working_dir,
++    )
+ 
+     if filename is None:
+         return ed.edit(text)

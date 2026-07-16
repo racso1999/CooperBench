@@ -1,0 +1,159 @@
+diff --git a/src/click/_termui_impl.py b/src/click/_termui_impl.py
+index 7b97bfb..cb85ee4 100644
+--- a/src/click/_termui_impl.py
++++ b/src/click/_termui_impl.py
+@@ -478,6 +478,26 @@ def _nullpager(
+         stream.write(text)
+ 
+ 
++# Mapping of the supported priority names to Unix "nice" increments.
++# Lower nice values mean higher scheduling priority.
++_PRIORITY_TO_NICE = {
++    "low": 10,
++    "below_normal": 5,
++    "normal": 0,
++    "above_normal": -5,
++    "high": -10,
++}
++
++# Mapping of the supported priority names to Windows priority classes.
++_PRIORITY_TO_WIN_CLASS = {
++    "low": "IDLE_PRIORITY_CLASS",
++    "below_normal": "BELOW_NORMAL_PRIORITY_CLASS",
++    "normal": "NORMAL_PRIORITY_CLASS",
++    "above_normal": "ABOVE_NORMAL_PRIORITY_CLASS",
++    "high": "HIGH_PRIORITY_CLASS",
++}
++
++
+ class Editor:
+     def __init__(
+         self,
+@@ -485,11 +505,17 @@ class Editor:
+         env: cabc.Mapping[str, str] | None = None,
+         require_save: bool = True,
+         extension: str = ".txt",
++        process_priority: str | None = None,
++        escape_shell: bool = False,
+     ) -> None:
+         self.editor = editor
+         self.env = env
+         self.require_save = require_save
+         self.extension = extension
++        self.process_priority = (
++            process_priority if process_priority in _PRIORITY_TO_NICE else None
++        )
++        self.escape_shell = escape_shell
+ 
+     def get_editor(self) -> str:
+         if self.editor is not None:
+@@ -505,6 +531,45 @@ class Editor:
+                 return editor
+         return "vi"
+ 
++    def _apply_process_priority(self, pid: int) -> None:
++        """Best-effort attempt to set the priority of the editor
++        process.  Any failure is ignored since the edit operation
++        should succeed even if the priority could not be changed.
++        """
++        if self.process_priority is None:
++            return
++
++        try:
++            if WIN:
++                import ctypes
++
++                win_class_name = _PRIORITY_TO_WIN_CLASS[self.process_priority]
++                # Values taken from the Windows API ``winbase.h`` header.
++                win_classes = {
++                    "IDLE_PRIORITY_CLASS": 0x00000040,
++                    "BELOW_NORMAL_PRIORITY_CLASS": 0x00004000,
++                    "NORMAL_PRIORITY_CLASS": 0x00000020,
++                    "ABOVE_NORMAL_PRIORITY_CLASS": 0x00008000,
++                    "HIGH_PRIORITY_CLASS": 0x00000080,
++                }
++                handle = ctypes.windll.kernel32.OpenProcess(  # type: ignore[attr-defined]
++                    0x0200 | 0x0400, False, pid
++                )
++                if handle:
++                    try:
++                        ctypes.windll.kernel32.SetPriorityClass(  # type: ignore[attr-defined]
++                            handle, win_classes[win_class_name]
++                        )
++                    finally:
++                        ctypes.windll.kernel32.CloseHandle(handle)  # type: ignore[attr-defined]
++            else:
++                nice_value = _PRIORITY_TO_NICE[self.process_priority]
++                os.setpriority(os.PRIO_PROCESS, pid, nice_value)
++        except Exception:
++            # Priority setting is best-effort; failures should never
++            # cause the edit operation itself to fail.
++            pass
++
+     def edit_file(self, filename: str) -> None:
+         import subprocess
+ 
+@@ -515,8 +580,16 @@ class Editor:
+             environ = os.environ.copy()
+             environ.update(self.env)
+ 
++        if self.escape_shell:
++            import shlex
++
++            command = f"{editor} {shlex.quote(filename)}"
++        else:
++            command = f'{editor} "{filename}"'
++
+         try:
+-            c = subprocess.Popen(f'{editor} "{filename}"', env=environ, shell=True)
++            c = subprocess.Popen(command, env=environ, shell=True)
++            self._apply_process_priority(c.pid)
+             exit_code = c.wait()
+             if exit_code != 0:
+                 raise ClickException(
+diff --git a/src/click/termui.py b/src/click/termui.py
+index e14e670..031a5d1 100644
+--- a/src/click/termui.py
++++ b/src/click/termui.py
+@@ -650,6 +650,8 @@ def edit(
+     require_save: bool = True,
+     extension: str = ".txt",
+     filename: str | None = None,
++    process_priority: str | None = None,
++    escape_shell: bool = False,
+ ) -> t.AnyStr | None:
+     r"""Edits the given text in the defined editor.  If an editor is given
+     (should be the full path to the executable but the regular operating
+@@ -677,10 +679,31 @@ def edit(
+     :param filename: if provided it will edit this file instead of the
+                      provided text contents.  It will not use a temporary
+                      file as an indirection in that case.
++    :param process_priority: optionally set the CPU priority of the editor
++                             process.  One of ``None`` (default), ``"low"``,
++                             ``"below_normal"``, ``"normal"``,
++                             ``"above_normal"`` or ``"high"``.  Setting the
++                             priority is done on a best-effort basis; if it
++                             is not supported on the current platform or
++                             fails for any reason, the edit operation still
++                             proceeds with the default priority.
++    :param escape_shell: if set to ``True``, the filename passed to the
++                         editor is escaped using :func:`shlex.quote` before
++                         being passed to the shell, which helps protect
++                         against shell injection via file paths that
++                         contain special characters. Defaults to ``False``
++                         for backwards compatibility.
+     """
+     from ._termui_impl import Editor
+ 
+-    ed = Editor(editor=editor, env=env, require_save=require_save, extension=extension)
++    ed = Editor(
++        editor=editor,
++        env=env,
++        require_save=require_save,
++        extension=extension,
++        process_priority=process_priority,
++        escape_shell=escape_shell,
++    )
+ 
+     if filename is None:
+         return ed.edit(text)
