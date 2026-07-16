@@ -1,0 +1,111 @@
+diff --git a/dirty_equals/__init__.py b/dirty_equals/__init__.py
+index ba8214e..cea2b25 100644
+--- a/dirty_equals/__init__.py
++++ b/dirty_equals/__init__.py
+@@ -18,7 +18,7 @@ from ._numeric import (
+     IsPositiveFloat,
+     IsPositiveInt,
+ )
+-from ._other import FunctionCheck, IsJson, IsUUID
++from ._other import FunctionCheck, IsJson, IsPhoneNumber, IsUUID
+ from ._sequence import Contains, HasLen, IsList, IsListOrTuple, IsTuple
+ from ._strings import IsAnyStr, IsBytes, IsStr
+ 
+@@ -69,6 +69,7 @@ __all__ = (
+     'FunctionCheck',
+     'IsJson',
+     'IsUUID',
++    'IsPhoneNumber',
+     # strings
+     'IsStr',
+     'IsBytes',
+diff --git a/dirty_equals/_other.py b/dirty_equals/_other.py
+index b2b8379..4337116 100644
+--- a/dirty_equals/_other.py
++++ b/dirty_equals/_other.py
+@@ -1,5 +1,6 @@
+ import json
+-from typing import Any, Callable, TypeVar, overload
++import re
++from typing import Any, Callable, Optional, TypeVar, overload
+ from uuid import UUID
+ 
+ from ._base import DirtyEquals
+@@ -51,6 +52,77 @@ class IsUUID(DirtyEquals[UUID]):
+             return True
+ 
+ 
++class IsPhoneNumber(DirtyEquals[str]):
++    """
++    A class that checks if a value is a phone number, optionally restricted to a specific country.
++
++    This provides pragmatic, rather than exhaustive, phone number validation - it's not a replacement
++    for a dedicated phone number parsing library.
++    """
++
++    _strip_re = re.compile(r'[\s\-.()]')
++
++    # national and international patterns for countries with specific rules
++    _country_patterns = {
++        'US': (re.compile(r'\d{10}'), re.compile(r'\+1\d{10}')),
++        'GB': (re.compile(r'0\d{9,10}'), re.compile(r'\+44\d{9,10}')),
++    }
++
++    # generic international format: `+` followed by a 1-3 digit country code and a 7-15 digit number
++    _generic_international_re = re.compile(r'\+\d{8,18}')
++    # generic, country-less national format
++    _generic_national_re = re.compile(r'\d{7,15}')
++
++    def __init__(self, country: Optional[str] = None):
++        """
++        Args:
++            country: ISO 3166-1 alpha-2 country code (e.g. `'US'`, `'GB'`) to restrict validation to, if omitted,
++                phone numbers from any country are accepted.
++
++        ```py title="IsPhoneNumber"
++        from dirty_equals import IsPhoneNumber
++
++        assert '+1-555-123-4567' == IsPhoneNumber
++        assert '555-123-4567' == IsPhoneNumber
++        assert '555-123-4567' == IsPhoneNumber('US')
++        assert '+1-555-123-4567' == IsPhoneNumber('US')
++        assert '020 7946 0958' == IsPhoneNumber('GB')
++        assert '+44 20 7946 0958' == IsPhoneNumber('GB')
++        assert '555-123-4567' != IsPhoneNumber('GB')
++        assert '020 7946 0958' != IsPhoneNumber('US')
++        assert 12345 != IsPhoneNumber
++        ```
++        """
++        self.country = country.upper() if country else None
++        super().__init__(self.country or plain_repr('*'))
++
++    def equals(self, other: Any) -> bool:
++        if not isinstance(other, str):
++            return False
++
++        normalized = self._strip_re.sub('', other)
++        if not re.fullmatch(r'\+?\d+', normalized):
++            return False
++
++        if self.country is None:
++            return self._check_any(normalized)
++
++        patterns = self._country_patterns.get(self.country)
++        if patterns is not None:
++            national_re, international_re = patterns
++            return bool(national_re.fullmatch(normalized)) or bool(international_re.fullmatch(normalized))
++        else:
++            return bool(self._generic_international_re.fullmatch(normalized))
++
++    def _check_any(self, normalized: str) -> bool:
++        for national_re, international_re in self._country_patterns.values():
++            if national_re.fullmatch(normalized) or international_re.fullmatch(normalized):
++                return True
++        return bool(self._generic_international_re.fullmatch(normalized)) or bool(
++            self._generic_national_re.fullmatch(normalized)
++        )
++
++
+ AnyJson = object
+ JsonType = TypeVar('JsonType', AnyJson, Any)
+ 

@@ -1,0 +1,111 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..9c3ab7e 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -2499,6 +2499,10 @@ class Option(Parameter):
+                      multiple times and recorded.  This is similar to ``nargs``
+                      in how it works but supports arbitrary number of
+                      arguments.
++    :param batch_size: if this is set together with ``multiple=True``, the
++                       collected values are grouped into tuples of at most
++                       this many items instead of a single flat tuple. Must
++                       be a non-negative integer.
+     :param count: this flag makes an option increment an integer.
+     :param allow_from_autoenv: if this is enabled then the value of this
+                                parameter will be pulled from an environment
+@@ -2508,6 +2512,9 @@ class Option(Parameter):
+     :param hidden: hide this option from help outputs.
+     :param attrs: Other command arguments described in :class:`Parameter`.
+ 
++    .. versionchanged:: 8.3
++        Added the ``batch_size`` parameter.
++
+     .. versionchanged:: 8.2
+         ``envvar`` used with ``flag_value`` will always use the ``flag_value``,
+         previously it would use the value of the environment variable.
+@@ -2549,6 +2556,7 @@ class Option(Parameter):
+         show_choices: bool = True,
+         show_envvar: bool = False,
+         deprecated: bool | str = False,
++        batch_size: int | None = None,
+         **attrs: t.Any,
+     ) -> None:
+         if help:
+@@ -2559,6 +2567,8 @@ class Option(Parameter):
+             param_decls, type=type, multiple=multiple, deprecated=deprecated, **attrs
+         )
+ 
++        self.batch_size = batch_size
++
+         if prompt is True:
+             if self.name is None:
+                 raise TypeError("'name' is required with 'prompt=True'.")
+@@ -2662,6 +2672,13 @@ class Option(Parameter):
+                 if self.is_flag:
+                     raise TypeError("'count' is not valid with 'is_flag'.")
+ 
++            if self.batch_size is not None:
++                if not self.multiple:
++                    raise TypeError("'batch_size' is only valid with 'multiple'.")
++
++                if self.batch_size < 0:
++                    raise ValueError("'batch_size' must be a non-negative integer.")
++
+     def to_info_dict(self) -> dict[str, t.Any]:
+         info_dict = super().to_info_dict()
+         info_dict.update(
+@@ -2671,9 +2688,18 @@ class Option(Parameter):
+             flag_value=self.flag_value,
+             count=self.count,
+             hidden=self.hidden,
++            batch_size=self.batch_size,
+         )
+         return info_dict
+ 
++    def type_cast_value(self, ctx: Context, value: t.Any) -> t.Any:
++        value = super().type_cast_value(ctx, value)
++
++        if self.multiple and self.batch_size and value:
++            return tuple(types.batch_iterable(value, self.batch_size))
++
++        return value
++
+     def get_error_hint(self, ctx: Context) -> str:
+         result = super().get_error_hint(ctx)
+         if self.show_envvar:
+diff --git a/src/click/types.py b/src/click/types.py
+index 684cb3b..cad1ea9 100644
+--- a/src/click/types.py
++++ b/src/click/types.py
+@@ -2,6 +2,7 @@ from __future__ import annotations
+ 
+ import collections.abc as cabc
+ import enum
++import itertools
+ import os
+ import stat
+ import sys
+@@ -1065,6 +1066,23 @@ class Tuple(CompositeParamType):
+         )
+ 
+ 
++def batch_iterable(
++    value: cabc.Iterable[t.Any], batch_size: int
++) -> cabc.Iterator[tuple[t.Any, ...]]:
++    """Split an iterable of values into tuples of at most
++    ``batch_size`` items each. The last batch may contain fewer items.
++
++    :param value: The values to split into batches.
++    :param batch_size: The maximum number of items per batch.
++
++    .. versionadded:: 8.3
++    """
++    iterator = iter(value)
++
++    while batch := tuple(itertools.islice(iterator, batch_size)):
++        yield batch
++
++
+ def convert_type(ty: t.Any | None, default: t.Any | None = None) -> ParamType:
+     """Find the most appropriate :class:`ParamType` for the given Python
+     type. If the type isn't provided, it can be inferred from a default

@@ -1,0 +1,74 @@
+diff --git a/llama-index-core/llama_index/core/base/llms/types.py b/llama-index-core/llama_index/core/base/llms/types.py
+index 00e30cf23..e5dd28c91 100644
+--- a/llama-index-core/llama_index/core/base/llms/types.py
++++ b/llama-index-core/llama_index/core/base/llms/types.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import base64
++import binascii
+ from enum import Enum
+ from io import BytesIO
+ from typing import (
+@@ -48,6 +49,24 @@ class TextBlock(BaseModel):
+     text: str
+ 
+ 
++def normalize_image_bytes(image: bytes) -> tuple[bytes, bytes]:
++    """Normalize image bytes for storage and mimetype guessing.
++
++    Detects whether `image` is already base64-encoded. Returns a tuple of
++    `(encoded_image, decoded_for_guessing)`, where `encoded_image` is the
++    base64-encoded bytes to store, and `decoded_for_guessing` is the raw
++    (decoded) bytes suitable for mimetype guessing via `filetype`.
++    """
++    try:
++        decoded_for_guessing = base64.b64decode(image, validate=True)
++        encoded_image = image
++    except binascii.Error:
++        decoded_for_guessing = image
++        encoded_image = base64.b64encode(image)
++
++    return encoded_image, decoded_for_guessing
++
++
+ class ImageBlock(BaseModel):
+     block_type: Literal["image"] = "image"
+     image: bytes | None = None
+@@ -64,6 +83,20 @@ class ImageBlock(BaseModel):
+             return url
+         return AnyUrl(url=url)
+ 
++    def get_image_mimetype(self) -> str | None:
++        """Lazily resolve and cache the mimetype for this image.
++
++        Returns the cached mimetype if already set, otherwise guesses it
++        from the image bytes (decoding first if needed) and caches the result.
++        """
++        if self.image_mimetype:
++            return self.image_mimetype
++        if self.image:
++            _, decoded_for_guessing = normalize_image_bytes(self.image)
++            guess = filetype.guess(decoded_for_guessing)
++            self.image_mimetype = guess.mime if guess else None
++        return self.image_mimetype
++
+     @model_validator(mode="after")
+     def image_to_base64(self) -> Self:
+         """Store the image as base64 and guess the mimetype when possible.
+@@ -75,12 +108,12 @@ class ImageBlock(BaseModel):
+         if not self.image:
+             return self
+ 
++        self.image, decoded_for_guessing = normalize_image_bytes(self.image)
++
+         if not self.image_mimetype:
+-            guess = filetype.guess(self.image)
++            guess = filetype.guess(decoded_for_guessing)
+             self.image_mimetype = guess.mime if guess else None
+ 
+-        self.image = base64.b64encode(self.image)
+-
+         return self
+ 
+     def resolve_image(self, as_base64: bool = False) -> BytesIO:

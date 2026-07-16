@@ -1,0 +1,111 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index 666ad68..3d147ad 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -280,6 +280,7 @@ class Context:
+         token_normalize_func: t.Callable[[str], str] | None = None,
+         color: bool | None = None,
+         show_default: bool | None = None,
++        validate_nesting: bool = False,
+     ) -> None:
+         #: the parent context or `None` if none exists.
+         self.parent = parent
+@@ -432,6 +433,17 @@ class Context:
+         self._parameter_source: dict[str, ParameterSource] = {}
+         self._exit_stack = ExitStack()
+ 
++        #: Controls if the context requires all of its child contexts
++        #: to be closed before it can be closed itself. When enabled,
++        #: closing this context while a child context (created through
++        #: :meth:`_make_sub_context`) is still open raises a
++        #: ``RuntimeError``. Child contexts inherit this setting from
++        #: their parent.
++        #:
++        #: .. versionadded:: 8.2
++        self.validate_nesting = validate_nesting
++        self._children: list[Context] = []
++
+     @property
+     def protected_args(self) -> list[str]:
+         import warnings
+@@ -606,11 +618,30 @@ class Context:
+         """Invoke all close callbacks registered with
+         :meth:`call_on_close`, and exit all context managers entered
+         with :meth:`with_resource`.
++
++        If :attr:`validate_nesting` is enabled and any child contexts
++        (created through :meth:`_make_sub_context`) are still open, a
++        ``RuntimeError`` is raised instead.
++
++        .. versionchanged:: 8.2
++            Added the :attr:`validate_nesting` check.
+         """
++        if self.validate_nesting and self._children:
++            open_children = ", ".join(
++                repr(child.info_name) for child in self._children
++            )
++            raise RuntimeError(
++                f"Cannot close context {self.info_name!r} because it has"
++                f" open child contexts: {open_children}."
++            )
++
+         self._exit_stack.close()
+         # In case the context is reused, create a new exit stack.
+         self._exit_stack = ExitStack()
+ 
++        if self.parent is not None and self in self.parent._children:
++            self.parent._children.remove(self)
++
+     @property
+     def command_path(self) -> str:
+         """The computed command path.  This is used for the ``usage``
+@@ -728,7 +759,13 @@ class Context:
+ 
+         :meta private:
+         """
+-        return type(self)(command, info_name=command.name, parent=self)
++        child = type(self)(command, info_name=command.name, parent=self)
++        child.validate_nesting = self.validate_nesting
++
++        if self.validate_nesting:
++            self._children.append(child)
++
++        return child
+ 
+     @t.overload
+     def invoke(
+diff --git a/src/click/shell_completion.py b/src/click/shell_completion.py
+index 6fd9e54..25bdcad 100644
+--- a/src/click/shell_completion.py
++++ b/src/click/shell_completion.py
+@@ -544,6 +544,7 @@ def _resolve_context(
+     :param args: List of complete args before the incomplete value.
+     """
+     ctx_args["resilient_parsing"] = True
++    ctx_args["validate_nesting"] = False
+     ctx = cli.make_context(prog_name, args.copy(), **ctx_args)
+     args = ctx._protected_args + ctx.args
+ 
+@@ -557,7 +558,13 @@ def _resolve_context(
+                 if cmd is None:
+                     return ctx
+ 
+-                ctx = cmd.make_context(name, args, parent=ctx, resilient_parsing=True)
++                ctx = cmd.make_context(
++                    name,
++                    args,
++                    parent=ctx,
++                    resilient_parsing=True,
++                    validate_nesting=False,
++                )
+                 args = ctx._protected_args + ctx.args
+             else:
+                 sub_ctx = ctx
+@@ -575,6 +582,7 @@ def _resolve_context(
+                         allow_extra_args=True,
+                         allow_interspersed_args=False,
+                         resilient_parsing=True,
++                        validate_nesting=False,
+                     )
+                     args = sub_ctx.args
+ 

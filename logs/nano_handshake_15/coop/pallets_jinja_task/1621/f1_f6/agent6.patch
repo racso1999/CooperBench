@@ -1,0 +1,298 @@
+diff --git a/src/jinja2/loaders.py b/src/jinja2/loaders.py
+index d7d9bd04..ee4a4699 100644
+--- a/src/jinja2/loaders.py
++++ b/src/jinja2/loaders.py
+@@ -170,9 +170,17 @@ class FileSystemLoader(BaseLoader):
+     :param encoding: Use this encoding to read the text from template
+         files.
+     :param followlinks: Follow symbolic links in the path.
++    :param path_transform: An optional callable that receives the
++        template path and returns a transformed path to use when
++        resolving the template. If a template can't be found under
++        the transformed path, :exc:`TemplateNotFound` is raised using
++        the original, untransformed name.
+ 
+     .. versionchanged:: 2.8
+         Added the ``followlinks`` parameter.
++
++    .. versionchanged:: 3.1
++        Added the ``path_transform`` parameter.
+     """
+ 
+     def __init__(
+@@ -180,6 +188,7 @@ class FileSystemLoader(BaseLoader):
+         searchpath: t.Union[str, os.PathLike, t.Sequence[t.Union[str, os.PathLike]]],
+         encoding: str = "utf-8",
+         followlinks: bool = False,
++        path_transform: t.Optional[t.Callable[[str], str]] = None,
+     ) -> None:
+         if not isinstance(searchpath, abc.Iterable) or isinstance(searchpath, str):
+             searchpath = [searchpath]
+@@ -187,10 +196,14 @@ class FileSystemLoader(BaseLoader):
+         self.searchpath = [os.fspath(p) for p in searchpath]
+         self.encoding = encoding
+         self.followlinks = followlinks
++        self.path_transform = path_transform
+ 
+     def get_source(
+         self, environment: "Environment", template: str
+     ) -> t.Tuple[str, str, t.Callable[[], bool]]:
++        original = template
++        if self.path_transform is not None:
++            template = self.path_transform(template)
+         pieces = split_template_path(template)
+         for searchpath in self.searchpath:
+             filename = os.path.join(searchpath, *pieces)
+@@ -211,7 +224,7 @@ class FileSystemLoader(BaseLoader):
+                     return False
+ 
+             return contents, filename, uptodate
+-        raise TemplateNotFound(template)
++        raise TemplateNotFound(original)
+ 
+     def list_templates(self) -> t.List[str]:
+         found = set()
+@@ -239,6 +252,11 @@ class PackageLoader(BaseLoader):
+     :param package_path: Directory within the imported package that
+         contains the templates.
+     :param encoding: Encoding of template files.
++    :param path_transform: An optional callable that receives the
++        template path and returns a transformed path to use when
++        resolving the template. If a template can't be found under
++        the transformed path, :exc:`TemplateNotFound` is raised using
++        the original, untransformed name.
+ 
+     The following example looks up templates in the ``pages`` directory
+     within the ``project.ui`` package.
+@@ -262,6 +280,9 @@ class PackageLoader(BaseLoader):
+ 
+     .. versionchanged:: 3.0
+         Limited PEP 420 namespace package support.
++
++    .. versionchanged:: 3.1
++        Added the ``path_transform`` parameter.
+     """
+ 
+     def __init__(
+@@ -269,7 +290,9 @@ class PackageLoader(BaseLoader):
+         package_name: str,
+         package_path: "str" = "templates",
+         encoding: str = "utf-8",
++        path_transform: t.Optional[t.Callable[[str], str]] = None,
+     ) -> None:
++        self.path_transform = path_transform
+         package_path = os.path.normpath(package_path).rstrip(os.path.sep)
+ 
+         # normpath preserves ".", which isn't valid in zip paths.
+@@ -326,13 +349,16 @@ class PackageLoader(BaseLoader):
+     def get_source(
+         self, environment: "Environment", template: str
+     ) -> t.Tuple[str, str, t.Optional[t.Callable[[], bool]]]:
++        original = template
++        if self.path_transform is not None:
++            template = self.path_transform(template)
+         p = os.path.join(self._template_root, *split_template_path(template))
+         up_to_date: t.Optional[t.Callable[[], bool]]
+ 
+         if self._archive is None:
+             # Package is a directory.
+             if not os.path.isfile(p):
+-                raise TemplateNotFound(template)
++                raise TemplateNotFound(original)
+ 
+             with open(p, "rb") as f:
+                 source = f.read()
+@@ -347,7 +373,7 @@ class PackageLoader(BaseLoader):
+             try:
+                 source = self._loader.get_data(p)  # type: ignore
+             except OSError as e:
+-                raise TemplateNotFound(template) from e
++                raise TemplateNotFound(original) from e
+ 
+             # Could use the zip's mtime for all template mtimes, but
+             # would need to safely reload the module if it's out of
+@@ -399,18 +425,37 @@ class DictLoader(BaseLoader):
+     >>> loader = DictLoader({'index.html': 'source here'})
+ 
+     Because auto reloading is rarely useful this is disabled per default.
++
++    :param mapping: A dict mapping template names to template source.
++    :param path_transform: An optional callable that receives the
++        template path and returns a transformed path to use as the key
++        when looking up the template in ``mapping``. If a template
++        can't be found under the transformed path,
++        :exc:`TemplateNotFound` is raised using the original,
++        untransformed name.
++
++    .. versionchanged:: 3.1
++        Added the ``path_transform`` parameter.
+     """
+ 
+-    def __init__(self, mapping: t.Mapping[str, str]) -> None:
++    def __init__(
++        self,
++        mapping: t.Mapping[str, str],
++        path_transform: t.Optional[t.Callable[[str], str]] = None,
++    ) -> None:
+         self.mapping = mapping
++        self.path_transform = path_transform
+ 
+     def get_source(
+         self, environment: "Environment", template: str
+     ) -> t.Tuple[str, None, t.Callable[[], bool]]:
++        original = template
++        if self.path_transform is not None:
++            template = self.path_transform(template)
+         if template in self.mapping:
+             source = self.mapping[template]
+             return source, None, lambda: source == self.mapping.get(template)
+-        raise TemplateNotFound(template)
++        raise TemplateNotFound(original)
+ 
+     def list_templates(self) -> t.List[str]:
+         return sorted(self.mapping)
+@@ -432,6 +477,17 @@ class FunctionLoader(BaseLoader):
+     and has to return `True` if the template is still up to date.  For more
+     details have a look at :meth:`BaseLoader.get_source` which has the same
+     return value.
++
++    :param load_func: A function that loads a template given its name.
++    :param path_transform: An optional callable that receives the
++        template path and returns a transformed path to pass to
++        ``load_func`` when resolving the template. If ``load_func``
++        returns ``None`` for the transformed path,
++        :exc:`TemplateNotFound` is raised using the original,
++        untransformed name.
++
++    .. versionchanged:: 3.1
++        Added the ``path_transform`` parameter.
+     """
+ 
+     def __init__(
+@@ -444,16 +500,21 @@ class FunctionLoader(BaseLoader):
+                 ]
+             ],
+         ],
++        path_transform: t.Optional[t.Callable[[str], str]] = None,
+     ) -> None:
+         self.load_func = load_func
++        self.path_transform = path_transform
+ 
+     def get_source(
+         self, environment: "Environment", template: str
+     ) -> t.Tuple[str, t.Optional[str], t.Optional[t.Callable[[], bool]]]:
++        original = template
++        if self.path_transform is not None:
++            template = self.path_transform(template)
+         rv = self.load_func(template)
+ 
+         if rv is None:
+-            raise TemplateNotFound(template)
++            raise TemplateNotFound(original)
+ 
+         if isinstance(rv, str):
+             return rv, None, None
+@@ -474,20 +535,41 @@ class PrefixLoader(BaseLoader):
+ 
+     By loading ``'app1/index.html'`` the file from the app1 package is loaded,
+     by loading ``'app2/index.html'`` the file from the second.
++
++    :param mapping: A dict mapping prefixes to loaders.
++    :param delimiter: The delimiter that separates the prefix from the
++        rest of the template name.
++    :param path_transform: An optional callable that receives the full
++        template path (including the prefix) and returns a transformed
++        path. The transformation is applied once, before the prefix is
++        split off and the request is delegated to the matching child
++        loader. If the transformed path doesn't resolve to a template,
++        :exc:`TemplateNotFound` is raised using the original,
++        untransformed name.
++
++    .. versionchanged:: 3.1
++        Added the ``path_transform`` parameter.
+     """
+ 
+     def __init__(
+-        self, mapping: t.Mapping[str, BaseLoader], delimiter: str = "/"
++        self,
++        mapping: t.Mapping[str, BaseLoader],
++        delimiter: str = "/",
++        path_transform: t.Optional[t.Callable[[str], str]] = None,
+     ) -> None:
+         self.mapping = mapping
+         self.delimiter = delimiter
++        self.path_transform = path_transform
+ 
+     def get_loader(self, template: str) -> t.Tuple[BaseLoader, str]:
++        original = template
++        if self.path_transform is not None:
++            template = self.path_transform(template)
+         try:
+             prefix, name = template.split(self.delimiter, 1)
+             loader = self.mapping[prefix]
+         except (ValueError, KeyError) as e:
+-            raise TemplateNotFound(template) from e
++            raise TemplateNotFound(original) from e
+         return loader, name
+ 
+     def get_source(
+@@ -536,20 +618,40 @@ class ChoiceLoader(BaseLoader):
+ 
+     This is useful if you want to allow users to override builtin templates
+     from a different location.
++
++    :param loaders: A list of loaders to try in order.
++    :param path_transform: An optional callable that receives the
++        template path and returns a transformed path. The
++        transformation is applied once, before the request is
++        delegated to each child loader in turn. If the transformed
++        path doesn't resolve to a template in any child loader,
++        :exc:`TemplateNotFound` is raised using the original,
++        untransformed name.
++
++    .. versionchanged:: 3.1
++        Added the ``path_transform`` parameter.
+     """
+ 
+-    def __init__(self, loaders: t.Sequence[BaseLoader]) -> None:
++    def __init__(
++        self,
++        loaders: t.Sequence[BaseLoader],
++        path_transform: t.Optional[t.Callable[[str], str]] = None,
++    ) -> None:
+         self.loaders = loaders
++        self.path_transform = path_transform
+ 
+     def get_source(
+         self, environment: "Environment", template: str
+     ) -> t.Tuple[str, t.Optional[str], t.Optional[t.Callable[[], bool]]]:
++        original = template
++        if self.path_transform is not None:
++            template = self.path_transform(template)
+         for loader in self.loaders:
+             try:
+                 return loader.get_source(environment, template)
+             except TemplateNotFound:
+                 pass
+-        raise TemplateNotFound(template)
++        raise TemplateNotFound(original)
+ 
+     @internalcode
+     def load(
+@@ -558,12 +660,15 @@ class ChoiceLoader(BaseLoader):
+         name: str,
+         globals: t.Optional[t.MutableMapping[str, t.Any]] = None,
+     ) -> "Template":
++        original = name
++        if self.path_transform is not None:
++            name = self.path_transform(name)
+         for loader in self.loaders:
+             try:
+                 return loader.load(environment, name, globals)
+             except TemplateNotFound:
+                 pass
+-        raise TemplateNotFound(name)
++        raise TemplateNotFound(original)
+ 
+     def list_templates(self) -> t.List[str]:
+         found = set()

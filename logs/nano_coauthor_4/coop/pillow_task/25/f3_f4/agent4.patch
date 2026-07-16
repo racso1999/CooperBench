@@ -1,0 +1,116 @@
+diff --git a/Tests/test_image.py b/Tests/test_image.py
+index c2e850c36..664011709 100644
+--- a/Tests/test_image.py
++++ b/Tests/test_image.py
+@@ -182,6 +182,39 @@ class TestImage:
+         with Image.open(out) as reloaded:
+             assert_image_equal(im, reloaded)
+ 
++    def test_save_backup(self, tmp_path: Path) -> None:
++        out = str(tmp_path / "temp.png")
++        backup = out + ".bak"
++
++        im = hopper()
++        im.save(out)
++        assert not os.path.exists(backup)
++
++        original_data = Path(out).read_bytes()
++        im2 = hopper("L")
++        im2.save(out, backup=True)
++        assert os.path.exists(backup)
++        assert Path(backup).read_bytes() == original_data
++        with Image.open(out) as reloaded:
++            assert reloaded.mode == "L"
++
++    def test_save_backup_no_existing_file(self, tmp_path: Path) -> None:
++        out = str(tmp_path / "temp.png")
++        backup = out + ".bak"
++
++        im = hopper()
++        im.save(out, backup=True)
++        assert not os.path.exists(backup)
++
++    def test_save_backup_suffix(self, tmp_path: Path) -> None:
++        out = str(tmp_path / "temp.png")
++        backup = out + ".backup"
++
++        im = hopper()
++        im.save(out)
++        im.save(out, backup=True, backup_suffix=".backup")
++        assert os.path.exists(backup)
++
+     def test_pathlib(self, tmp_path: Path) -> None:
+         with Image.open(Path("Tests/images/multipage-mmap.tiff")) as im:
+             assert im.mode == "P"
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 233df592c..1b3a583be 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -34,6 +34,7 @@ import logging
+ import math
+ import os
+ import re
++import shutil
+ import struct
+ import sys
+ import tempfile
+@@ -2505,6 +2506,18 @@ class Image:
+              red = Image.new("RGB", (1, 1), "#f00")
+              red.encoderinfo = {"xmp": b"test"}
+              black.save("out.mpo", save_all=True, append_images=[red])
++
++           Additional supported keyword parameters:
++
++           * ``backup`` (bool) -- If true, and a file already exists at the
++             destination, a copy of the existing file is made before it is
++             overwritten. Defaults to ``False``.
++           * ``backup_suffix`` (str) -- The suffix appended to the filename
++             when creating a backup. Only used when ``backup`` is true.
++             Defaults to ``".bak"``.
++           * ``dry_run`` (bool) -- If true, the image is processed and
++             encoded as normal, but the result is discarded instead of
++             being written to ``fp``. Defaults to ``False``.
+         :returns: None
+         :exception ValueError: If the output format could not be determined
+            from the file name.  Use the format option to solve this.
+@@ -2544,6 +2557,9 @@ class Image:
+         self._ensure_mutable()
+ 
+         save_all = params.pop("save_all", None)
++        backup = params.pop("backup", False)
++        backup_suffix = params.pop("backup_suffix", ".bak")
++        dry_run = params.pop("dry_run", False)
+         self.encoderinfo = {**getattr(self, "encoderinfo", {}), **params}
+         self.encoderconfig: tuple[Any, ...] = ()
+ 
+@@ -2559,7 +2575,11 @@ class Image:
+             save_handler = SAVE[format.upper()]
+ 
+         created = False
+-        if open_fp:
++        if dry_run:
++            fp = io.BytesIO()
++        elif open_fp:
++            if backup and os.path.exists(filename):
++                shutil.copy2(filename, os.fspath(filename) + backup_suffix)
+             created = not os.path.exists(filename)
+             if params.get("append", False):
+                 # Open also for reading ("+"), because TIFF save_all
+@@ -2573,7 +2593,7 @@ class Image:
+         try:
+             save_handler(self, fp, filename)
+         except Exception:
+-            if open_fp:
++            if open_fp and not dry_run:
+                 fp.close()
+             if created:
+                 try:
+@@ -2586,7 +2606,7 @@ class Image:
+                 del self.encoderinfo
+             except AttributeError:
+                 pass
+-        if open_fp:
++        if open_fp and not dry_run:
+             fp.close()
+ 
+     def seek(self, frame: int) -> None:

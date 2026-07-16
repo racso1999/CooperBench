@@ -1,0 +1,102 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..6e0f735 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -15,6 +15,7 @@ from contextlib import ExitStack
+ from functools import update_wrapper
+ from gettext import gettext as _
+ from gettext import ngettext
++from itertools import islice
+ from itertools import repeat
+ from types import TracebackType
+ 
+@@ -93,6 +94,23 @@ def batch(iterable: cabc.Iterable[V], batch_size: int) -> list[tuple[V, ...]]:
+     return list(zip(*repeat(iter(iterable), batch_size), strict=False))
+ 
+ 
++def _batch_values(
++    values: cabc.Iterable[V], batch_size: int
++) -> cabc.Iterator[tuple[V, ...]]:
++    """Split ``values`` into chunks of at most ``batch_size`` items,
++    preserving a final chunk that is smaller than ``batch_size``.
++    """
++    it = iter(values)
++
++    while True:
++        chunk = tuple(islice(it, batch_size))
++
++        if not chunk:
++            return
++
++        yield chunk
++
++
+ @contextmanager
+ def augment_usage_errors(
+     ctx: Context, param: Parameter | None = None
+@@ -2499,6 +2517,10 @@ class Option(Parameter):
+                      multiple times and recorded.  This is similar to ``nargs``
+                      in how it works but supports arbitrary number of
+                      arguments.
++    :param batch_size: if set, requires ``multiple`` to also be set. Instead
++                       of a single tuple of all the values, the callback
++                       receives an iterator that yields tuples of up to
++                       ``batch_size`` values at a time. Must not be negative.
+     :param count: this flag makes an option increment an integer.
+     :param allow_from_autoenv: if this is enabled then the value of this
+                                parameter will be pulled from an environment
+@@ -2549,11 +2571,15 @@ class Option(Parameter):
+         show_choices: bool = True,
+         show_envvar: bool = False,
+         deprecated: bool | str = False,
++        batch_size: int | None = None,
+         **attrs: t.Any,
+     ) -> None:
+         if help:
+             help = inspect.cleandoc(help)
+ 
++        if batch_size is not None and batch_size < 0:
++            raise ValueError("'batch_size' cannot be negative.")
++
+         default_is_missing = "default" not in attrs
+         super().__init__(
+             param_decls, type=type, multiple=multiple, deprecated=deprecated, **attrs
+@@ -2636,11 +2662,15 @@ class Option(Parameter):
+         self.show_default = show_default
+         self.show_choices = show_choices
+         self.show_envvar = show_envvar
++        self.batch_size = batch_size
+ 
+         if __debug__:
+             if deprecated and prompt:
+                 raise ValueError("`deprecated` options cannot use `prompt`.")
+ 
++            if self.batch_size is not None and not self.multiple:
++                raise TypeError("'batch_size' is only valid with 'multiple'.")
++
+             if self.nargs == -1:
+                 raise TypeError("nargs=-1 is not supported for options.")
+ 
+@@ -2671,6 +2701,7 @@ class Option(Parameter):
+             flag_value=self.flag_value,
+             count=self.count,
+             hidden=self.hidden,
++            batch_size=self.batch_size,
+         )
+         return info_dict
+ 
+@@ -3032,6 +3063,14 @@ class Option(Parameter):
+ 
+         return value, source
+ 
++    def process_value(self, ctx: Context, value: t.Any) -> t.Any:
++        value = super().process_value(ctx, value)
++
++        if self.batch_size is not None and self.multiple and value is not None:
++            value = _batch_values(value, self.batch_size)
++
++        return value
++
+ 
+ class Argument(Parameter):
+     """Arguments are positional parameters to a command.  They generally

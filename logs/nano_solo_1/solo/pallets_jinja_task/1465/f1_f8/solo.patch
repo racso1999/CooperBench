@@ -1,0 +1,121 @@
+diff --git a/src/jinja2/filters.py b/src/jinja2/filters.py
+index 80ea6504..0ea6c130 100644
+--- a/src/jinja2/filters.py
++++ b/src/jinja2/filters.py
+@@ -1157,13 +1157,29 @@ class _GroupTuple(t.NamedTuple):
+         return tuple.__str__(self)
+ 
+ 
++class _GroupTupleWithCount(t.NamedTuple):
++    grouper: t.Any
++    list: t.List
++    count: int
++
++    # Use the regular tuple repr to hide this subclass if users print
++    # out the value during debugging.
++    def __repr__(self) -> str:
++        return tuple.__repr__(self)
++
++    def __str__(self) -> str:
++        return tuple.__str__(self)
++
++
+ @pass_environment
+ def sync_do_groupby(
+     environment: "Environment",
+     value: "t.Iterable[V]",
+     attribute: t.Union[str, int],
+     default: t.Optional[t.Any] = None,
+-) -> "t.List[t.Tuple[t.Any, t.List[V]]]":
++    case_sensitive: bool = False,
++    with_counts: bool = False,
++) -> "t.List[t.Tuple[t.Any, ...]]":
+     """Group a sequence of objects by an attribute using Python's
+     :func:`itertools.groupby`. The attribute can use dot notation for
+     nested access, like ``"address.city"``. Unlike Python's ``groupby``,
+@@ -1203,6 +1219,20 @@ def sync_do_groupby(
+           <li>{{ city }}: {{ items|map(attribute="name")|join(", ") }}</li>
+         {% endfor %}</ul>
+ 
++    :param attribute: The attribute to group by, can use dot notation for
++        nested access.
++    :param default: Value to use if an object in the list does not have
++        the given attribute.
++    :param case_sensitive: Group strings with different casing separately.
++        Default is ``False`` so that e.g. ``"CA"`` and ``"ca"`` end up in
++        the same group, matching the default behavior of :func:`do_sort`.
++    :param with_counts: If set, yield ``(grouper, list, count)`` tuples
++        instead of ``(grouper, list)``, where ``count`` is the number of
++        items in the group.
++
++    .. versionchanged:: 3.1
++        Added the ``case_sensitive`` and ``with_counts`` parameters.
++
+     .. versionchanged:: 3.0
+         Added the ``default`` parameter.
+ 
+@@ -1210,10 +1240,36 @@ def sync_do_groupby(
+         The attribute supports dot notation for nested access.
+     """
+     expr = make_attrgetter(environment, attribute, default=default)
+-    return [
+-        _GroupTuple(key, list(values))
+-        for key, values in groupby(sorted(value, key=expr), expr)
+-    ]
++    sort_expr = (
++        expr
++        if case_sensitive
++        else make_attrgetter(
++            environment, attribute, postprocess=ignore_case, default=default
++        )
++    )
++    return _do_groupby_sort(value, expr, sort_expr, with_counts)
++
++
++def _do_groupby_sort(
++    value: "t.Iterable[V]",
++    expr: "t.Callable[[V], t.Any]",
++    sort_expr: "t.Callable[[V], t.Any]",
++    with_counts: bool,
++) -> "t.List[t.Tuple[t.Any, ...]]":
++    result = []
++
++    for _key, values in groupby(sorted(value, key=sort_expr), sort_expr):
++        values = list(values)
++        # Use the original (non-case-normalized) value of the first item
++        # in the group as the grouper so the output preserves its case.
++        grouper = expr(values[0])
++
++        if with_counts:
++            result.append(_GroupTupleWithCount(grouper, values, len(values)))
++        else:
++            result.append(_GroupTuple(grouper, values))
++
++    return result
+ 
+ 
+ @async_variant(sync_do_groupby)  # type: ignore
+@@ -1222,12 +1278,18 @@ async def do_groupby(
+     value: "t.Union[t.AsyncIterable[V], t.Iterable[V]]",
+     attribute: t.Union[str, int],
+     default: t.Optional[t.Any] = None,
+-) -> "t.List[t.Tuple[t.Any, t.List[V]]]":
++    case_sensitive: bool = False,
++    with_counts: bool = False,
++) -> "t.List[t.Tuple[t.Any, ...]]":
+     expr = make_attrgetter(environment, attribute, default=default)
+-    return [
+-        _GroupTuple(key, await auto_to_list(values))
+-        for key, values in groupby(sorted(await auto_to_list(value), key=expr), expr)
+-    ]
++    sort_expr = (
++        expr
++        if case_sensitive
++        else make_attrgetter(
++            environment, attribute, postprocess=ignore_case, default=default
++        )
++    )
++    return _do_groupby_sort(await auto_to_list(value), expr, sort_expr, with_counts)
+ 
+ 
+ @pass_environment

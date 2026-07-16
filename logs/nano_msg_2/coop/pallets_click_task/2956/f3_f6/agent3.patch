@@ -1,0 +1,80 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..bc4b8c8 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -2499,6 +2499,10 @@ class Option(Parameter):
+                      multiple times and recorded.  This is similar to ``nargs``
+                      in how it works but supports arbitrary number of
+                      arguments.
++    :param batch_size: if set, the values collected for a ``multiple``
++                       option are grouped into tuples of at most this many
++                       items instead of a single flat tuple. Only valid
++                       when ``multiple`` is ``True``. Must not be negative.
+     :param count: this flag makes an option increment an integer.
+     :param allow_from_autoenv: if this is enabled then the value of this
+                                parameter will be pulled from an environment
+@@ -2549,6 +2553,7 @@ class Option(Parameter):
+         show_choices: bool = True,
+         show_envvar: bool = False,
+         deprecated: bool | str = False,
++        batch_size: int | None = None,
+         **attrs: t.Any,
+     ) -> None:
+         if help:
+@@ -2636,8 +2641,16 @@ class Option(Parameter):
+         self.show_default = show_default
+         self.show_choices = show_choices
+         self.show_envvar = show_envvar
++        self.batch_size = batch_size
+ 
+         if __debug__:
++            if batch_size is not None:
++                if not multiple:
++                    raise TypeError("'batch_size' is only valid with 'multiple'.")
++
++                if batch_size < 0:
++                    raise ValueError("'batch_size' must not be negative.")
++
+             if deprecated and prompt:
+                 raise ValueError("`deprecated` options cannot use `prompt`.")
+ 
+@@ -2671,9 +2684,18 @@ class Option(Parameter):
+             flag_value=self.flag_value,
+             count=self.count,
+             hidden=self.hidden,
++            batch_size=self.batch_size,
+         )
+         return info_dict
+ 
++    def type_cast_value(self, ctx: Context, value: t.Any) -> t.Any:
++        value = super().type_cast_value(ctx, value)
++
++        if self.batch_size is not None and value:
++            value = tuple(types._batched(value, self.batch_size))
++
++        return value
++
+     def get_error_hint(self, ctx: Context) -> str:
+         result = super().get_error_hint(ctx)
+         if self.show_envvar:
+diff --git a/src/click/types.py b/src/click/types.py
+index 684cb3b..ce9277a 100644
+--- a/src/click/types.py
++++ b/src/click/types.py
+@@ -1065,6 +1065,16 @@ class Tuple(CompositeParamType):
+         )
+ 
+ 
++def _batched(
++    values: cabc.Sequence[t.Any], batch_size: int
++) -> cabc.Iterator[tuple[t.Any, ...]]:
++    """Group ``values`` into consecutive chunks of at most ``batch_size``
++    items each, yielded as tuples.
++    """
++    for i in range(0, len(values), batch_size):
++        yield tuple(values[i : i + batch_size])
++
++
+ def convert_type(ty: t.Any | None, default: t.Any | None = None) -> ParamType:
+     """Find the most appropriate :class:`ParamType` for the given Python
+     type. If the type isn't provided, it can be inferred from a default

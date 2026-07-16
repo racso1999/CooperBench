@@ -1,0 +1,104 @@
+diff --git a/src/datasets/features/features.py b/src/datasets/features/features.py
+index 6a0da6401..8b8224a63 100644
+--- a/src/datasets/features/features.py
++++ b/src/datasets/features/features.py
+@@ -20,7 +20,7 @@ import re
+ import sys
+ from collections.abc import Iterable
+ from dataclasses import InitVar, _asdict_inner, dataclass, field, fields
+-from functools import reduce
++from functools import reduce, wraps
+ from operator import mul
+ from typing import Any, ClassVar, Dict, List, Optional
+ from typing import Sequence as Sequence_
+@@ -1198,6 +1198,33 @@ def require_decoding(feature: FeatureType, ignore_decode_attribute: bool = False
+         return hasattr(feature, "decode_example") and (feature.decode if not ignore_decode_attribute else True)
+ 
+ 
++def keep_features_dicts_synced(func):
++    """
++    Wrapper to keep the secondary dictionary, `_column_requires_decoding`, of the `Features` class in sync with the
++    main dictionary. This is required since we forbid direct mutation of `_column_requires_decoding` and require
++    that all dictionary operations (`__setitem__`, `__delitem__`, `update`, `pop`, `popitem`, `setdefault`,
++    `clear`, ...) go through the main dictionary, from which `_column_requires_decoding` is then recomputed.
++
++    A decorator is used here instead of subclassing `collections.UserDict` for performance reasons: `UserDict`
++    stores its data in a plain (non-subclassed) `dict` under `self.data`, which requires all methods to be
++    reimplemented and adds a layer of indirection on every access.
++    """
++
++    @wraps(func)
++    def wrapper(*args, **kwargs):
++        if args:
++            self: "Features" = args[0]
++            args = args[1:]
++        else:
++            self: "Features" = kwargs.pop("self")
++        out = func(self, *args, **kwargs)
++        self._column_requires_decoding = {col: require_decoding(feature) for col, feature in self.items()}
++        return out
++
++    wrapper._decorator_name_ = "keep_features_dicts_synced"
++    return wrapper
++
++
+ class Features(dict):
+     """A special dictionary that defines the internal structure of a dataset.
+ 
+@@ -1231,29 +1258,49 @@ class Features(dict):
+         - :class:`datasets.Translation` and :class:`datasets.TranslationVariableLanguages`, the two features specific to Machine Translation
+     """
+ 
++    @keep_features_dicts_synced
+     def __init__(self, *args, **kwargs):
+         super().__init__(*args, **kwargs)
+         self._column_requires_decoding: Dict[str, bool] = {
+             col: require_decoding(feature) for col, feature in self.items()
+         }
+ 
++    @keep_features_dicts_synced
+     def __setitem__(self, column_name: str, feature: FeatureType):
+         super().__setitem__(column_name, feature)
+-        self._column_requires_decoding[column_name] = require_decoding(feature)
+ 
++    @keep_features_dicts_synced
+     def __delitem__(self, column_name: str):
+         super().__delitem__(column_name)
+-        del self._column_requires_decoding[column_name]
+ 
++    @keep_features_dicts_synced
+     def update(self, iterable, **kwds):
+         if hasattr(iterable, "keys"):
+-            for key in iterable.keys():
+-                self[key] = iterable[key]
++            items = [(key, iterable[key]) for key in iterable.keys()]
+         else:
+-            for key, value in iterable:
++            items = list(iterable)
++        items += list(kwds.items())
++        for key, value in items:
++            if key in self and isinstance(self[key], dict) and isinstance(value, dict):
++                self[key].update(value)
++            else:
+                 self[key] = value
+-        for key in kwds:
+-            self[key] = kwds[key]
++
++    @keep_features_dicts_synced
++    def pop(self, *args, **kwargs):
++        return super().pop(*args, **kwargs)
++
++    @keep_features_dicts_synced
++    def popitem(self):
++        return super().popitem()
++
++    @keep_features_dicts_synced
++    def setdefault(self, *args, **kwargs):
++        return super().setdefault(*args, **kwargs)
++
++    @keep_features_dicts_synced
++    def clear(self):
++        super().clear()
+ 
+     def __reduce__(self):
+         return Features, (dict(self),)

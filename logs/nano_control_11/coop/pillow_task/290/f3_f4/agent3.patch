@@ -1,0 +1,136 @@
+diff --git a/Tests/test_image_quantize.py b/Tests/test_image_quantize.py
+index bd9db362c..8cd801551 100644
+--- a/Tests/test_image_quantize.py
++++ b/Tests/test_image_quantize.py
+@@ -85,3 +85,49 @@ def test_transparent_colors_equal():
+     converted = im.quantize()
+     converted_px = converted.load()
+     assert converted_px[0, 0] == converted_px[0, 1]
++
++
++def test_sort_palette_brightness():
++    image = hopper()
++    converted = image.quantize(32, sort_palette="brightness")
++    assert_image(converted, "P", converted.size)
++    assert_image_similar(converted.convert("RGB"), image.quantize(32).convert("RGB"), 0)
++
++    def brightness(color):
++        r, g, b = color[:3]
++        return r * 299 + g * 587 + b * 114
++
++    palette = converted.getpalette()
++    colors = [tuple(palette[i : i + 3]) for i in range(0, len(palette), 3)]
++    brightnesses = [brightness(color) for color in colors]
++    assert brightnesses == sorted(brightnesses)
++
++
++def test_sort_palette_rgb():
++    image = hopper()
++    converted = image.quantize(32, sort_palette="rgb")
++    assert_image(converted, "P", converted.size)
++
++    palette = converted.getpalette()
++    colors = [tuple(palette[i : i + 3]) for i in range(0, len(palette), 3)]
++    assert colors == sorted(colors)
++
++
++def test_sort_palette_callable():
++    image = hopper()
++
++    def reverse_green(color):
++        return -color[1]
++
++    converted = image.quantize(32, sort_palette=reverse_green)
++    assert_image(converted, "P", converted.size)
++
++    palette = converted.getpalette()
++    greens = [palette[i + 1] for i in range(0, len(palette), 3)]
++    assert greens == sorted(greens, reverse=True)
++
++
++def test_sort_palette_invalid():
++    image = hopper()
++    with pytest.raises(ValueError):
++        image.quantize(32, sort_palette="not-a-real-method")
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..adedd3df3 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -1048,7 +1048,15 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        sort_palette=None,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1081,20 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param sort_palette: Sorts the palette after quantization, which can
++           improve compression and produce more consistent results when
++           comparing the palettes of multiple images (e.g. animation frames).
++           This has no effect when ``palette`` is given, since the palette of
++           the reference image is used unchanged. Options are:
++
++           * ``None`` (default): the palette is left in the order produced by
++             the quantization ``method``.
++           * ``"brightness"``: colors are ordered from darkest to lightest, by
++             their perceived luminance.
++           * ``"rgb"``: colors are ordered by their raw channel values, e.g.
++             ``(r, g, b)``.
++           * A callable: called with each palette color, as a tuple of
++             channel values, and expected to return a sort key.
+         :returns: A new image
+ 
+         """
+@@ -1113,8 +1135,39 @@ class Image:
+         mode = im.im.getpalettemode()
+         im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
+ 
++        if sort_palette:
++            im = im._sort_palette(sort_palette)
++
+         return im
+ 
++    def _sort_palette(self, sort_palette):
++        mode_len = len(self.palette.mode)
++        palette = self.palette.palette
++        colors = [
++            tuple(palette[i : i + mode_len]) for i in range(0, len(palette), mode_len)
++        ]
++
++        if sort_palette == "brightness":
++
++            def key(color):
++                r, g, b = color[:3]
++                return r * 299 + g * 587 + b * 114
++
++        elif sort_palette == "rgb":
++
++            def key(color):
++                return color
++
++        elif callable(sort_palette):
++            key = sort_palette
++        else:
++            raise ValueError(
++                "sort_palette must be None, 'brightness', 'rgb', or a callable"
++            )
++
++        dest_map = sorted(range(len(colors)), key=lambda i: key(colors[i]))
++        return self.remap_palette(dest_map)
++
+     def copy(self):
+         """
+         Copies this image. Use this method if you wish to paste things

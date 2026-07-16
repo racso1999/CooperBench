@@ -1,0 +1,90 @@
+diff --git a/dspy/streaming/streaming_listener.py b/dspy/streaming/streaming_listener.py
+index 98fd4aca..f74531ff 100644
+--- a/dspy/streaming/streaming_listener.py
++++ b/dspy/streaming/streaming_listener.py
+@@ -1,4 +1,5 @@
+ import re
++import time
+ from collections import defaultdict
+ from queue import Queue
+ from typing import TYPE_CHECKING, Any
+@@ -26,6 +27,7 @@ class StreamListener:
+         predict: Any = None,
+         predict_name: str | None = None,
+         allow_reuse: bool = False,
++        idle_timeout_s: float | None = None,
+     ):
+         """
+         Args:
+@@ -36,6 +38,8 @@ class StreamListener:
+                 automatically look for the predictor that has the `signature_field_name` in its signature.
+             allow_reuse: If True, the stream listener can be reused for multiple streams. Please note that this could
+                 hurt the performance because the same stream chunk is sent to multiple listeners.
++            idle_timeout_s: If set, the number of seconds of silence (no chunk received) that are allowed while a
++                stream is in progress before `tick()` treats the stream as stalled and force-ends it.
+         """
+         self.signature_field_name = signature_field_name
+         self.predict = predict
+@@ -47,6 +51,8 @@ class StreamListener:
+         self.stream_end = False
+         self.cache_hit = False
+         self.allow_reuse = allow_reuse
++        self.idle_timeout_s = idle_timeout_s
++        self._last_chunk_ts: float | None = None
+ 
+         self.adapter_identifiers = {
+             "ChatAdapter": {
+@@ -101,6 +107,9 @@ class StreamListener:
+         except Exception:
+             return
+ 
++        if chunk_message:
++            self._last_chunk_ts = time.time()
++
+         if chunk_message and start_identifier in chunk_message:
+             # If the cache is hit, the chunk_message could be the full response. When it happens we can
+             # directly end the stream listening. In some models like gemini, each stream chunk can be multiple
+@@ -168,6 +177,43 @@ class StreamListener:
+             if token:
+                 return StreamResponse(self.predict_name, self.signature_field_name, token)
+ 
++    def tick(self, now_ts: float | None = None):
++        """Check whether the stream has gone idle for longer than `idle_timeout_s`.
++
++        This should be called periodically by the streaming system (independent of chunk arrival) so that a
++        backend stall, which produces no more chunks at all, can still be detected. If the configured timeout has
++        elapsed since the last chunk was received while the stream is in progress, this emits a final
++        `StreamResponse` with an empty `chunk` to signal termination and resets the listener's state.
++
++        Args:
++            now_ts: The current timestamp to check against. Defaults to `time.time()`.
++        """
++        if self.idle_timeout_s is None:
++            return None
++
++        if not self.stream_start or self.stream_end or self._last_chunk_ts is None:
++            return None
++
++        current_ts = now_ts if now_ts is not None else time.time()
++        if current_ts - self._last_chunk_ts < self.idle_timeout_s:
++            return None
++
++        response_kwargs = {}
++        if "is_last_chunk" in getattr(StreamResponse, "__dataclass_fields__", {}):
++            response_kwargs["is_last_chunk"] = True
++        response = StreamResponse(self.predict_name, self.signature_field_name, "", **response_kwargs)
++
++        # Reset the listener state unconditionally (even if `allow_reuse` is False) so that a timed-out stream
++        # doesn't leave the listener stuck thinking a stream is still in progress.
++        self.stream_start = False
++        self.stream_end = False
++        self.cache_hit = False
++        self.field_start_queue = []
++        self.field_end_queue = Queue()
++        self._last_chunk_ts = None
++
++        return response
++
+     def flush(self) -> str:
+         """Flush all tokens in the field end queue.
+ 

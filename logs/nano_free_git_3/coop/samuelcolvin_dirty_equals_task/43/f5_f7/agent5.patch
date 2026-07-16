@@ -1,0 +1,167 @@
+diff --git a/dirty_equals/__init__.py b/dirty_equals/__init__.py
+index ba8214e..88c1e76 100644
+--- a/dirty_equals/__init__.py
++++ b/dirty_equals/__init__.py
+@@ -18,7 +18,7 @@ from ._numeric import (
+     IsPositiveFloat,
+     IsPositiveInt,
+ )
+-from ._other import FunctionCheck, IsJson, IsUUID
++from ._other import FunctionCheck, IsHash, IsJson, IsPhoneNumber, IsUUID
+ from ._sequence import Contains, HasLen, IsList, IsListOrTuple, IsTuple
+ from ._strings import IsAnyStr, IsBytes, IsStr
+ 
+@@ -69,6 +69,8 @@ __all__ = (
+     'FunctionCheck',
+     'IsJson',
+     'IsUUID',
++    'IsPhoneNumber',
++    'IsHash',
+     # strings
+     'IsStr',
+     'IsBytes',
+diff --git a/dirty_equals/_other.py b/dirty_equals/_other.py
+index b2b8379..7cc5361 100644
+--- a/dirty_equals/_other.py
++++ b/dirty_equals/_other.py
+@@ -1,5 +1,6 @@
+ import json
+-from typing import Any, Callable, TypeVar, overload
++import re
++from typing import Any, Callable, Dict, Optional, TypeVar, overload
+ from uuid import UUID
+ 
+ from ._base import DirtyEquals
+@@ -51,6 +52,52 @@ class IsUUID(DirtyEquals[UUID]):
+             return True
+ 
+ 
++class IsHash(DirtyEquals[str]):
++    """
++    A class that checks if a value is a valid hash of a specific algorithm.
++    """
++
++    hash_lengths: Dict[str, int] = {
++        'md5': 32,
++        'sha1': 40,
++        'sha224': 56,
++        'sha256': 64,
++        'sha384': 96,
++        'sha512': 128,
++    }
++
++    def __init__(self, algorithm: Literal['md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512']):
++        """
++        Args:
++            algorithm: The algorithm to use for the hash, must be one of `'md5'`, `'sha1'`, `'sha224'`,
++                `'sha256'`, `'sha384'`, `'sha512'`.
++
++        ```py title="IsHash"
++        import hashlib
++        from dirty_equals import IsHash
++
++        assert hashlib.md5(b'hello').hexdigest() == IsHash('md5')
++        assert hashlib.sha1(b'hello').hexdigest() == IsHash('sha1')
++        assert hashlib.sha256(b'hello').hexdigest() == IsHash('sha256')
++        assert 'not_a_hash' != IsHash('md5')
++        ```
++        """
++        self.algorithm = algorithm.lower()
++        if self.algorithm not in self.hash_lengths:
++            raise ValueError(f'Unknown hash algorithm {algorithm!r}')
++        self.length = self.hash_lengths[self.algorithm]
++        super().__init__(algorithm)
++
++    def equals(self, other: Any) -> bool:
++        if not isinstance(other, str):
++            return False
++
++        if len(other) != self.length:
++            return False
++
++        return bool(re.fullmatch(r'[0-9a-fA-F]+', other))
++
++
+ AnyJson = object
+ JsonType = TypeVar('JsonType', AnyJson, Any)
+ 
+@@ -120,6 +167,79 @@ class IsJson(DirtyEquals[JsonType]):
+             return False
+ 
+ 
++class IsPhoneNumber(DirtyEquals[str]):
++    """
++    A class that checks if a value is a valid phone number, optionally restricted to a specific country's
++    national and international formats.
++    """
++
++    _delimiters_re = re.compile(r'[\s\-.()]')
++    _generic_national_re = re.compile(r'^\d{7,15}$')
++    _generic_international_re = re.compile(r'^\d{7,15}$')
++
++    # digit-only rules (delimiters and leading `+` already stripped) keyed by ISO 3166-1 alpha-2 country code
++    _country_rules = {
++        'US': {
++            'national': re.compile(r'^\d{10}$'),
++            'international': re.compile(r'^1\d{10}$'),
++        },
++        'GB': {
++            'national': re.compile(r'^0\d{10}$'),
++            'international': re.compile(r'^44\d{10}$'),
++        },
++    }
++
++    def __init__(self, country: Optional[str] = None):
++        """
++        Args:
++            country: ISO 3166-1 alpha-2 country code to validate the phone number against, if omitted, generic
++                phone number validation is used.
++
++        ```py title="IsPhoneNumber"
++        from dirty_equals import IsPhoneNumber
++
++        assert '+1-555-123-4567' == IsPhoneNumber
++        assert '555-123-4567' == IsPhoneNumber('US')
++        assert '(555) 123-4567' == IsPhoneNumber('US')
++        assert '020 7946 0958' == IsPhoneNumber('GB')
++        assert '+44 20 7946 0958' == IsPhoneNumber('GB')
++        assert '555-123-4567' != IsPhoneNumber('GB')
++        assert 'not a number' != IsPhoneNumber()
++        ```
++        """
++        self.country = country
++        super().__init__(plain_repr('*') if country is None else country)
++
++    def equals(self, other: Any) -> bool:
++        if not isinstance(other, str):
++            return False
++
++        cleaned = self._delimiters_re.sub('', other)
++        if not cleaned:
++            return False
++
++        has_plus = cleaned.startswith('+')
++        digits = cleaned[1:] if has_plus else cleaned
++        if not digits.isdigit():
++            return False
++
++        rules = self._country_rules.get(self.country.upper()) if self.country else None
++
++        if rules is not None:
++            if has_plus:
++                return bool(rules['international'].match(digits))
++            else:
++                return bool(rules['national'].match(digits))
++        elif self.country is not None:
++            # unrecognised country code, fall back to generic international validation
++            return has_plus and bool(self._generic_international_re.match(digits))
++        else:
++            if has_plus:
++                return bool(self._generic_international_re.match(digits))
++            else:
++                return bool(self._generic_national_re.match(digits))
++
++
+ class FunctionCheck(DirtyEquals[Any]):
+     """
+     Use a function to check if a value "equals" whatever you want to check

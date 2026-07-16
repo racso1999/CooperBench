@@ -1,0 +1,101 @@
+diff --git a/tiktoken/core.py b/tiktoken/core.py
+index 6bc9736..1c4a021 100644
+--- a/tiktoken/core.py
++++ b/tiktoken/core.py
+@@ -2,7 +2,7 @@ from __future__ import annotations
+ 
+ import functools
+ from concurrent.futures import ThreadPoolExecutor
+-from typing import TYPE_CHECKING, AbstractSet, Collection, Literal, NoReturn, Sequence
++from typing import TYPE_CHECKING, AbstractSet, Callable, Collection, Literal, NoReturn, Sequence
+ 
+ import regex
+ 
+@@ -82,7 +82,9 @@ class Encoding:
+         *,
+         allowed_special: Literal["all"] | AbstractSet[str] = set(),  # noqa: B006
+         disallowed_special: Literal["all"] | Collection[str] = "all",
+-    ) -> list[int]:
++        transformers: Callable[[str], str] | Sequence[Callable[[str], str]] | None = None,
++        return_positions: bool = False,
++    ) -> list[int] | tuple[list[int], list[int]]:
+         """Encodes a string into tokens.
+ 
+         Special tokens are artificial tokens used to unlock capabilities from a model,
+@@ -97,6 +99,15 @@ class Encoding:
+         - Setting `allowed_special` to "all" will cause this function to treat all text
+           corresponding to special tokens to be encoded as special tokens.
+ 
++        `transformers` allows text preprocessing to be applied before encoding. It can be a
++        single callable or a sequence of callables, each taking and returning a `str`. When a
++        sequence is given, the transformers are applied in order, with each one receiving the
++        output of the previous one. The transformed text is what gets checked against
++        `allowed_special`/`disallowed_special` and encoded.
++
++        If `return_positions` is True, this also returns a list of the starting character
++        position of each token in the (transformed) `text`.
++
+         ```
+         >>> enc.encode("hello world")
+         [31373, 995]
+@@ -108,8 +119,18 @@ class Encoding:
+         # Raises ValueError
+         >>> enc.encode("<|endoftext|>", disallowed_special=())
+         [27, 91, 437, 1659, 5239, 91, 29]
++        >>> enc.encode("HELLO WORLD", transformers=str.lower)
++        [31373, 995]
++        >>> enc.encode("hello world", return_positions=True)
++        ([31373, 995], [0, 5])
+         ```
+         """
++        if transformers is not None:
++            if callable(transformers):
++                transformers = [transformers]
++            for transformer in transformers:
++                text = transformer(text)
++
+         if allowed_special == "all":
+             allowed_special = self.special_tokens_set
+         if disallowed_special == "all":
+@@ -121,7 +142,7 @@ class Encoding:
+                 raise_disallowed_special_token(match.group())
+ 
+         try:
+-            return self._core_bpe.encode(text, allowed_special)
++            tokens = self._core_bpe.encode(text, allowed_special)
+         except UnicodeEncodeError:
+             # BPE operates on bytes, but the regex operates on unicode. If we pass a str that is
+             # invalid UTF-8 to Rust, it will rightfully complain. Here we do a quick and dirty
+@@ -130,7 +151,11 @@ class Encoding:
+             # string, but given that this is input we want to support, maybe that's okay.
+             # Also we use errors="replace" to handle weird things like lone surrogates.
+             text = text.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+-            return self._core_bpe.encode(text, allowed_special)
++            tokens = self._core_bpe.encode(text, allowed_special)
++
++        if return_positions:
++            return tokens, self._token_start_positions(tokens)
++        return tokens
+ 
+     def encode_to_numpy(
+         self,
+@@ -400,6 +425,19 @@ class Encoding:
+     def _encode_bytes(self, text: bytes) -> list[int]:
+         return self._core_bpe._encode_bytes(text)
+ 
++    def _token_start_positions(self, tokens: Sequence[int]) -> list[int]:
++        """Computes the starting character position of each token, relative to the
++        decoded text they came from. See `decode_with_offsets` for details on how
++        UTF-8 character boundaries that don't line up with token boundaries are handled.
++        """
++        token_bytes = self.decode_tokens_bytes(tokens)
++        text_len = 0
++        positions = []
++        for token in token_bytes:
++            positions.append(max(0, text_len - (0x80 <= token[0] < 0xC0)))
++            text_len += sum(1 for c in token if not 0x80 <= c < 0xC0)
++        return positions
++
+     def __getstate__(self) -> object:
+         import tiktoken.registry
+ 

@@ -1,0 +1,84 @@
+diff --git a/Tests/test_image.py b/Tests/test_image.py
+index c2e850c36..689b8f920 100644
+--- a/Tests/test_image.py
++++ b/Tests/test_image.py
+@@ -258,6 +258,39 @@ class TestImage:
+             assert im.readonly
+             im.save(temp_file)
+ 
++    def test_dry_run(self, tmp_path: Path) -> None:
++        im = Image.new("RGB", (10, 10))
++        temp_file = tmp_path / "temp.png"
++
++        im.save(temp_file, dry_run=True)
++
++        assert not os.path.exists(temp_file)
++
++    def test_dry_run_existing_file(self, tmp_path: Path) -> None:
++        im = Image.new("RGB", (10, 10))
++        temp_file = tmp_path / "temp.png"
++        im.save(temp_file)
++        contents_before = temp_file.read_bytes()
++
++        im.save(temp_file, dry_run=True)
++
++        assert temp_file.read_bytes() == contents_before
++
++    def test_dry_run_fp(self) -> None:
++        im = Image.new("RGB", (10, 10))
++        fp = io.BytesIO()
++
++        im.save(fp, format="PNG", dry_run=True)
++
++        assert fp.tell() == 0
++        assert fp.getvalue() == b""
++
++    def test_dry_run_raises_error(self) -> None:
++        im = Image.new("RGBA", (10, 10))
++
++        with pytest.raises(OSError):
++            im.save(io.BytesIO(), format="JPEG", dry_run=True)
++
+     def test_dump(self, tmp_path: Path) -> None:
+         im = Image.new("L", (10, 10))
+         im._dump(str(tmp_path / "temp_L.ppm"))
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 233df592c..bafef7d53 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -2505,6 +2505,9 @@ class Image:
+              red = Image.new("RGB", (1, 1), "#f00")
+              red.encoderinfo = {"xmp": b"test"}
+              black.save("out.mpo", save_all=True, append_images=[red])
++        :param dry_run: If true, the image will be processed for saving, so that
++           any errors that would occur during saving are raised, but the result
++           is discarded and no file is written and no data is written to ``fp``.
+         :returns: None
+         :exception ValueError: If the output format could not be determined
+            from the file name.  Use the format option to solve this.
+@@ -2512,11 +2515,13 @@ class Image:
+            may have been created, and may contain partial data.
+         """
+ 
++        dry_run = params.pop("dry_run", False)
++
+         filename: str | bytes = ""
+         open_fp = False
+         if is_path(fp):
+             filename = os.fspath(fp)
+-            open_fp = True
++            open_fp = not dry_run
+         elif fp == sys.stdout:
+             try:
+                 fp = sys.stdout.buffer
+@@ -2559,7 +2564,9 @@ class Image:
+             save_handler = SAVE[format.upper()]
+ 
+         created = False
+-        if open_fp:
++        if dry_run:
++            fp = io.BytesIO()
++        elif open_fp:
+             created = not os.path.exists(filename)
+             if params.get("append", False):
+                 # Open also for reading ("+"), because TIFF save_all

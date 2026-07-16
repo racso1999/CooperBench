@@ -1,0 +1,103 @@
+diff --git a/Tests/test_image.py b/Tests/test_image.py
+index c2e850c36..d3b5e891e 100644
+--- a/Tests/test_image.py
++++ b/Tests/test_image.py
+@@ -1129,6 +1129,43 @@ class TestImage:
+         with pytest.warns(DeprecationWarning):
+             assert not Image.isImageType(None)
+ 
++    def test_save_dry_run(self, tmp_path: Path) -> None:
++        im = hopper()
++        test_file = str(tmp_path / "temp.png")
++
++        im.save(test_file, dry_run=True)
++
++        assert not os.path.exists(test_file)
++
++    def test_save_dry_run_existing_file_untouched(self, tmp_path: Path) -> None:
++        im = hopper()
++        test_file = str(tmp_path / "temp.png")
++        im.save(test_file)
++        with open(test_file, "rb") as f:
++            original_contents = f.read()
++
++        im.rotate(45).save(test_file, dry_run=True)
++
++        with open(test_file, "rb") as f:
++            assert f.read() == original_contents
++
++    def test_save_dry_run_file_object(self) -> None:
++        im = hopper()
++        fp = io.BytesIO()
++
++        im.save(fp, format="PNG", dry_run=True)
++
++        assert fp.tell() == 0
++
++    def test_save_dry_run_raises_errors(self, tmp_path: Path) -> None:
++        im = hopper("RGBA")
++        test_file = str(tmp_path / "temp.jpg")
++
++        with pytest.raises(OSError):
++            im.save(test_file, format="JPEG", dry_run=True)
++
++        assert not os.path.exists(test_file)
++
+ 
+ class TestImageBytes:
+     @pytest.mark.parametrize("mode", Image.MODES + ["BGR;15", "BGR;16", "BGR;24"])
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 233df592c..6d39d6a4c 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -2505,6 +2505,11 @@ class Image:
+              red = Image.new("RGB", (1, 1), "#f00")
+              red.encoderinfo = {"xmp": b"test"}
+              black.save("out.mpo", save_all=True, append_images=[red])
++        :param dry_run: If true, the image is processed as if it were being
++           saved (including format conversion, compression, etc.), but the
++           result is discarded instead of being written to disk. This can be
++           used to check whether an image can be saved in a given format
++           without the overhead of disk I/O.
+         :returns: None
+         :exception ValueError: If the output format could not be determined
+            from the file name.  Use the format option to solve this.
+@@ -2544,6 +2549,7 @@ class Image:
+         self._ensure_mutable()
+ 
+         save_all = params.pop("save_all", None)
++        dry_run = params.pop("dry_run", False)
+         self.encoderinfo = {**getattr(self, "encoderinfo", {}), **params}
+         self.encoderconfig: tuple[Any, ...] = ()
+ 
+@@ -2559,7 +2565,11 @@ class Image:
+             save_handler = SAVE[format.upper()]
+ 
+         created = False
+-        if open_fp:
++        if dry_run:
++            # Process the image as if it were being saved, but discard the
++            # result instead of writing it to disk.
++            fp = io.BytesIO()
++        elif open_fp:
+             created = not os.path.exists(filename)
+             if params.get("append", False):
+                 # Open also for reading ("+"), because TIFF save_all
+@@ -2573,7 +2583,7 @@ class Image:
+         try:
+             save_handler(self, fp, filename)
+         except Exception:
+-            if open_fp:
++            if open_fp and not dry_run:
+                 fp.close()
+             if created:
+                 try:
+@@ -2586,7 +2596,7 @@ class Image:
+                 del self.encoderinfo
+             except AttributeError:
+                 pass
+-        if open_fp:
++        if open_fp and not dry_run:
+             fp.close()
+ 
+     def seek(self, frame: int) -> None:

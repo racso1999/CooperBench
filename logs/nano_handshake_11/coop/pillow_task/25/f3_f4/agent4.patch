@@ -1,0 +1,110 @@
+diff --git a/Tests/test_image.py b/Tests/test_image.py
+index c2e850c36..994782a95 100644
+--- a/Tests/test_image.py
++++ b/Tests/test_image.py
+@@ -258,6 +258,58 @@ class TestImage:
+             assert im.readonly
+             im.save(temp_file)
+ 
++    def test_save_backup(self, tmp_path: Path) -> None:
++        temp_file = tmp_path / "temp.png"
++
++        im = Image.new("RGB", (10, 10), "#f00")
++        im.save(temp_file)
++
++        # No backup should be made unless requested
++        im2 = Image.new("RGB", (10, 10), "#0f0")
++        im2.save(temp_file)
++        assert not temp_file.with_suffix(".png.bak").exists()
++        original_data = temp_file.read_bytes()
++
++        # A backup should be made when backup=True and the file exists
++        im3 = Image.new("RGB", (10, 10), "#00f")
++        im3.save(temp_file, backup=True)
++        backup_file = Path(str(temp_file) + ".bak")
++        assert backup_file.exists()
++        assert backup_file.read_bytes() == original_data
++
++        with Image.open(temp_file) as reloaded:
++            assert reloaded.getpixel((0, 0)) == (0, 0, 255)
++
++    def test_save_backup_custom_suffix(self, tmp_path: Path) -> None:
++        temp_file = tmp_path / "temp.png"
++
++        im = Image.new("RGB", (10, 10), "#f00")
++        im.save(temp_file)
++        original_data = temp_file.read_bytes()
++
++        im2 = Image.new("RGB", (10, 10), "#0f0")
++        im2.save(temp_file, backup=True, backup_suffix=".backup")
++
++        backup_file = Path(str(temp_file) + ".backup")
++        assert backup_file.exists()
++        assert backup_file.read_bytes() == original_data
++        assert not Path(str(temp_file) + ".bak").exists()
++
++    def test_save_backup_no_existing_file(self, tmp_path: Path) -> None:
++        temp_file = tmp_path / "temp.png"
++
++        im = Image.new("RGB", (10, 10), "#f00")
++        im.save(temp_file, backup=True)
++
++        assert not Path(str(temp_file) + ".bak").exists()
++
++    def test_save_backup_file_object(self) -> None:
++        im = Image.new("RGB", (10, 10), "#f00")
++        buf = io.BytesIO()
++        # backup has no effect when saving to a file object, and shouldn't
++        # raise
++        im.save(buf, format="PNG", backup=True)
++
+     def test_dump(self, tmp_path: Path) -> None:
+         im = Image.new("L", (10, 10))
+         im._dump(str(tmp_path / "temp_L.ppm"))
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 233df592c..0f874df16 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -34,6 +34,7 @@ import logging
+ import math
+ import os
+ import re
++import shutil
+ import struct
+ import sys
+ import tempfile
+@@ -2490,6 +2491,12 @@ class Image:
+            format to use is determined from the filename extension.
+            If a file object was used instead of a filename, this
+            parameter should always be used.
++        :param backup: If true, and a file already exists at the target
++           filename, a copy of the existing file is made before it is
++           overwritten. Has no effect when ``fp`` is a file object rather
++           than a filename. Defaults to ``False``.
++        :param backup_suffix: The suffix appended to the filename to create
++           the backup copy when ``backup`` is true. Defaults to ``.bak``.
+         :param params: Extra parameters to the image writer. These can also be
+            set on the image itself through ``encoderinfo``. This is useful when
+            saving multiple images::
+@@ -2544,6 +2551,8 @@ class Image:
+         self._ensure_mutable()
+ 
+         save_all = params.pop("save_all", None)
++        backup = params.pop("backup", False)
++        backup_suffix = params.pop("backup_suffix", ".bak")
+         self.encoderinfo = {**getattr(self, "encoderinfo", {}), **params}
+         self.encoderconfig: tuple[Any, ...] = ()
+ 
+@@ -2561,6 +2570,12 @@ class Image:
+         created = False
+         if open_fp:
+             created = not os.path.exists(filename)
++            if backup and not created:
++                if isinstance(filename, bytes):
++                    backup_filename = filename + os.fsencode(backup_suffix)
++                else:
++                    backup_filename = filename + backup_suffix
++                shutil.copy2(filename, backup_filename)
+             if params.get("append", False):
+                 # Open also for reading ("+"), because TIFF save_all
+                 # writer needs to go back and edit the written data.

@@ -1,0 +1,215 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..58f24e1 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -15,6 +15,7 @@ from contextlib import ExitStack
+ from functools import update_wrapper
+ from gettext import gettext as _
+ from gettext import ngettext
++from itertools import islice
+ from itertools import repeat
+ from types import TracebackType
+ 
+@@ -93,6 +94,18 @@ def batch(iterable: cabc.Iterable[V], batch_size: int) -> list[tuple[V, ...]]:
+     return list(zip(*repeat(iter(iterable), batch_size), strict=False))
+ 
+ 
++def _batched(
++    iterable: cabc.Iterable[V], batch_size: int
++) -> cabc.Iterator[tuple[V, ...]]:
++    """Yield successive, possibly uneven, chunks of at most ``batch_size``
++    items from ``iterable``, without accumulating the whole input.
++    """
++    it = iter(iterable)
++
++    while chunk := tuple(islice(it, batch_size)):
++        yield chunk
++
++
+ @contextmanager
+ def augment_usage_errors(
+     ctx: Context, param: Parameter | None = None
+@@ -1196,6 +1209,26 @@ class Command:
+         for param in iter_params_for_processing(param_order, self.get_params(ctx)):
+             value, args = param.handle_parse_result(ctx, opts, args)
+ 
++        # Second pass: now that every parameter has a final value, resolve
++        # any dynamic defaults (dict-based defaults keyed by other option
++        # declarations) that depend on those values. Only options whose
++        # value came from their own default participate.
++        if not ctx.resilient_parsing:
++            for param in self.get_params(ctx):
++                if (
++                    isinstance(param, Option)
++                    and isinstance(param.default, dict)
++                    and param.name is not None
++                    and ctx.get_parameter_source(param.name) is ParameterSource.DEFAULT
++                ):
++                    resolved = param.resolve_dynamic_default(ctx)
++
++                    if resolved is not None:
++                        value = param.process_value(ctx, resolved)
++
++                        if param.expose_value:
++                            ctx.params[param.name] = value
++
+         if args and not ctx.allow_extra_args and not ctx.resilient_parsing:
+             ctx.fail(
+                 ngettext(
+@@ -2332,6 +2365,13 @@ class Parameter:
+                 return tuple(self.type(x, self, ctx) for x in value)
+ 
+         if self.multiple:
++            batch_size = getattr(self, "batch_size", None)
++
++            if batch_size:
++                return _batched(
++                    (convert(x) for x in check_iter(value)), batch_size
++                )
++
+             return tuple(convert(x) for x in check_iter(value))
+ 
+         return convert(value)
+@@ -2499,6 +2539,12 @@ class Option(Parameter):
+                      multiple times and recorded.  This is similar to ``nargs``
+                      in how it works but supports arbitrary number of
+                      arguments.
++    :param batch_size: if ``multiple`` is set to `True`, group the collected
++                       values into tuples of at most this many items instead
++                       of a single flat tuple. The value received by the
++                       command becomes an iterator that yields each batch in
++                       turn. Must be a non-negative integer, and only valid
++                       together with ``multiple``.
+     :param count: this flag makes an option increment an integer.
+     :param allow_from_autoenv: if this is enabled then the value of this
+                                parameter will be pulled from an environment
+@@ -2541,6 +2587,7 @@ class Option(Parameter):
+         is_flag: bool | None = None,
+         flag_value: t.Any | None = None,
+         multiple: bool = False,
++        batch_size: int | None = None,
+         count: bool = False,
+         allow_from_autoenv: bool = True,
+         type: types.ParamType | t.Any | None = None,
+@@ -2631,11 +2678,20 @@ class Option(Parameter):
+             if default_is_missing:
+                 self.default = 0
+ 
++        if isinstance(self.default, dict):
++            for key, mapping in self.default.items():
++                if not isinstance(key, str):
++                    raise TypeError("Dynamic default keys must be strings")
++
++                if not isinstance(mapping, dict):
++                    raise TypeError("Dynamic default values must be dictionaries")
++
+         self.allow_from_autoenv = allow_from_autoenv
+         self.help = help
+         self.show_default = show_default
+         self.show_choices = show_choices
+         self.show_envvar = show_envvar
++        self.batch_size = batch_size
+ 
+         if __debug__:
+             if deprecated and prompt:
+@@ -2662,6 +2718,15 @@ class Option(Parameter):
+                 if self.is_flag:
+                     raise TypeError("'count' is not valid with 'is_flag'.")
+ 
++            if self.batch_size is not None:
++                if not self.multiple:
++                    raise TypeError("'batch_size' is not valid without 'multiple'.")
++
++                if self.batch_size < 0:
++                    raise ValueError(
++                        "'batch_size' must be a non-negative integer."
++                    )
++
+     def to_info_dict(self) -> dict[str, t.Any]:
+         info_dict = super().to_info_dict()
+         info_dict.update(
+@@ -2671,6 +2736,7 @@ class Option(Parameter):
+             flag_value=self.flag_value,
+             count=self.count,
+             hidden=self.hidden,
++            batch_size=self.batch_size,
+         )
+         return info_dict
+ 
+@@ -2852,6 +2918,7 @@ class Option(Parameter):
+ 
+         show_default = False
+         show_default_is_str = False
++        is_dynamic_default = isinstance(self.default, dict)
+ 
+         if self.show_default is not None:
+             if isinstance(self.show_default, str):
+@@ -2861,13 +2928,15 @@ class Option(Parameter):
+         elif ctx.show_default is not None:
+             show_default = ctx.show_default
+ 
+-        if show_default_is_str or (show_default and (default_value is not None)):
++        if show_default_is_str or (
++            show_default and (default_value is not None or is_dynamic_default)
++        ):
+             if show_default_is_str:
+                 default_string = f"({self.show_default})"
++            elif is_dynamic_default or inspect.isfunction(default_value):
++                default_string = _("(dynamic)")
+             elif isinstance(default_value, (list, tuple)):
+                 default_string = ", ".join(str(d) for d in default_value)
+-            elif inspect.isfunction(default_value):
+-                default_string = _("(dynamic)")
+             elif self.is_bool_flag and self.secondary_opts:
+                 # For boolean flags that have distinct True/False opts,
+                 # use the opt without prefix instead of the value.
+@@ -2923,8 +2992,49 @@ class Option(Parameter):
+ 
+             return None
+ 
++        # A dynamic default (a mapping of other option declarations to
++        # value maps) can't be resolved until every other parameter has
++        # been parsed, so it's resolved in a second pass instead. See
++        # ``Command.parse_args``.
++        if isinstance(self.default, dict):
++            return None
++
+         return super().get_default(ctx, call=call)
+ 
++    def resolve_dynamic_default(self, ctx: Context) -> t.Any | None:
++        """Resolve this option's dynamic default, if it has one.
++
++        A dynamic default is a mapping of other option declarations (for
++        example ``"--protocol"``) to a mapping of that option's
++        stringified value to the default value to use for this option.
++        Returns ``None`` if this option doesn't have a dynamic default, or
++        if none of the mappings matched.
++
++        .. versionadded:: 8.2
++        """
++        if not isinstance(self.default, dict):
++            return None
++
++        result = None
++
++        for decl, mapping in self.default.items():
++            source = None
++
++            for param in ctx.command.get_params(ctx):
++                if decl in param.opts or decl in param.secondary_opts:
++                    source = param
++                    break
++
++            if source is None or source.name is None:
++                continue
++
++            key = str(ctx.params.get(source.name))
++
++            if key in mapping:
++                result = mapping[key]
++
++        return result
++
+     def prompt_for_value(self, ctx: Context) -> t.Any:
+         """This is an alternative flow that can be activated in the full
+         value processing if a value does not exist.  It will prompt the

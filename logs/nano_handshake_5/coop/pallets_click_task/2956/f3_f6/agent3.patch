@@ -1,0 +1,85 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..c3d380b 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -2499,6 +2499,10 @@ class Option(Parameter):
+                      multiple times and recorded.  This is similar to ``nargs``
+                      in how it works but supports arbitrary number of
+                      arguments.
++    :param batch_size: if ``multiple`` is `True`, split the collected values
++                       into consecutive tuples of at most this many items
++                       instead of a single tuple. Only valid together with
++                       ``multiple``, and must not be negative.
+     :param count: this flag makes an option increment an integer.
+     :param allow_from_autoenv: if this is enabled then the value of this
+                                parameter will be pulled from an environment
+@@ -2541,6 +2545,7 @@ class Option(Parameter):
+         is_flag: bool | None = None,
+         flag_value: t.Any | None = None,
+         multiple: bool = False,
++        batch_size: int | None = None,
+         count: bool = False,
+         allow_from_autoenv: bool = True,
+         type: types.ParamType | t.Any | None = None,
+@@ -2558,6 +2563,7 @@ class Option(Parameter):
+         super().__init__(
+             param_decls, type=type, multiple=multiple, deprecated=deprecated, **attrs
+         )
++        self.batch_size = batch_size
+ 
+         if prompt is True:
+             if self.name is None:
+@@ -2662,6 +2668,13 @@ class Option(Parameter):
+                 if self.is_flag:
+                     raise TypeError("'count' is not valid with 'is_flag'.")
+ 
++            if self.batch_size is not None:
++                if self.batch_size < 0:
++                    raise ValueError("'batch_size' must not be negative.")
++
++                if not self.multiple:
++                    raise TypeError("'batch_size' is not valid without 'multiple'.")
++
+     def to_info_dict(self) -> dict[str, t.Any]:
+         info_dict = super().to_info_dict()
+         info_dict.update(
+@@ -2671,9 +2684,18 @@ class Option(Parameter):
+             flag_value=self.flag_value,
+             count=self.count,
+             hidden=self.hidden,
++            batch_size=self.batch_size,
+         )
+         return info_dict
+ 
++    def type_cast_value(self, ctx: Context, value: t.Any) -> t.Any:
++        value = super().type_cast_value(ctx, value)
++
++        if self.multiple and self.batch_size and value:
++            value = tuple(types._batched(value, self.batch_size))
++
++        return value
++
+     def get_error_hint(self, ctx: Context) -> str:
+         result = super().get_error_hint(ctx)
+         if self.show_envvar:
+diff --git a/src/click/types.py b/src/click/types.py
+index 684cb3b..03f12c5 100644
+--- a/src/click/types.py
++++ b/src/click/types.py
+@@ -1125,6 +1125,16 @@ def convert_type(ty: t.Any | None, default: t.Any | None = None) -> ParamType:
+     return FuncParamType(ty)
+ 
+ 
++def _batched(
++    values: cabc.Sequence[t.Any], batch_size: int
++) -> cabc.Iterator[tuple[t.Any, ...]]:
++    """Split ``values`` into consecutive chunks of at most ``batch_size``
++    items each.
++    """
++    for i in range(0, len(values), batch_size):
++        yield tuple(values[i : i + batch_size])
++
++
+ #: A dummy parameter type that just does nothing.  From a user's
+ #: perspective this appears to just be the same as `STRING` but
+ #: internally no string conversion takes place if the input was bytes.

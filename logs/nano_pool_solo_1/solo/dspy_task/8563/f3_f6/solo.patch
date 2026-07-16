@@ -1,0 +1,161 @@
+diff --git a/dspy/adapters/types/tool.py b/dspy/adapters/types/tool.py
+index 843eceed..78a5c1a2 100644
+--- a/dspy/adapters/types/tool.py
++++ b/dspy/adapters/types/tool.py
+@@ -1,9 +1,11 @@
+ import asyncio
+ import inspect
++import json
++import re
+ from typing import TYPE_CHECKING, Any, Callable, Type, get_origin, get_type_hints
+ 
+ from jsonschema import ValidationError, validate
+-from pydantic import BaseModel, TypeAdapter, create_model
++from pydantic import BaseModel, TypeAdapter, create_model, model_validator
+ 
+ from dspy.adapters.types.base_type import Type
+ from dspy.dsp.utils.settings import settings
+@@ -15,6 +17,77 @@ if TYPE_CHECKING:
+ 
+ _TYPE_MAPPING = {"string": str, "integer": int, "number": float, "boolean": bool, "array": list, "object": dict}
+ 
++_DURATION_UNIT_TO_SECONDS = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
++_SIZE_UNIT_TO_BYTES = {"kb": 1_000, "mb": 1_000**2, "gb": 1_000**3}
++_DURATION_RE = re.compile(r"^(\d+(?:\.\d+)?)(ms|s|m|h)$", re.IGNORECASE)
++_SIZE_RE = re.compile(r"^(\d+(?:\.\d+)?)(kb|mb|gb)$", re.IGNORECASE)
++
++
++def coerce_args(kwargs: dict[str, Any], schema: dict[str, Any] | None) -> dict[str, Any]:
++    """Coerce common LM-emitted string values into the types their JSON schema expects.
++
++    Only touches string values whose target arg schema `type` is `integer`, `number`, or `boolean`,
++    so a field whose schema expects `string` is never coerced. Handles `"true"/"false"` booleans,
++    plain numeric strings, and unit-suffixed durations (`"750ms"`, `"2m"` -> seconds) and sizes
++    (`"3MB"` -> bytes). If a value looks like it should coerce but doesn't parse cleanly, it's left
++    unchanged so `jsonschema.validate` can raise a clear error.
++    """
++    if not schema:
++        return kwargs
++
++    coerced = dict(kwargs)
++    for key, value in kwargs.items():
++        if not isinstance(value, str):
++            continue
++        arg_schema = schema.get(key)
++        if not isinstance(arg_schema, dict):
++            continue
++        schema_type = arg_schema.get("type")
++        if schema_type not in ("integer", "number", "boolean"):
++            continue
++
++        stripped = value.strip()
++
++        if schema_type == "boolean":
++            lowered = stripped.lower()
++            if lowered == "true":
++                coerced[key] = True
++            elif lowered == "false":
++                coerced[key] = False
++            continue
++
++        duration_match = _DURATION_RE.match(stripped)
++        if duration_match:
++            amount, unit = duration_match.groups()
++            coerced[key] = float(amount) * _DURATION_UNIT_TO_SECONDS[unit.lower()]
++            continue
++
++        size_match = _SIZE_RE.match(stripped)
++        if size_match:
++            amount, unit = size_match.groups()
++            coerced[key] = int(float(amount) * _SIZE_UNIT_TO_BYTES[unit.lower()])
++            continue
++
++        try:
++            coerced[key] = _coerce_number(stripped, prefer_int=schema_type == "integer")
++        except ValueError:
++            # Leave the original string in place; schema validation below will raise a clear error.
++            pass
++
++    return coerced
++
++
++def _coerce_number(value: str, prefer_int: bool) -> int | float:
++    if prefer_int:
++        try:
++            return int(value)
++        except ValueError:
++            pass
++    as_float = float(value)
++    if prefer_int and as_float.is_integer():
++        return int(as_float)
++    return as_float
++
+ 
+ class Tool(Type):
+     """Tool class.
+@@ -116,6 +189,10 @@ class Tool(Type):
+         self.has_kwargs = any(param.kind == param.VAR_KEYWORD for param in sig.parameters.values())
+ 
+     def _validate_and_parse_args(self, **kwargs):
++        # Coerce common LM-emitted strings (e.g. "42", "true", "750ms", "3MB") to the types the schema
++        # expects, before validation, so that minor formatting differences don't fail validation.
++        kwargs = coerce_args(kwargs, schema=self.args)
++
+         # Validate the args value comply to the json schema.
+         for k, v in kwargs.items():
+             if k not in self.args:
+@@ -261,6 +338,25 @@ class ToolCalls(Type):
+ 
+     tool_calls: list[ToolCall]
+ 
++    @model_validator(mode="before")
++    @classmethod
++    def validate_input(cls, data: Any):
++        if isinstance(data, cls):
++            return data
++
++        if isinstance(data, str):
++            extracted = _extract_fenced_json(data)
++            if extracted is not None:
++                data = extracted
++
++        if isinstance(data, list):
++            return {"tool_calls": data}
++
++        if isinstance(data, dict) and "tool_calls" not in data and "name" in data and "args" in data:
++            return {"tool_calls": [data]}
++
++        return data
++
+     @classmethod
+     def from_dict_list(cls, tool_calls_dicts: list[dict[str, Any]]) -> "ToolCalls":
+         """Convert a list of dictionaries to a ToolCalls instance.
+@@ -310,6 +406,28 @@ class ToolCalls(Type):
+         ]
+ 
+ 
++_FENCE_RE = re.compile(r"```[ \t]*[a-zA-Z0-9_+-]*[ \t]*\r?\n?(.*?)```", re.DOTALL)
++
++
++def _extract_fenced_json(text: str) -> Any | None:
++    """Extract and parse the first ```-fenced code block in `text` as JSON.
++
++    Returns the parsed object, or `None` if there's no fenced block or its contents aren't valid
++    JSON (in which case the caller should fall back to treating `text` as a plain string).
++    """
++    if "```" not in text:
++        return None
++
++    match = _FENCE_RE.search(text)
++    if not match:
++        return None
++
++    try:
++        return json.loads(match.group(1).strip())
++    except json.JSONDecodeError:
++        return None
++
++
+ def _resolve_json_schema_reference(schema: dict) -> dict:
+     """Recursively resolve json model schema, expanding all references."""
+ 

@@ -1,0 +1,267 @@
+diff --git a/Tests/test_image_quantize.py b/Tests/test_image_quantize.py
+index bd9db362c..f904e2d61 100644
+--- a/Tests/test_image_quantize.py
++++ b/Tests/test_image_quantize.py
+@@ -77,6 +77,34 @@ def test_quantize_dither_diff():
+     assert dither.tobytes() != nodither.tobytes()
+ 
+ 
++def test_quantize_error_threshold():
++    image = hopper()
++
++    # A very high error threshold should be satisfied by very few colors.
++    high_threshold = image.quantize(colors=256, error_threshold=1000000)
++    assert len(high_threshold.getcolors()) < 256
++
++    # An unreachable error threshold should fall back to the requested
++    # number of colors.
++    low_threshold = image.quantize(colors=16, error_threshold=0)
++    assert len(low_threshold.getcolors()) == 16
++
++
++def test_quantize_error_threshold_negative():
++    image = hopper()
++    with pytest.raises(ValueError):
++        image.quantize(error_threshold=-1)
++
++
++def test_quantize_error_threshold_with_palette():
++    image = hopper()
++    with Image.open("Tests/images/caption_6_33_22.png") as palette:
++        palette = palette.convert("P")
++
++    with pytest.raises(ValueError):
++        image.quantize(palette=palette, error_threshold=10)
++
++
+ def test_transparent_colors_equal():
+     im = Image.new("RGBA", (1, 2), (0, 0, 0, 0))
+     px = im.load()
+@@ -85,3 +113,64 @@ def test_transparent_colors_equal():
+     converted = im.quantize()
+     converted_px = converted.load()
+     assert converted_px[0, 0] == converted_px[0, 1]
++
++
++def _luma(color):
++    r, g, b = color[:3]
++    return r * 299 + g * 587 + b * 114
++
++
++def test_quantize_sort_palette_brightness():
++    image = hopper()
++    converted = image.quantize(16, Image.FASTOCTREE, sort_palette="brightness")
++
++    palette = converted.getpalette()
++    colors = [tuple(palette[i : i + 3]) for i in range(0, len(palette), 3)][:16]
++    lumas = [_luma(color) for color in colors]
++    assert lumas == sorted(lumas)
++
++    # Pixel indices should have been remapped, so the image still looks the same
++    unsorted = image.quantize(16, Image.FASTOCTREE)
++    assert_image_similar(converted.convert("RGB"), unsorted.convert("RGB"), 1)
++
++
++def test_quantize_sort_palette_rgb():
++    image = hopper()
++    converted = image.quantize(16, Image.FASTOCTREE, sort_palette="rgb")
++
++    palette = converted.getpalette()
++    colors = [tuple(palette[i : i + 3]) for i in range(0, len(palette), 3)][:16]
++    assert colors == sorted(colors)
++
++    unsorted = image.quantize(16, Image.FASTOCTREE)
++    assert_image_similar(converted.convert("RGB"), unsorted.convert("RGB"), 1)
++
++
++def test_quantize_sort_palette_callable():
++    image = hopper()
++    converted = image.quantize(
++        16, Image.FASTOCTREE, sort_palette=lambda color: -_luma(color)
++    )
++
++    palette = converted.getpalette()
++    colors = [tuple(palette[i : i + 3]) for i in range(0, len(palette), 3)][:16]
++    assert [_luma(color) for color in colors] == sorted(
++        (_luma(color) for color in colors), reverse=True
++    )
++
++
++def test_quantize_sort_palette_invalid():
++    image = hopper()
++    with pytest.raises(ValueError):
++        image.quantize(16, Image.FASTOCTREE, sort_palette="not-a-real-option")
++
++
++def test_quantize_sort_palette_with_reference_palette():
++    image = hopper()
++    reference = image.quantize(16, Image.FASTOCTREE)
++
++    converted = image.quantize(palette=reference, sort_palette="brightness")
++    assert_image(converted, "P", converted.size)
++    assert_image_similar(
++        converted.convert("RGB"), image.quantize(palette=reference).convert("RGB"), 1
++    )
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..95745e7a3 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -1048,7 +1048,16 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        sort_palette=None,
++        error_threshold=None,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1082,21 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param sort_palette: Whether to sort the palette after quantization, and
++           if so, by what criteria. This can be the string ``"brightness"`` (sorted
++           by luma, using the ITU-R 601-2 formula), the string ``"rgb"`` (sorted
++           by ``(r, g, b)`` value), or a callable that is given each palette
++           color's ``(r, g, b)`` (or ``(r, g, b, a)``) tuple and returns a sort
++           key. Pixel indices are remapped so that the image still looks the
++           same. Default: ``None``, meaning the palette order chosen by the
++           quantization method is left as-is.
++        :param error_threshold: The maximum mean square error (MSE) allowed
++           between the original image and the quantized image. If given,
++           the smallest number of colors (up to ``colors``) whose MSE is at
++           or below this threshold is used, so the result may use fewer
++           colors than ``colors``. If the threshold cannot be reached with
++           at most ``colors`` colors, ``colors`` colors are used. Cannot be
++           used together with ``palette``.
+         :returns: A new image
+ 
+         """
+@@ -1093,6 +1117,11 @@ class Image:
+             )
+ 
+         if palette:
++            if error_threshold is not None:
++                raise ValueError(
++                    "error_threshold cannot be used together with palette"
++                )
++
+             # use palette from reference image
+             palette.load()
+             if palette.mode != "P":
+@@ -1104,17 +1133,104 @@ class Image:
+             im = self.im.convert("P", dither, palette.im)
+             new_im = self._new(im)
+             new_im.palette = palette.palette.copy()
++            if sort_palette:
++                new_im._sort_palette(sort_palette)
+             return new_im
+ 
+-        im = self._new(self.im.quantize(colors, method, kmeans))
+-
+         from . import ImagePalette
+ 
++        if error_threshold is not None:
++            if error_threshold < 0:
++                raise ValueError("error_threshold must be greater than or equal to 0")
++
++            for num_colors in range(2, colors):
++                candidate = self._new(self.im.quantize(num_colors, method, kmeans))
++                mode = candidate.im.getpalettemode()
++                candidate.palette = ImagePalette.ImagePalette(
++                    mode, candidate.im.getpalette(mode, mode)
++                )
++
++                if self._quantize_mse(candidate) <= error_threshold:
++                    if sort_palette:
++                        candidate._sort_palette(sort_palette)
++                    return candidate
++
++        im = self._new(self.im.quantize(colors, method, kmeans))
++
+         mode = im.im.getpalettemode()
+         im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
+ 
++        if sort_palette:
++            im._sort_palette(sort_palette)
++
+         return im
+ 
++    def _sort_palette(self, sort_palette):
++        # Sorts this image's palette in place, remapping pixel indices so the
++        # image still looks the same. Used by quantize()'s sort_palette param.
++        if sort_palette == "brightness":
++
++            def key(color):
++                r, g, b = color[:3]
++                return r * 299 + g * 587 + b * 114
++
++        elif sort_palette == "rgb":
++
++            def key(color):
++                return color[:3]
++
++        elif callable(sort_palette):
++            key = sort_palette
++        else:
++            raise ValueError(
++                "sort_palette must be 'brightness', 'rgb', or a callable, "
++                f"not {sort_palette!r}"
++            )
++
++        palette = self.palette
++        mode_len = len(palette.mode)
++        palette_bytes = palette.palette
++        all_colors = [
++            tuple(palette_bytes[i : i + mode_len])
++            for i in range(0, len(palette_bytes), mode_len)
++        ]
++
++        # Only sort the palette entries actually used by a pixel, leaving any
++        # unused trailing entries as-is.
++        used = [i for i, count in enumerate(self.histogram()[:256]) if count > 0]
++        num_colors = max(used) + 1 if used else 0
++        if num_colors <= 1:
++            return
++
++        colors = all_colors[:num_colors]
++        order = sorted(range(num_colors), key=lambda i: key(colors[i]))
++
++        lut = list(range(256))
++        for new_index, old_index in enumerate(order):
++            lut[old_index] = new_index
++        self.im = self.im.point(lut, None)
++
++        new_palette_data = bytearray()
++        for old_index in order:
++            new_palette_data.extend(colors[old_index])
++        new_palette_data.extend(palette_bytes[num_colors * mode_len :])
++        palette.palette = bytes(new_palette_data)
++        palette.dirty = 1
++        self.load()
++
++    def _quantize_mse(self, quantized_im):
++        """
++        Returns the mean square error between this image and a quantized
++        version of it, used by :py:meth:`~PIL.Image.Image.quantize` to
++        evaluate ``error_threshold``.
++        """
++        from . import ImageChops, ImageStat
++
++        comparison = quantized_im.convert(self.mode)
++        diff = ImageChops.difference(self, comparison)
++        rms_per_band = ImageStat.Stat(diff).rms
++        return sum(rms ** 2 for rms in rms_per_band) / len(rms_per_band)
++
+     def copy(self):
+         """
+         Copies this image. Use this method if you wish to paste things

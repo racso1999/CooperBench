@@ -1,0 +1,91 @@
+diff --git a/Tests/test_image.py b/Tests/test_image.py
+index c2e850c36..bcc6513c2 100644
+--- a/Tests/test_image.py
++++ b/Tests/test_image.py
+@@ -182,6 +182,38 @@ class TestImage:
+         with Image.open(out) as reloaded:
+             assert_image_equal(im, reloaded)
+ 
++    def test_save_backup(self, tmp_path: Path) -> None:
++        out = str(tmp_path / "temp.png")
++
++        # No existing file, so no backup should be created
++        im = hopper()
++        im.save(out, backup=True)
++        assert not os.path.exists(out + ".bak")
++        with Image.open(out) as reloaded:
++            assert_image_equal(im, reloaded)
++
++        # File already exists, so a backup should be created
++        original_data = Path(out).read_bytes()
++        im2 = hopper("L")
++        im2.save(out, backup=True)
++        assert os.path.exists(out + ".bak")
++        assert Path(out + ".bak").read_bytes() == original_data
++        with Image.open(out) as reloaded:
++            assert_image_equal(im2, reloaded)
++
++    def test_save_backup_suffix(self, tmp_path: Path) -> None:
++        out = str(tmp_path / "temp.png")
++
++        im = hopper()
++        im.save(out)
++
++        original_data = Path(out).read_bytes()
++        im2 = hopper("L")
++        im2.save(out, backup=True, backup_suffix=".backup")
++        assert not os.path.exists(out + ".bak")
++        assert os.path.exists(out + ".backup")
++        assert Path(out + ".backup").read_bytes() == original_data
++
+     def test_pathlib(self, tmp_path: Path) -> None:
+         with Image.open(Path("Tests/images/multipage-mmap.tiff")) as im:
+             assert im.mode == "P"
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 233df592c..57b71e778 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -34,6 +34,7 @@ import logging
+ import math
+ import os
+ import re
++import shutil
+ import struct
+ import sys
+ import tempfile
+@@ -2490,6 +2491,13 @@ class Image:
+            format to use is determined from the filename extension.
+            If a file object was used instead of a filename, this
+            parameter should always be used.
++        :param backup: If true, and a file already exists at the target
++           filename, a copy of the existing file is made before it is
++           overwritten. This parameter is ignored when ``fp`` is a file
++           object rather than a filename.
++        :param backup_suffix: The suffix to append to the filename when
++           creating a backup. Defaults to ``.bak``. Only used when
++           ``backup`` is true.
+         :param params: Extra parameters to the image writer. These can also be
+            set on the image itself through ``encoderinfo``. This is useful when
+            saving multiple images::
+@@ -2544,6 +2552,8 @@ class Image:
+         self._ensure_mutable()
+ 
+         save_all = params.pop("save_all", None)
++        backup = params.pop("backup", False)
++        backup_suffix = params.pop("backup_suffix", ".bak")
+         self.encoderinfo = {**getattr(self, "encoderinfo", {}), **params}
+         self.encoderconfig: tuple[Any, ...] = ()
+ 
+@@ -2561,6 +2571,12 @@ class Image:
+         created = False
+         if open_fp:
+             created = not os.path.exists(filename)
++            if backup and not created:
++                if isinstance(filename, bytes):
++                    backup_filename = filename + os.fsencode(backup_suffix)
++                else:
++                    backup_filename = filename + backup_suffix
++                shutil.copy2(filename, backup_filename)
+             if params.get("append", False):
+                 # Open also for reading ("+"), because TIFF save_all
+                 # writer needs to go back and edit the written data.

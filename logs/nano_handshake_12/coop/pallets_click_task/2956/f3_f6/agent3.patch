@@ -1,0 +1,106 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..a676a59 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -15,6 +15,7 @@ from contextlib import ExitStack
+ from functools import update_wrapper
+ from gettext import gettext as _
+ from gettext import ngettext
++from itertools import islice
+ from itertools import repeat
+ from types import TracebackType
+ 
+@@ -1981,6 +1982,18 @@ def _check_iter(value: t.Any) -> cabc.Iterator[t.Any]:
+     return iter(value)
+ 
+ 
++def _batched(
++    iterable: cabc.Iterable[t.Any], batch_size: int
++) -> cabc.Iterator[tuple[t.Any, ...]]:
++    """Yield successive tuples of at most ``batch_size`` items from
++    ``iterable`` without accumulating the whole thing in memory.
++    """
++    it = iter(iterable)
++
++    while batch := tuple(islice(it, batch_size)):
++        yield batch
++
++
+ class Parameter:
+     r"""A parameter to a command comes in two versions: they are either
+     :class:`Option`\s or :class:`Argument`\s.  Other subclasses are currently
+@@ -2332,7 +2345,13 @@ class Parameter:
+                 return tuple(self.type(x, self, ctx) for x in value)
+ 
+         if self.multiple:
+-            return tuple(convert(x) for x in check_iter(value))
++            batch_size = getattr(self, "batch_size", None)
++            converted = (convert(x) for x in check_iter(value))
++
++            if batch_size is not None:
++                return _batched(converted, batch_size)
++
++            return tuple(converted)
+ 
+         return convert(value)
+ 
+@@ -2499,6 +2518,11 @@ class Option(Parameter):
+                      multiple times and recorded.  This is similar to ``nargs``
+                      in how it works but supports arbitrary number of
+                      arguments.
++    :param batch_size: if set, requires ``multiple`` to also be set. Instead
++                        of collecting all values into a single tuple, values
++                        are yielded in an iterator of tuples containing at
++                        most ``batch_size`` items each. This avoids holding
++                        every value in memory at once. Must not be negative.
+     :param count: this flag makes an option increment an integer.
+     :param allow_from_autoenv: if this is enabled then the value of this
+                                parameter will be pulled from an environment
+@@ -2508,6 +2532,9 @@ class Option(Parameter):
+     :param hidden: hide this option from help outputs.
+     :param attrs: Other command arguments described in :class:`Parameter`.
+ 
++    .. versionchanged:: 8.3
++        Added the ``batch_size`` parameter.
++
+     .. versionchanged:: 8.2
+         ``envvar`` used with ``flag_value`` will always use the ``flag_value``,
+         previously it would use the value of the environment variable.
+@@ -2549,6 +2576,7 @@ class Option(Parameter):
+         show_choices: bool = True,
+         show_envvar: bool = False,
+         deprecated: bool | str = False,
++        batch_size: int | None = None,
+         **attrs: t.Any,
+     ) -> None:
+         if help:
+@@ -2636,6 +2664,7 @@ class Option(Parameter):
+         self.show_default = show_default
+         self.show_choices = show_choices
+         self.show_envvar = show_envvar
++        self.batch_size = batch_size
+ 
+         if __debug__:
+             if deprecated and prompt:
+@@ -2662,6 +2691,13 @@ class Option(Parameter):
+                 if self.is_flag:
+                     raise TypeError("'count' is not valid with 'is_flag'.")
+ 
++            if self.batch_size is not None:
++                if not self.multiple:
++                    raise TypeError("'batch_size' is not valid without 'multiple'.")
++
++                if self.batch_size < 0:
++                    raise ValueError("'batch_size' must not be negative.")
++
+     def to_info_dict(self) -> dict[str, t.Any]:
+         info_dict = super().to_info_dict()
+         info_dict.update(
+@@ -2671,6 +2707,7 @@ class Option(Parameter):
+             flag_value=self.flag_value,
+             count=self.count,
+             hidden=self.hidden,
++            batch_size=self.batch_size,
+         )
+         return info_dict
+ 

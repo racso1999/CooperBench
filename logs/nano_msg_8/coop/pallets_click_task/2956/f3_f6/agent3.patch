@@ -1,0 +1,98 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..0a8aa50 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -2499,6 +2499,10 @@ class Option(Parameter):
+                      multiple times and recorded.  This is similar to ``nargs``
+                      in how it works but supports arbitrary number of
+                      arguments.
++    :param batch_size: if set, requires ``multiple=True`` and groups the
++                        collected values into tuples of at most this many
++                        items instead of a single flat tuple. Must not be
++                        negative.
+     :param count: this flag makes an option increment an integer.
+     :param allow_from_autoenv: if this is enabled then the value of this
+                                parameter will be pulled from an environment
+@@ -2549,6 +2553,7 @@ class Option(Parameter):
+         show_choices: bool = True,
+         show_envvar: bool = False,
+         deprecated: bool | str = False,
++        batch_size: int | None = None,
+         **attrs: t.Any,
+     ) -> None:
+         if help:
+@@ -2559,6 +2564,15 @@ class Option(Parameter):
+             param_decls, type=type, multiple=multiple, deprecated=deprecated, **attrs
+         )
+ 
++        if batch_size is not None:
++            if not multiple:
++                raise TypeError("'batch_size' is only valid when 'multiple' is true.")
++
++            if batch_size < 0:
++                raise ValueError("'batch_size' must not be negative.")
++
++        self.batch_size = batch_size
++
+         if prompt is True:
+             if self.name is None:
+                 raise TypeError("'name' is required with 'prompt=True'.")
+@@ -2671,6 +2685,7 @@ class Option(Parameter):
+             flag_value=self.flag_value,
+             count=self.count,
+             hidden=self.hidden,
++            batch_size=self.batch_size,
+         )
+         return info_dict
+ 
+@@ -2680,6 +2695,14 @@ class Option(Parameter):
+             result += f" (env var: '{self.envvar}')"
+         return result
+ 
++    def type_cast_value(self, ctx: Context, value: t.Any) -> t.Any:
++        value = super().type_cast_value(ctx, value)
++
++        if self.batch_size is not None:
++            value = tuple(types._batch_values(value, self.batch_size))
++
++        return value
++
+     def _parse_decls(
+         self, decls: cabc.Sequence[str], expose_value: bool
+     ) -> tuple[str | None, list[str], list[str]]:
+diff --git a/src/click/types.py b/src/click/types.py
+index 684cb3b..a4b9303 100644
+--- a/src/click/types.py
++++ b/src/click/types.py
+@@ -2,6 +2,7 @@ from __future__ import annotations
+ 
+ import collections.abc as cabc
+ import enum
++import itertools
+ import os
+ import stat
+ import sys
+@@ -27,6 +28,23 @@ if t.TYPE_CHECKING:
+ ParamTypeValue = t.TypeVar("ParamTypeValue")
+ 
+ 
++def _batch_values(
++    values: cabc.Iterable[ParamTypeValue], batch_size: int
++) -> cabc.Iterator[tuple[ParamTypeValue, ...]]:
++    """Split ``values`` into consecutive chunks of at most ``batch_size``
++    items each.
++
++    Used by :class:`~click.core.Option` when ``multiple=True`` is combined
++    with ``batch_size`` to avoid materializing every value at once.
++    """
++    it = iter(values)
++    batch = tuple(itertools.islice(it, batch_size))
++
++    while batch:
++        yield batch
++        batch = tuple(itertools.islice(it, batch_size))
++
++
+ class ParamType:
+     """Represents the type of a parameter. Validates and converts values
+     from the command line or Python into the correct type.

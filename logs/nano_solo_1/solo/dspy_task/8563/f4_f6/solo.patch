@@ -1,0 +1,100 @@
+diff --git a/dspy/adapters/types/tool.py b/dspy/adapters/types/tool.py
+index 843eceed..21ba5c1d 100644
+--- a/dspy/adapters/types/tool.py
++++ b/dspy/adapters/types/tool.py
+@@ -1,9 +1,12 @@
+ import asyncio
++import hashlib
+ import inspect
++import json
++import re
+ from typing import TYPE_CHECKING, Any, Callable, Type, get_origin, get_type_hints
+ 
+ from jsonschema import ValidationError, validate
+-from pydantic import BaseModel, TypeAdapter, create_model
++from pydantic import BaseModel, TypeAdapter, create_model, model_validator
+ 
+ from dspy.adapters.types.base_type import Type
+ from dspy.dsp.utils.settings import settings
+@@ -254,13 +257,81 @@ class Tool(Type):
+         return f"{self.name}{desc} {arg_desc}"
+ 
+ 
++def _canonicalize_value(value: Any) -> Any:
++    """Recursively canonicalize a value for stable fingerprinting.
++
++    Sorts dict keys, converts tuples to lists, and trims whitespace from strings. Numeric and
++    boolean types are left untouched so semantics are preserved.
++    """
++    if isinstance(value, dict):
++        return {key: _canonicalize_value(value[key]) for key in sorted(value.keys())}
++    if isinstance(value, (list, tuple)):
++        return [_canonicalize_value(item) for item in value]
++    if isinstance(value, str):
++        return value.strip()
++    return value
++
++
++def _compute_fingerprint(name: str, args: dict[str, Any]) -> str:
++    """Compute a stable SHA-256 fingerprint for a tool call from its name and canonicalized args."""
++    canonical = {"name": name, "args": _canonicalize_value(args)}
++    serialized = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
++    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
++
++
++def _extract_fenced_block(text: str) -> str:
++    """Extract the content of the first markdown code fence in `text`, if any.
++
++    Accepts an optional language tag (e.g. ```json, ```JSON) or no tag at all. If no fence is
++    found, the original text is returned unchanged.
++    """
++    if "```" not in text:
++        return text
++
++    match = re.search(r"```[ \t]*[a-zA-Z]*[ \t]*\r?\n?(.*?)```", text, re.DOTALL)
++    if not match:
++        return text
++
++    return match.group(1).strip()
++
++
+ class ToolCalls(Type):
+     class ToolCall(BaseModel):
+         name: str
+         args: dict[str, Any]
++        fingerprint: str = ""
++        id: str = ""
++
++        def __init__(self, **data):
++            # `fingerprint`/`id` are derived, read-only metadata computed once at creation time from
++            # `name` and `args`; any values passed in for them are ignored.
++            data.pop("fingerprint", None)
++            data.pop("id", None)
++            super().__init__(**data)
++            fingerprint = _compute_fingerprint(self.name, self.args)
++            self.fingerprint = fingerprint
++            self.id = fingerprint[:8]
+ 
+     tool_calls: list[ToolCall]
+ 
++    @model_validator(mode="before")
++    @classmethod
++    def validate_input(cls, data: Any):
++        if isinstance(data, cls) or not isinstance(data, str):
++            return data
++
++        extracted = _extract_fenced_block(data)
++        try:
++            parsed = json.loads(extracted)
++        except (json.JSONDecodeError, TypeError):
++            # Non-breaking: if it isn't valid JSON, leave the original string untouched and let
++            # normal validation handle (and likely reject) it.
++            return data
++
++        if isinstance(parsed, list):
++            return {"tool_calls": parsed}
++        return parsed
++
+     @classmethod
+     def from_dict_list(cls, tool_calls_dicts: list[dict[str, Any]]) -> "ToolCalls":
+         """Convert a list of dictionaries to a ToolCalls instance.

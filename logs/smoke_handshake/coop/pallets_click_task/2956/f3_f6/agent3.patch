@@ -1,0 +1,79 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..243453d 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -2499,6 +2499,11 @@ class Option(Parameter):
+                      multiple times and recorded.  This is similar to ``nargs``
+                      in how it works but supports arbitrary number of
+                      arguments.
++    :param batch_size: if set, requires ``multiple`` to be ``True`` and
++                        causes the option's value to be an iterator that
++                        yields tuples of at most ``batch_size`` collected
++                        values instead of a single tuple of all values.
++                        Must not be negative.
+     :param count: this flag makes an option increment an integer.
+     :param allow_from_autoenv: if this is enabled then the value of this
+                                parameter will be pulled from an environment
+@@ -2549,6 +2554,7 @@ class Option(Parameter):
+         show_choices: bool = True,
+         show_envvar: bool = False,
+         deprecated: bool | str = False,
++        batch_size: int | None = None,
+         **attrs: t.Any,
+     ) -> None:
+         if help:
+@@ -2636,6 +2642,7 @@ class Option(Parameter):
+         self.show_default = show_default
+         self.show_choices = show_choices
+         self.show_envvar = show_envvar
++        self.batch_size = batch_size
+ 
+         if __debug__:
+             if deprecated and prompt:
+@@ -2662,6 +2669,15 @@ class Option(Parameter):
+                 if self.is_flag:
+                     raise TypeError("'count' is not valid with 'is_flag'.")
+ 
++            if self.batch_size is not None:
++                if self.batch_size < 0:
++                    raise ValueError("'batch_size' must be greater than or equal to 0.")
++
++                if not self.multiple:
++                    raise TypeError(
++                        "'batch_size' is only valid when 'multiple' is true."
++                    )
++
+     def to_info_dict(self) -> dict[str, t.Any]:
+         info_dict = super().to_info_dict()
+         info_dict.update(
+@@ -2671,9 +2687,30 @@ class Option(Parameter):
+             flag_value=self.flag_value,
+             count=self.count,
+             hidden=self.hidden,
++            batch_size=self.batch_size,
+         )
+         return info_dict
+ 
++    def process_value(self, ctx: Context, value: t.Any) -> t.Any:
++        value = super().process_value(ctx, value)
++
++        if self.batch_size is not None and value is not None:
++            return self._make_batches(value)
++
++        return value
++
++    def _make_batches(
++        self, value: cabc.Sequence[t.Any]
++    ) -> cabc.Iterator[tuple[t.Any, ...]]:
++        """Split the collected ``multiple`` values into chunks of at
++        most :attr:`batch_size` items each.
++        """
++        batch_size = self.batch_size
++        assert batch_size is not None
++
++        for start in range(0, len(value), batch_size):
++            yield tuple(value[start : start + batch_size])
++
+     def get_error_hint(self, ctx: Context) -> str:
+         result = super().get_error_hint(ctx)
+         if self.show_envvar:

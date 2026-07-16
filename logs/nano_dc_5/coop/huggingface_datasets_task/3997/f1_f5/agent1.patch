@@ -1,0 +1,122 @@
+diff --git a/src/datasets/features/features.py b/src/datasets/features/features.py
+index 6a0da6401..00d08ea75 100644
+--- a/src/datasets/features/features.py
++++ b/src/datasets/features/features.py
+@@ -20,7 +20,7 @@ import re
+ import sys
+ from collections.abc import Iterable
+ from dataclasses import InitVar, _asdict_inner, dataclass, field, fields
+-from functools import reduce
++from functools import reduce, wraps
+ from operator import mul
+ from typing import Any, ClassVar, Dict, List, Optional
+ from typing import Sequence as Sequence_
+@@ -1198,6 +1198,41 @@ def require_decoding(feature: FeatureType, ignore_decode_attribute: bool = False
+         return hasattr(feature, "decode_example") and (feature.decode if not ignore_decode_attribute else True)
+ 
+ 
++def keep_features_dicts_synced(func):
++    """
++    Wrapper to keep the secondary dictionary, `_column_requires_decoding`, of the `Features` class in sync with the
++    main dictionary.
++
++    A `Features` object is essentially a `dict` (rather than a `UserDict`, for performance reasons), so mutating
++    dict operations like `pop`, `popitem`, `setdefault` and `clear` don't go through `__setitem__`/`__delitem__` at
++    the C level. This decorator recomputes `_column_requires_decoding` from the up-to-date dict content right after
++    the wrapped method runs, so any mutating method can be safely decorated with it to stay in sync.
++    """
++
++    @wraps(func)
++    def wrapper(*args, **kwargs):
++        if args and isinstance(args[0], Features):
++            self: "Features" = args[0]
++            out = func(*args, **kwargs)
++            self._column_requires_decoding = {col: require_decoding(feature) for col, feature in self.items()}
++            return out
++        else:
++            return func(*args, **kwargs)
++
++    wrapper._decorator_name_ = "keep_features_dicts_synced"
++    return wrapper
++
++
++def _deep_merge_dicts(dest: dict, src: dict) -> dict:
++    """Recursively merge `src` into `dest` in place, and return `dest`."""
++    for key, value in src.items():
++        if key in dest and isinstance(dest[key], dict) and isinstance(value, dict):
++            _deep_merge_dicts(dest[key], value)
++        else:
++            dest[key] = value
++    return dest
++
++
+ class Features(dict):
+     """A special dictionary that defines the internal structure of a dataset.
+ 
+@@ -1231,29 +1266,58 @@ class Features(dict):
+         - :class:`datasets.Translation` and :class:`datasets.TranslationVariableLanguages`, the two features specific to Machine Translation
+     """
+ 
++    _column_requires_decoding: Dict[str, bool]
++
++    @keep_features_dicts_synced
+     def __init__(self, *args, **kwargs):
+         super().__init__(*args, **kwargs)
+-        self._column_requires_decoding: Dict[str, bool] = {
+-            col: require_decoding(feature) for col, feature in self.items()
+-        }
+ 
++    @keep_features_dicts_synced
+     def __setitem__(self, column_name: str, feature: FeatureType):
+         super().__setitem__(column_name, feature)
+-        self._column_requires_decoding[column_name] = require_decoding(feature)
+ 
++    @keep_features_dicts_synced
+     def __delitem__(self, column_name: str):
+         super().__delitem__(column_name)
+-        del self._column_requires_decoding[column_name]
+ 
++    @keep_features_dicts_synced
+     def update(self, iterable, **kwds):
++        # Merge dict/Features/Sequence values recursively instead of fully overwriting them, so that updating a
++        # nested column with a partial dict only touches the sub-keys it specifies.
+         if hasattr(iterable, "keys"):
+             for key in iterable.keys():
+-                self[key] = iterable[key]
++                value = iterable[key]
++                if key in self and isinstance(self[key], dict) and isinstance(value, dict):
++                    self[key] = _deep_merge_dicts(self[key], value)
++                else:
++                    self[key] = value
+         else:
+             for key, value in iterable:
++                if key in self and isinstance(self[key], dict) and isinstance(value, dict):
++                    self[key] = _deep_merge_dicts(self[key], value)
++                else:
++                    self[key] = value
++        for key, value in kwds.items():
++            if key in self and isinstance(self[key], dict) and isinstance(value, dict):
++                self[key] = _deep_merge_dicts(self[key], value)
++            else:
+                 self[key] = value
+-        for key in kwds:
+-            self[key] = kwds[key]
++
++    @keep_features_dicts_synced
++    def pop(self, *args, **kwargs):
++        return super().pop(*args, **kwargs)
++
++    @keep_features_dicts_synced
++    def popitem(self):
++        return super().popitem()
++
++    @keep_features_dicts_synced
++    def setdefault(self, *args, **kwargs):
++        return super().setdefault(*args, **kwargs)
++
++    @keep_features_dicts_synced
++    def clear(self):
++        super().clear()
+ 
+     def __reduce__(self):
+         return Features, (dict(self),)

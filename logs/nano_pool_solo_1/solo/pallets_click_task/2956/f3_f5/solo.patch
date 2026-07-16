@@ -1,0 +1,161 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..a6a6e12 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -49,6 +49,20 @@ if t.TYPE_CHECKING:
+ F = t.TypeVar("F", bound="t.Callable[..., t.Any]")
+ V = t.TypeVar("V")
+ 
++#: Process-scoped cache of validated :class:`Option` values, keyed by
++#: parameter name, type, and raw value. Populated by :class:`Option`
++#: when it is created with ``cache=True``.
++_option_value_cache: dict[tuple[t.Any, ...], t.Any] = {}
++
++
++def _clear_cache() -> None:
++    """Clear the process-scoped cache used by :class:`Option` values
++    created with ``cache=True``.
++
++    .. versionadded:: 8.3
++    """
++    _option_value_cache.clear()
++
+ 
+ def _complete_visible_commands(
+     ctx: Context, incomplete: str
+@@ -2499,6 +2513,17 @@ class Option(Parameter):
+                      multiple times and recorded.  This is similar to ``nargs``
+                      in how it works but supports arbitrary number of
+                      arguments.
++    :param batch_size: if set, values collected for a ``multiple`` option
++                       are grouped into tuples of at most this many items
++                       instead of a single flat tuple. Only valid when
++                       ``multiple`` is ``True``. Must not be negative.
++    :param cache: if set to ``True``, the result of converting and
++                  validating this option's value is cached for the
++                  lifetime of the process, keyed by the option name, type,
++                  and raw value. This is useful for expensive validation
++                  such as filesystem or network checks. Disabled
++                  automatically when ``multiple`` is ``True`` or ``nargs``
++                  is not ``1``.
+     :param count: this flag makes an option increment an integer.
+     :param allow_from_autoenv: if this is enabled then the value of this
+                                parameter will be pulled from an environment
+@@ -2508,6 +2533,9 @@ class Option(Parameter):
+     :param hidden: hide this option from help outputs.
+     :param attrs: Other command arguments described in :class:`Parameter`.
+ 
++    .. versionchanged:: 8.3
++        Added the ``batch_size`` and ``cache`` parameters.
++
+     .. versionchanged:: 8.2
+         ``envvar`` used with ``flag_value`` will always use the ``flag_value``,
+         previously it would use the value of the environment variable.
+@@ -2541,6 +2569,8 @@ class Option(Parameter):
+         is_flag: bool | None = None,
+         flag_value: t.Any | None = None,
+         multiple: bool = False,
++        batch_size: int | None = None,
++        cache: bool = False,
+         count: bool = False,
+         allow_from_autoenv: bool = True,
+         type: types.ParamType | t.Any | None = None,
+@@ -2636,6 +2666,8 @@ class Option(Parameter):
+         self.show_default = show_default
+         self.show_choices = show_choices
+         self.show_envvar = show_envvar
++        self.batch_size = batch_size
++        self.cache = cache
+ 
+         if __debug__:
+             if deprecated and prompt:
+@@ -2662,6 +2694,13 @@ class Option(Parameter):
+                 if self.is_flag:
+                     raise TypeError("'count' is not valid with 'is_flag'.")
+ 
++            if self.batch_size is not None:
++                if not self.multiple:
++                    raise TypeError("'batch_size' is only valid with 'multiple'.")
++
++                if self.batch_size < 0:
++                    raise ValueError("'batch_size' must not be negative.")
++
+     def to_info_dict(self) -> dict[str, t.Any]:
+         info_dict = super().to_info_dict()
+         info_dict.update(
+@@ -2671,9 +2710,36 @@ class Option(Parameter):
+             flag_value=self.flag_value,
+             count=self.count,
+             hidden=self.hidden,
++            batch_size=self.batch_size,
+         )
+         return info_dict
+ 
++    def type_cast_value(self, ctx: Context, value: t.Any) -> t.Any:
++        if self.cache and not self.multiple and self.nargs == 1 and value is not None:
++            cache_key = (
++                self.name,
++                type(self.type),
++                value,
++                self.type.get_cache_key(value),
++            )
++
++            if cache_key in _option_value_cache:
++                return _option_value_cache[cache_key]
++
++            result = super().type_cast_value(ctx, value)
++            _option_value_cache[cache_key] = result
++            return result
++
++        value = super().type_cast_value(ctx, value)
++
++        if self.batch_size is not None and self.multiple:
++            return tuple(
++                value[i : i + self.batch_size]
++                for i in range(0, len(value), self.batch_size)
++            )
++
++        return value
++
+     def get_error_hint(self, ctx: Context) -> str:
+         result = super().get_error_hint(ctx)
+         if self.show_envvar:
+diff --git a/src/click/types.py b/src/click/types.py
+index 684cb3b..231aa54 100644
+--- a/src/click/types.py
++++ b/src/click/types.py
+@@ -92,6 +92,21 @@ class ParamType:
+     def get_metavar(self, param: Parameter, ctx: Context) -> str | None:
+         """Returns the metavar default for this param if it provides one."""
+ 
++    def get_cache_key(self, value: t.Any) -> t.Any:
++        """Return an extra, hashable key component used by
++        :class:`~click.core.Option` when ``cache=True`` to decide whether
++        a previously cached converted value is still valid for ``value``.
++
++        Types whose validation depends on external state that can change
++        between invocations (such as a file's modification time) should
++        override this to return that state, so the cache is invalidated
++        when it changes. The default implementation returns ``None``,
++        which never invalidates the cache.
++
++        .. versionadded:: 8.3
++        """
++        return None
++
+     def get_missing_message(self, param: Parameter, ctx: Context | None) -> str | None:
+         """Optionally might return extra information about a missing
+         parameter.
+@@ -908,6 +923,12 @@ class Path(ParamType):
+         )
+         return info_dict
+ 
++    def get_cache_key(self, value: t.Any) -> t.Any:
++        try:
++            return os.stat(value).st_mtime
++        except OSError:
++            return None
++
+     def coerce_path_result(
+         self, value: str | os.PathLike[str]
+     ) -> str | bytes | os.PathLike[str]:

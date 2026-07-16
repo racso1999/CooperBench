@@ -1,0 +1,103 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..f189c13 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -840,6 +840,50 @@ class Context:
+         return self._parameter_source.get(name)
+ 
+ 
++def _resolve_dynamic_option_defaults(command: Command, ctx: Context) -> None:
++    """Resolve ``Option`` defaults that are specified as a dynamic
++    mapping of other option values, e.g.
++    ``default={"--protocol": {"http": 80, "https": 443}}``.
++
++    This runs after all command line arguments, environment variables,
++    and configuration files have been processed, so the values of the
++    referenced options are final. It only overrides parameters whose
++    source is still :attr:`ParameterSource.DEFAULT`.
++    """
++    params = command.get_params(ctx)
++
++    for param in params:
++        if not isinstance(param, Option) or not isinstance(param.default, dict):
++            continue
++
++        if ctx.get_parameter_source(param.name) is not ParameterSource.DEFAULT:  # type: ignore[arg-type]
++            continue
++
++        resolved = None
++
++        for source_opt, mapping in param.default.items():
++            source_param = next(
++                (
++                    p
++                    for p in params
++                    if isinstance(p, Option) and source_opt in p.opts
++                ),
++                None,
++            )
++
++            if source_param is None:
++                continue
++
++            source_value = ctx.params.get(source_param.name)  # type: ignore[arg-type]
++            key = str(source_value)
++
++            if key in mapping:
++                resolved = mapping[key]
++
++        if resolved is not None:
++            ctx.params[param.name] = resolved  # type: ignore[index]
++
++
+ class Command:
+     """Commands are the basic building block of command line interfaces in
+     Click.  A basic command handles command line parsing and might dispatch
+@@ -1360,6 +1404,7 @@ class Command:
+         try:
+             try:
+                 with self.make_context(prog_name, args, **extra) as ctx:
++                    _resolve_dynamic_option_defaults(self, ctx)
+                     rv = self.invoke(ctx)
+                     if not standalone_mode:
+                         return rv
+@@ -2637,6 +2682,14 @@ class Option(Parameter):
+         self.show_choices = show_choices
+         self.show_envvar = show_envvar
+ 
++        if isinstance(self.default, dict):
++            for key, value in self.default.items():
++                if not isinstance(key, str):
++                    raise TypeError("Dynamic default keys must be strings")
++
++                if not isinstance(value, dict):
++                    raise TypeError("Dynamic default values must be dictionaries")
++
+         if __debug__:
+             if deprecated and prompt:
+                 raise ValueError("`deprecated` options cannot use `prompt`.")
+@@ -2866,7 +2919,7 @@ class Option(Parameter):
+                 default_string = f"({self.show_default})"
+             elif isinstance(default_value, (list, tuple)):
+                 default_string = ", ".join(str(d) for d in default_value)
+-            elif inspect.isfunction(default_value):
++            elif inspect.isfunction(default_value) or isinstance(default_value, dict):
+                 default_string = _("(dynamic)")
+             elif self.is_bool_flag and self.secondary_opts:
+                 # For boolean flags that have distinct True/False opts,
+@@ -2923,7 +2976,14 @@ class Option(Parameter):
+ 
+             return None
+ 
+-        return super().get_default(ctx, call=call)
++        value = super().get_default(ctx, call=call)
++
++        # A dict default is a dynamic default spec (resolved later based
++        # on other option values), not a real value to use directly.
++        if call and isinstance(value, dict):
++            return None
++
++        return value
+ 
+     def prompt_for_value(self, ctx: Context) -> t.Any:
+         """This is an alternative flow that can be activated in the full

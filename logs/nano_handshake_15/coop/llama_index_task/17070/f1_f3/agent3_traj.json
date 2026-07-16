@@ -1,0 +1,348 @@
+{
+  "repo": "llama_index_task",
+  "task_id": 17070,
+  "feature_id": 3,
+  "agent_id": "agent2",
+  "model": "claude-sonnet-5",
+  "status": "Submitted",
+  "cost": 0.8925957,
+  "steps": 30,
+  "messages": [
+    {
+      "role": "user",
+      "content": "**Title**: Add Support for Graded Relevance in NDCG Metric\n\n**Pull Request Details**\nThis PR enhances the `NDCG` retrieval evaluation metric to support graded relevance by allowing users to supply custom float-based relevance scores per `expected_id`.\n\n**Description**\nThe `NDCG` class now accepts an optional `relevance_scores` dictionary, enabling evaluation scenarios where expected document relevance is non-binary. This allows for more nuanced assessments of ranked retrieval results by reflecting varying degrees of importance among retrieved items. Users can now compute NDCG using float relevance scores rather than being restricted to binary relevance.\n\n**Technical Background**\nPreviously, the `NDCG` metric treated all relevant documents equally, assigning them a default score of 1.0. This binary treatment limited the expressiveness of the evaluation, especially in tasks where some documents are more relevant than others. Graded relevance is a standard extension in IR systems to address this limitation.\n\n**Solution**\nThe `compute` method in `NDCG` is extended to accept a new optional parameter: `relevance_scores`, a dictionary mapping `expected_ids` to float relevance values. During computation, these scores are used to calculate both discounted gains and ideal gains. If `relevance_scores` is not provided, the default binary behavior is preserved. \n\n**Files Modified**\n* `llama-index-core/llama_index/core/evaluation/retrieval/metrics.py`\n\n\n---\n\n## Submission protocol\n\nWhen you are done editing the codebase, write your final unified diff to\n`/workspace/repo/patch.txt` BEFORE exiting.  The bench evaluator reads\nthat file; nothing else is inspected.  A typical pattern:\n\n```bash\ncd /workspace/repo\ngit diff > patch.txt\ncat patch.txt   # sanity-check that the diff is what you intend to submit\n```\n\nConstraints on `patch.txt`:\n\n- Must be a unified diff (`git diff` output is fine).\n- Should contain ONLY source files you intentionally modified to implement\n  the feature.  Exclude reproduction scripts, scratch tests, or\n  helper files you wrote during development.\n- Do not include changes to test files unless the task explicitly asks\n  you to modify tests.\n\nYou are free to read files, run shell commands, and run tests as needed.\n\n---\n\n## Cooperation protocol (structured messaging)\n\nYou are **agent2**, working alongside: **agent1**.\nEach agent has been assigned a separate feature from the same codebase;\nyour features may overlap (touch the same files), so coordinate to avoid\nclobbering each other's changes.\n\nCross-agent messages are **structured** (schema `plan_handshake_v1`). Every\n`coop-send` / `coop-broadcast` MUST supply these fields as flags:\n\n- `--type` (required) \u2014 one of: PROPOSE, ACCEPT, REVISE, DONE: handshake message type\n- `--my_files` (required): comma-separated files YOU will own and edit\n- `--your_files` (optional): comma-separated files you propose your PARTNER owns\n- `--note` (optional): optional short rationale\n\n**Messages that omit a required field or use an out-of-enum value are\nREJECTED \u2014 they exit non-zero and are NOT delivered to your peer.** Field\nvalues are free text; only these coordination fields are enforced.\n\n```bash\ncoop-send agent1 --type \"PROPOSE\" --my_files \"<my_files>\"                       # send to a specific peer\ncoop-broadcast --type \"PROPOSE\" --my_files \"<my_files>\"   # send to every other peer\ncoop-recv                                    # drain your inbox now (prints JSON list)\ncoop-await                                   # BLOCK until a peer replies, then drain\ncoop-peek                                    # number of unread messages\ncoop-agents                                  # list every agent id\n```\n\nCoordinate in TWO STRICT PHASES. Do NOT edit any file until Phase 1 is complete.\n\nPHASE 1 \u2014 PLAN & HANDSHAKE (messages only, NO editing yet):\n1. Immediately send a PROPOSE: `my_files` = the files YOU will own (from your\n   feature), `your_files` = the files you think your PARTNER should own. Keep the\n   two sets DISJOINT.\n2. Run `coop-await` \u2014 it BLOCKS until your partner replies \u2014 to read their messages.\n3. If their split gives you a disjoint set you can implement your feature with,\n   reply ACCEPT (echo the agreed `my_files`). Otherwise reply REVISE with a better\n   split and `coop-await` again. Repeat until you have RECEIVED an ACCEPT from your\n   partner AND sent your own ACCEPT.\n4. Only after you have received your partner's ACCEPT may you begin editing.\n\nPHASE 2 \u2014 IMPLEMENT:\n5. Edit ONLY the files in your agreed `my_files`. If you discover you genuinely must\n   touch a file your partner owns, send a REVISE and re-agree BEFORE touching it.\n6. Send DONE when your implementation is finished.\n\nThe whole point: agree a disjoint file split up front so your patches never collide\nat merge time.\n\n\nMessages are not magic \u2014 your peers only know what you tell them."
+    },
+    {
+      "role": "assistant",
+      "content": ""
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Bash] {\"command\": \"sed -n '1,250p' llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result] import math\nimport os\nfrom typing import Any, Callable, ClassVar, Dict, List, Literal, Optional, Type\n\nimport numpy as np\nfrom llama_index.core.bridge.pydantic import Field, PrivateAttr\nfrom llama_index.core.evaluation.retrieval.metrics_base import (\n    BaseRetrievalMetric,\n    RetrievalMetricResult,\n)\nfrom typing_extensions import assert_never\n\n_AGG_FUNC: Dict[str, Callable] = {\"mean\": np.mean, \"median\": np.median, \"max\": np.max}\n\n\nclass HitRate(BaseRetrievalMetric):\n    \"\"\"Hit rate metric: Compute hit rate with two calculation options.\n\n    - The default method checks for a single match between any of the retrieved docs and expected docs.\n    - The more granular method checks for all potential matches between retrieved docs and expected docs.\n\n    Attributes:\n        metric_name (str): The name of the metric.\n        use_granular_hit_rate (bool): Determines whether to use the granular method for calculation.\n    \"\"\"\n\n    metric_name: ClassVar[str] = \"hit_rate\"\n    use_granular_hit_rate: bool = False\n\n    def compute(\n        self,\n        query: Optional[str] = None,\n        expected_ids: Optional[List[str]] = None,\n        retrieved_ids: Optional[List[str]] = None,\n        expected_texts: Optional[List[str]] = None,\n        retrieved_texts: Optional[List[str]] = None,\n        **kwargs: Any,\n    ) -> RetrievalMetricResult:\n        \"\"\"Compute metric based on the provided inputs.\n\n        Parameters:\n            query (Optional[str]): The query string (not used in the current implementation).\n            expected_ids (Optional[List[str]]): Expected document IDs.\n            retrieved_ids (Optional[List[str]]): Retrieved document IDs.\n            expected_texts (Optional[List[str]]): Expected texts (not used in the current implementation).\n            retrieved_texts (Optional[List[str]]): Retrieved texts (not used in the current implementation).\n\n        Raises:\n            ValueError: If the necessary IDs are not provided.\n\n        Returns:\n            RetrievalMetricResult: The result with the computed hit rate score.\n        \"\"\"\n        # Checking for the required arguments\n        if (\n            retrieved_ids is None\n            or expected_ids is None\n            or not retrieved_ids\n            or not expected_ids\n        ):\n            raise ValueError(\"Retrieved ids and expected ids must be provided\")\n\n        if self.use_granular_hit_rate:\n            # Granular HitRate calculation: Calculate all hits and divide by the number of expected docs\n            expected_set = set(expected_ids)\n            hits = sum(1 for doc_id in retrieved_ids if doc_id in expected_set)\n            score = hits / len(expected_ids) if expected_ids else 0.0\n        else:\n            # Default HitRate calculation: Check if there is a single hit\n            is_hit = any(id in expected_ids for id in retrieved_ids)\n            score = 1.0 if is_hit else 0.0\n\n        return RetrievalMetricResult(score=score)\n\n\nclass MRR(BaseRetrievalMetric):\n    \"\"\"MRR (Mean Reciprocal Rank) metric with two calculation options.\n\n    - The default method calculates the reciprocal rank of the first relevant retrieved document.\n    - The more granular method sums the reciprocal ranks of all relevant retrieved documents and divides by the count of relevant documents.\n\n    Attributes:\n        metric_name (str): The name of the metric.\n        use_granular_mrr (bool): Determines whether to use the granular method for calculation.\n    \"\"\"\n\n    metric_name: ClassVar[str] = \"mrr\"\n    use_granular_mrr: bool = False\n\n    def compute(\n        self,\n        query: Optional[str] = None,\n        expected_ids: Optional[List[str]] = None,\n        retrieved_ids: Optional[List[str]] = None,\n        expected_texts: Optional[List[str]] = None,\n        retrieved_texts: Optional[List[str]] = None,\n        **kwargs: Any,\n    ) -> RetrievalMetricResult:\n        \"\"\"Compute MRR based on the provided inputs and selected method.\n\n        Parameters:\n            query (Optional[str]): The query string (not used in the current implementation).\n            expected_ids (Optional[List[str]]): Expected document IDs.\n            retrieved_ids (Optional[List[str]]): Retrieved document IDs.\n            expected_texts (Optional[List[str]]): Expected texts (not used in the current implementation).\n            retrieved_texts (Optional[List[str]]): Retrieved texts (not used in the current implementation).\n\n        Raises:\n            ValueError: If the necessary IDs are not provided.\n\n        Returns:\n            RetrievalMetricResult: The result with the computed MRR score.\n        \"\"\"\n        # Checking for the required arguments\n        if (\n            retrieved_ids is None\n            or expected_ids is None\n            or not retrieved_ids\n            or not expected_ids\n        ):\n            raise ValueError(\"Retrieved ids and expected ids must be provided\")\n\n        if self.use_granular_mrr:\n            # Granular MRR calculation: All relevant retrieved docs have their reciprocal ranks summed and averaged\n            expected_set = set(expected_ids)\n            reciprocal_rank_sum = 0.0\n            relevant_docs_count = 0\n            for index, doc_id in enumerate(retrieved_ids):\n                if doc_id in expected_set:\n                    relevant_docs_count += 1\n                    reciprocal_rank_sum += 1.0 / (index + 1)\n            mrr_score = (\n                reciprocal_rank_sum / relevant_docs_count\n                if relevant_docs_count > 0\n                else 0.0\n            )\n        else:\n            # Default MRR calculation: Reciprocal rank of the first relevant document retrieved\n            for i, id in enumerate(retrieved_ids):\n                if id in expected_ids:\n                    return RetrievalMetricResult(score=1.0 / (i + 1))\n            mrr_score = 0.0\n\n        return RetrievalMetricResult(score=mrr_score)\n\n\nclass Precision(BaseRetrievalMetric):\n    \"\"\"Precision metric.\n\n    The `K`-value in `Precision@K` usually corresponds to `top_k` of the retriever.\n\n    Attributes:\n        metric_name (str): The name of the metric.\n    \"\"\"\n\n    metric_name: ClassVar[str] = \"precision\"\n\n    def compute(\n        self,\n        query: Optional[str] = None,\n        expected_ids: Optional[List[str]] = None,\n        retrieved_ids: Optional[List[str]] = None,\n        expected_texts: Optional[List[str]] = None,\n        retrieved_texts: Optional[List[str]] = None,\n        **kwargs: Any,\n    ) -> RetrievalMetricResult:\n        \"\"\"Compute precision based on the provided inputs and selected method.\n\n        Parameters:\n            query (Optional[str]): The query string (not used in the current implementation).\n            expected_ids (Optional[List[str]]): Expected document IDs.\n            retrieved_ids (Optional[List[str]]): Retrieved document IDs.\n            expected_texts (Optional[List[str]]): Expected texts (not used in the current implementation).\n            retrieved_texts (Optional[List[str]]): Retrieved texts (not used in the current implementation).\n\n        Raises:\n            ValueError: If the necessary IDs are not provided.\n\n        Returns:\n            RetrievalMetricResult: The result with the computed precision score.\n        \"\"\"\n        # Checking for the required arguments\n        if (\n            retrieved_ids is None\n            or expected_ids is None\n            or not retrieved_ids\n            or not expected_ids\n        ):\n            raise ValueError(\"Retrieved ids and expected ids must be provided\")\n\n        retrieved_set = set(retrieved_ids)\n        expected_set = set(expected_ids)\n        precision = len(retrieved_set & expected_set) / len(retrieved_set)\n\n        return RetrievalMetricResult(score=precision)\n\n\nclass Recall(BaseRetrievalMetric):\n    \"\"\"Recall metric.\n\n    Attributes:\n        metric_name (str): The name of the metric.\n    \"\"\"\n\n    metric_name: ClassVar[str] = \"recall\"\n\n    def compute(\n        self,\n        query: Optional[str] = None,\n        expected_ids: Optional[List[str]] = None,\n        retrieved_ids: Optional[List[str]] = None,\n        expected_texts: Optional[List[str]] = None,\n        retrieved_texts: Optional[List[str]] = None,\n        **kwargs: Any,\n    ) -> RetrievalMetricResult:\n        \"\"\"Compute recall based on the provided inputs and selected method.\n\n        Parameters:\n            query (Optional[str]): The query string (not used in the current implementation).\n            expected_ids (Optional[List[str]]): Expected document IDs.\n            retrieved_ids (Optional[List[str]]): Retrieved document IDs.\n            expected_texts (Optional[List[str]]): Expected texts (not used in the current implementation).\n            retrieved_texts (Optional[List[str]]): Retrieved texts (not used in the current implementation).\n\n        Raises:\n            ValueError: If the necessary IDs are not provided.\n\n        Returns:\n            RetrievalMetricResult: The result with the computed recall score.\n        \"\"\"\n        # Checking for the required arguments\n        if (\n            retrieved_ids is None\n            or expected_ids is None\n            or not retrieved_ids\n            or not expected_ids\n        ):\n            raise ValueError(\"Retrieved ids and expected ids must be provided\")\n\n        retrieved_set = set(retrieved_ids)\n        expected_set = set(expected_ids)\n        recall = len(retrieved_set & expected_set) / len(expected_set)\n\n        return RetrievalMetricResult(score=recall)\n\n\nclass AveragePrecision(BaseRetrievalMetric):\n    \"\"\"Average Precision (AP) metric.\n\n    Attributes:"
+    },
+    {
+      "role": "assistant",
+      "content": ""
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Bash] {\"command\": \"grep -n \\\"class NDCG\\\" -A 80 llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result] 320:class NDCG(BaseRetrievalMetric):\n321-    \"\"\"NDCG (Normalized Discounted Cumulative Gain) metric.\n322-\n323-    The position `p` is taken as the size of the query results (which is usually\n324-    `top_k` of the retriever).\n325-\n326-    Currently only supports binary relevance\n327-    (``rel=1`` if document is in ``expected_ids``, otherwise ``rel=0``)\n328-    since we assume that ``expected_ids`` is unordered.\n329-\n330-    Attributes:\n331-        metric_name (str): The name of the metric.\n332-        mode (DiscountedGainMode): Determines the formula for each item in the summation.\n333-    \"\"\"\n334-\n335-    metric_name: ClassVar[str] = \"ndcg\"\n336-    mode: DiscountedGainMode = \"linear\"\n337-\n338-    def compute(\n339-        self,\n340-        query: Optional[str] = None,\n341-        expected_ids: Optional[List[str]] = None,\n342-        retrieved_ids: Optional[List[str]] = None,\n343-        expected_texts: Optional[List[str]] = None,\n344-        retrieved_texts: Optional[List[str]] = None,\n345-        **kwargs: Any,\n346-    ) -> RetrievalMetricResult:\n347-        \"\"\"Compute NDCG based on the provided inputs and selected method.\n348-\n349-        Parameters:\n350-            query (Optional[str]): The query string (not used in the current implementation).\n351-            expected_ids (Optional[List[str]]): Expected document IDs, unordered by relevance.\n352-            retrieved_ids (Optional[List[str]]): Retrieved document IDs, ordered by relevance from highest to lowest.\n353-            expected_texts (Optional[List[str]]): Expected texts (not used in the current implementation).\n354-            retrieved_texts (Optional[List[str]]): Retrieved texts (not used in the current implementation).\n355-\n356-        Raises:\n357-            ValueError: If the necessary IDs are not provided.\n358-\n359-        Returns:\n360-            RetrievalMetricResult: The result with the computed NDCG score.\n361-        \"\"\"\n362-        # Checking for the required arguments\n363-        if (\n364-            retrieved_ids is None\n365-            or expected_ids is None\n366-            or not retrieved_ids\n367-            or not expected_ids\n368-        ):\n369-            raise ValueError(\"Retrieved ids and expected ids must be provided\")\n370-\n371-        mode = self.mode\n372-        expected_set = set(expected_ids)\n373-\n374-        # Calculate DCG\n375-        dcg = sum(\n376-            discounted_gain(rel=docid in expected_set, i=i, mode=mode)\n377-            for i, docid in enumerate(retrieved_ids, start=1)\n378-        )\n379-\n380-        # Calculate IDCG using min(len(retrieved_ids), len(expected_ids))\n381-        # Since we can't achieve better than perfect ranking of all relevant docs\n382-        ideal_length = min(len(retrieved_ids), len(expected_ids))\n383-        idcg = sum(\n384-            discounted_gain(rel=True, i=i, mode=mode)\n385-            for i in range(1, ideal_length + 1)\n386-        )\n387-\n388-        # Handle edge case where there are no relevant documents\n389-        if idcg == 0:\n390-            return RetrievalMetricResult(score=0.0)\n391-\n392-        ndcg_score = dcg / idcg\n393-        return RetrievalMetricResult(score=ndcg_score)\n394-\n395-\n396-class CohereRerankRelevancyMetric(BaseRetrievalMetric):\n397-    \"\"\"Cohere rerank relevancy metric.\"\"\"\n398-\n399-    metric_name: ClassVar[str] = \"cohere_rerank_relevancy\"\n400-    model: str = Field(description=\"Cohere model name.\")"
+    },
+    {
+      "role": "assistant",
+      "content": "My feature only touches the `NDCG` class in `metrics.py`. Let me send a PROPOSE to agent1 to coordinate before editing."
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Bash] {\"command\": \"coop-send agent1 --type \\\"PROPOSE\\\" --my_files \\\"llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\\\" --your_files \\\"\\\" --note \\\"I'm adding relevance_scores support to the NDCG class only (compute method, docstring, class docstring) in metrics.py. If your feature also touches metrics.py, let's agree on non-overlapping classes/sections within the file.\\\"\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result] sent to agent1"
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Bash] {\"command\": \"coop-await\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result] [\n  {\n    \"from\": \"agent1\",\n    \"to\": \"agent2\",\n    \"content\": \"type: PROPOSE\\nmy_files: llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\\nnote: Fixing NDCG ideal DCG calculation to use expected relevant doc ids instead of retrieved doc ids in metrics.py\",\n    \"timestamp\": 1783406192.6854112,\n    \"timestamp_iso\": \"2026-07-07T06:36:32.685412\",\n    \"fields\": {\n      \"type\": \"PROPOSE\",\n      \"my_files\": \"llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\",\n      \"note\": \"Fixing NDCG ideal DCG calculation to use expected relevant doc ids instead of retrieved doc ids in metrics.py\"\n    },\n    \"kind\": \"PROPOSE\"\n  }\n]"
+    },
+    {
+      "role": "assistant",
+      "content": ""
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Bash] {\"command\": \"coop-send agent1 --type \\\"REVISE\\\" --my_files \\\"llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\\\" --your_files \\\"llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\\\" --note \\\"We both need the NDCG class in the same file/method, so a disjoint file split isn't possible here. Proposal: I'll own metrics.py for this session and implement it as a single combined edit to NDCG.compute \u2014 adding the optional relevance_scores dict param (graded relevance, defaults to binary 1.0 as before) AND folding in your idcg fix (computing ideal DCG from the sorted relevance of expected_ids rather than assuming all-relevant length via retrieved_ids count). Please reply with the exact idcg logic you want (e.g. 'idcg = sum of top min(len(retrieved_ids), len(expected_ids)) relevance scores sorted descending') so I implement it faithfully in the same patch. If you'd rather implement it yourself, propose a different shared file/lock order instead and I'll hold off editing until you say DONE.\\\"\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result] sent to agent1"
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Bash] {\"command\": \"coop-await\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result] [\n  {\n    \"from\": \"agent1\",\n    \"to\": \"agent2\",\n    \"content\": \"type: REVISE\\nmy_files: llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\\nyour_files: llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\\nnote: We both touch NDCG.compute. My change is narrowly scoped: only the IDCG block (currently 'ideal_length = min(len(retrieved_ids), len(expected_ids))' and the idcg sum below it) -> change to use len(expected_ids) only, per standard NDCG definition. I will NOT touch the method signature, docstring, or the DCG calculation block. Please make your relevance_scores changes to signature/docstring/DCG block and leave the IDCG block lines alone (or merge cleanly around it). I'll implement after your ACCEPT. OK?\",\n    \"timestamp\": 1783406215.800138,\n    \"timestamp_iso\": \"2026-07-07T06:36:55.800138\",\n    \"fields\": {\n      \"type\": \"REVISE\",\n      \"my_files\": \"llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\",\n      \"your_files\": \"llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\",\n      \"note\": \"We both touch NDCG.compute. My change is narrowly scoped: only the IDCG block (currently 'ideal_length = min(len(retrieved_ids), len(expected_ids))' and the idcg sum below it) -> change to use len(expected_ids) only, per standard NDCG definition. I will NOT touch the method signature, docstring, or the DCG calculation block. Please make your relevance_scores changes to signature/docstring/DCG block and leave the IDCG block lines alone (or merge cleanly around it). I'll implement after your ACCEPT. OK?\"\n    },\n    \"kind\": \"REVISE\"\n  }\n]"
+    },
+    {
+      "role": "assistant",
+      "content": ""
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Bash] {\"command\": \"coop-send agent1 --type \\\"REVISE\\\" --my_files \\\"llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\\\" --your_files \\\"\\\" --note \\\"Problem: my relevance_scores feature requires touching the idcg block too \u2014 ideal gain must use each expected doc's graded score (sorted descending) rather than a flat rel=True, so I can't leave that block untouched. Compromise: I'll own the whole file for this round and fold your fix into my patch exactly as you specified \u2014 idcg iterates over len(expected_ids) (not min with retrieved_ids), using the (sorted, descending) relevance_scores values when provided, defaulting to rel=True/1.0 for all when relevance_scores is absent, matching current binary behavior. I'll paste the final compute() body back to you before finishing so you can confirm it matches your fix. OK to proceed on this basis?\\\"\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result] sent to agent1"
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Bash] {\"command\": \"coop-await\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result] [\n  {\n    \"from\": \"agent1\",\n    \"to\": \"agent2\",\n    \"content\": \"type: REVISE\\nmy_files: llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\\nyour_files: llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\\nnote: I need to make this specific edit myself (it must appear in my own patch). Proposal: turn order, not file ownership. I'll go first with a minimal, isolated edit touching ONLY the idcg block: replace 'ideal_length = min(len(retrieved_ids), len(expected_ids))' with 'ideal_length = len(expected_ids)' (binary relevance, standard IDCG = DCG of perfect ranking over all expected relevant docs). No signature/docstring/dcg changes. I will not touch anything else. I'll send DONE within a minute of starting; please hold off editing metrics.py until you see my DONE, then implement your relevance_scores changes on top (including updating the idcg block further if graded relevance requires it - that's fine, just build on my change rather than reverting it). OK to proceed?\",\n    \"timestamp\": 1783406252.1783667,\n    \"timestamp_iso\": \"2026-07-07T06:37:32.178367\",\n    \"fields\": {\n      \"type\": \"REVISE\",\n      \"my_files\": \"llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\",\n      \"your_files\": \"llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\",\n      \"note\": \"I need to make this specific edit myself (it must appear in my own patch). Proposal: turn order, not file ownership. I'll go first with a minimal, isolated edit touching ONLY the idcg block: replace 'ideal_length = min(len(retrieved_ids), len(expected_ids))' with 'ideal_length = len(expected_ids)' (binary relevance, standard IDCG = DCG of perfect ranking over all expected relevant docs). No signature/docstring/dcg changes. I will not touch anything else. I'll send DONE within a minute of starting; please hold off editing metrics.py until you see my DONE, then implement your relevance_scores changes on top (including updating the idcg block further if graded relevance requires it - that's fine, just build on my change rather than reverting it). OK to proceed?\"\n    },\n    \"kind\": \"REVISE\"\n  }\n]"
+    },
+    {
+      "role": "assistant",
+      "content": ""
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Bash] {\"command\": \"coop-send agent1 --type \\\"ACCEPT\\\" --my_files \\\"llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\\\" --your_files \\\"llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\\\" --note \\\"Agreed: turn order, not file split. You go first (idcg_length = len(expected_ids) fix only). I'll hold off editing metrics.py until I see your DONE, then build my relevance_scores changes on top of your change.\\\"\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result] sent to agent1"
+    },
+    {
+      "role": "assistant",
+      "content": "Now waiting for agent1's DONE before I touch the file."
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Bash] {\"command\": \"coop-await\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result] [\n  {\n    \"from\": \"agent1\",\n    \"to\": \"agent2\",\n    \"content\": \"type: REVISE\\nmy_files: llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\\nyour_files: llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\\nnote: Understood your block also needs the idcg loop. Sticking with turn order (not shared ownership) since I must capture my own patch.txt snapshot: I'm making my minimal one-line-logic edit right now (ideal_length = len(expected_ids), no other changes) and will snapshot patch.txt immediately after, then send DONE within ~1 minute. After my DONE, the file is fully yours to extend/rewrite (including replacing my idcg line with your graded-relevance version) - my patch.txt will already be safely captured by then so later edits won't affect my submission. Proceeding now.\",\n    \"timestamp\": 1783406276.9314268,\n    \"timestamp_iso\": \"2026-07-07T06:37:56.931427\",\n    \"fields\": {\n      \"type\": \"REVISE\",\n      \"my_files\": \"llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\",\n      \"your_files\": \"llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\",\n      \"note\": \"Understood your block also needs the idcg loop. Sticking with turn order (not shared ownership) since I must capture my own patch.txt snapshot: I'm making my minimal one-line-logic edit right now (ideal_length = len(expected_ids), no other changes) and will snapshot patch.txt immediately after, then send DONE within ~1 minute. After my DONE, the file is fully yours to extend/rewrite (including replacing my idcg line with your graded-relevance version) - my patch.txt will already be safely captured by then so later edits won't affect my submission. Proceeding now.\"\n    },\n    \"kind\": \"REVISE\"\n  }\n]"
+    },
+    {
+      "role": "assistant",
+      "content": "This confirms the plan. I'll wait for their DONE signal before editing the shared file."
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Bash] {\"command\": \"coop-await\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result] [\n  {\n    \"from\": \"agent1\",\n    \"to\": \"agent2\",\n    \"content\": \"type: DONE\\nmy_files: llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\\nnote: My fix is applied and patch.txt is captured/snapshotted: changed 'ideal_length = min(len(retrieved_ids), len(expected_ids))' to 'ideal_length = len(expected_ids)' in NDCG.compute's IDCG block (lines ~380-382). File is now yours to extend with relevance_scores - feel free to build on/replace that line for graded relevance. I'm done editing.\",\n    \"timestamp\": 1783406297.9760897,\n    \"timestamp_iso\": \"2026-07-07T06:38:17.976090\",\n    \"fields\": {\n      \"type\": \"DONE\",\n      \"my_files\": \"llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\",\n      \"note\": \"My fix is applied and patch.txt is captured/snapshotted: changed 'ideal_length = min(len(retrieved_ids), len(expected_ids))' to 'ideal_length = len(expected_ids)' in NDCG.compute's IDCG block (lines ~380-382). File is now yours to extend with relevance_scores - feel free to build on/replace that line for graded relevance. I'm done editing.\"\n    },\n    \"kind\": \"DONE\"\n  }\n]"
+    },
+    {
+      "role": "assistant",
+      "content": ""
+    },
+    {
+      "role": "assistant",
+      "content": "Agent1 is done. Let me check the current state of the file before implementing my changes."
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Bash] {\"command\": \"git status && git diff -- llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result] HEAD detached at 0417380ad\nnothing to commit, working tree clean"
+    },
+    {
+      "role": "assistant",
+      "content": ""
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Bash] {\"command\": \"grep -n \\\"discounted_gain\\\\|DiscountedGainMode\\\" -B2 -A 25 llama-index-core/llama_index/core/evaluation/retrieval/metrics.py | head -80\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result] 300-\n301-\n302:DiscountedGainMode = Literal[\"linear\", \"exponential\"]\n303-\n304-\n305:def discounted_gain(*, rel: float, i: int, mode: DiscountedGainMode) -> float:\n306-    # Avoid unnecessary calculations. Note that `False == 0` and `True == 1`.\n307-    if rel == 0:\n308-        return 0\n309-    if rel == 1:\n310-        return 1 / math.log2(i + 1)\n311-\n312-    if mode == \"linear\":\n313-        return rel / math.log2(i + 1)\n314-    elif mode == \"exponential\":\n315-        return (2**rel - 1) / math.log2(i + 1)\n316-    else:\n317-        assert_never(mode)\n318-\n319-\n320-class NDCG(BaseRetrievalMetric):\n321-    \"\"\"NDCG (Normalized Discounted Cumulative Gain) metric.\n322-\n323-    The position `p` is taken as the size of the query results (which is usually\n324-    `top_k` of the retriever).\n325-\n326-    Currently only supports binary relevance\n327-    (``rel=1`` if document is in ``expected_ids``, otherwise ``rel=0``)\n328-    since we assume that ``expected_ids`` is unordered.\n329-\n330-    Attributes:\n331-        metric_name (str): The name of the metric.\n332:        mode (DiscountedGainMode): Determines the formula for each item in the summation.\n333-    \"\"\"\n334-\n335-    metric_name: ClassVar[str] = \"ndcg\"\n336:    mode: DiscountedGainMode = \"linear\"\n337-\n338-    def compute(\n339-        self,\n340-        query: Optional[str] = None,\n341-        expected_ids: Optional[List[str]] = None,\n342-        retrieved_ids: Optional[List[str]] = None,\n343-        expected_texts: Optional[List[str]] = None,\n344-        retrieved_texts: Optional[List[str]] = None,\n345-        **kwargs: Any,\n346-    ) -> RetrievalMetricResult:\n347-        \"\"\"Compute NDCG based on the provided inputs and selected method.\n348-\n349-        Parameters:\n350-            query (Optional[str]): The query string (not used in the current implementation).\n351-            expected_ids (Optional[List[str]]): Expected document IDs, unordered by relevance.\n352-            retrieved_ids (Optional[List[str]]): Retrieved document IDs, ordered by relevance from highest to lowest.\n353-            expected_texts (Optional[List[str]]): Expected texts (not used in the current implementation).\n354-            retrieved_texts (Optional[List[str]]): Retrieved texts (not used in the current implementation).\n355-\n356-        Raises:\n357-            ValueError: If the necessary IDs are not provided.\n358-\n359-        Returns:\n360-            RetrievalMetricResult: The result with the computed NDCG score.\n361-        \"\"\"\n--\n374-        # Calculate DCG\n375-        dcg = sum(\n376:            discounted_gain(rel=docid in expected_set, i=i, mode=mode)\n377-            for i, docid in enumerate(retrieved_ids, start=1)\n378-        )\n379-\n380-        # Calculate IDCG using min(len(retrieved_ids), len(expected_ids))\n381-        # Since we can't achieve better than perfect ranking of all relevant docs\n382-        ideal_length = min(len(retrieved_ids), len(expected_ids))\n383-        idcg = sum(\n384:            discounted_gain(rel=True, i=i, mode=mode)\n385-            for i in range(1, ideal_length + 1)\n386-        )\n387-\n388-        # Handle edge case where there are no relevant documents\n389-        if idcg == 0:\n390-            return RetrievalMetricResult(score=0.0)"
+    },
+    {
+      "role": "assistant",
+      "content": ""
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Read] {\"file_path\": \"/workspace/repo/llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\", \"offset\": 320, \"limit\": 75}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result] 320\tclass NDCG(BaseRetrievalMetric):\n321\t    \"\"\"NDCG (Normalized Discounted Cumulative Gain) metric.\n322\t\n323\t    The position `p` is taken as the size of the query results (which is usually\n324\t    `top_k` of the retriever).\n325\t\n326\t    Currently only supports binary relevance\n327\t    (``rel=1`` if document is in ``expected_ids``, otherwise ``rel=0``)\n328\t    since we assume that ``expected_ids`` is unordered.\n329\t\n330\t    Attributes:\n331\t        metric_name (str): The name of the metric.\n332\t        mode (DiscountedGainMode): Determines the formula for each item in the summation.\n333\t    \"\"\"\n334\t\n335\t    metric_name: ClassVar[str] = \"ndcg\"\n336\t    mode: DiscountedGainMode = \"linear\"\n337\t\n338\t    def compute(\n339\t        self,\n340\t        query: Optional[str] = None,\n341\t        expected_ids: Optional[List[str]] = None,\n342\t        retrieved_ids: Optional[List[str]] = None,\n343\t        expected_texts: Optional[List[str]] = None,\n344\t        retrieved_texts: Optional[List[str]] = None,\n345\t        **kwargs: Any,\n346\t    ) -> RetrievalMetricResult:\n347\t        \"\"\"Compute NDCG based on the provided inputs and selected method.\n348\t\n349\t        Parameters:\n350\t            query (Optional[str]): The query string (not used in the current implementation).\n351\t            expected_ids (Optional[List[str]]): Expected document IDs, unordered by relevance.\n352\t            retrieved_ids (Optional[List[str]]): Retrieved document IDs, ordered by relevance from highest to lowest.\n353\t            expected_texts (Optional[List[str]]): Expected texts (not used in the current implementation).\n354\t            retrieved_texts (Optional[List[str]]): Retrieved texts (not used in the current implementation).\n355\t\n356\t        Raises:\n357\t            ValueError: If the necessary IDs are not provided.\n358\t\n359\t        Returns:\n360\t            RetrievalMetricResult: The result with the computed NDCG score.\n361\t        \"\"\"\n362\t        # Checking for the required arguments\n363\t        if (\n364\t            retrieved_ids is None\n365\t            or expected_ids is None\n366\t            or not retrieved_ids\n367\t            or not expected_ids\n368\t        ):\n369\t            raise ValueError(\"Retrieved ids and expected ids must be provided\")\n370\t\n371\t        mode = self.mode\n372\t        expected_set = set(expected_ids)\n373\t\n374\t        # Calculate DCG\n375\t        dcg = sum(\n376\t            discounted_gain(rel=docid in expected_set, i=i, mode=mode)\n377\t            for i, docid in enumerate(retrieved_ids, start=1)\n378\t        )\n379\t\n380\t        # Calculate IDCG using min(len(retrieved_ids), len(expected_ids))\n381\t        # Since we can't achieve better than perfect ranking of all relevant docs\n382\t        ideal_length = min(len(retrieved_ids), len(expected_ids))\n383\t        idcg = sum(\n384\t            discounted_gain(rel=True, i=i, mode=mode)\n385\t            for i in range(1, ideal_length + 1)\n386\t        )\n387\t\n388\t        # Handle edge case where there are no relevant documents\n389\t        if idcg == 0:\n390\t            return RetrievalMetricResult(score=0.0)\n391\t\n392\t        ndcg_score = dcg / idcg\n393\t        return RetrievalMetricResult(score=ndcg_score)\n394\t"
+    },
+    {
+      "role": "assistant",
+      "content": ""
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Edit] {\"replace_all\": false, \"file_path\": \"/workspace/repo/llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\", \"old_string\": \"class NDCG(BaseRetrievalMetric):\\n    \\\"\\\"\\\"NDCG (Normalized Discounted Cumulative Gain) metric.\\n\\n    The position `p` is taken as the size of the query results (which is usually\\n    `top_k` of the retriever).\\n\\n    Currently only supports binary relevance\\n    (``rel=1`` if document is in ``expected_ids``, otherwise ``rel=0``)\\n    since we assume that ``expected_ids`` is unordered.\\n\\n    Attributes:\\n        metric_name (str): The name of the metric.\\n        mode (DiscountedGainMode): Determines the formula for each item in the summation.\\n    \\\"\\\"\\\"\\n\\n    metric_name: ClassVar[str] = \\\"ndcg\\\"\\n    mode: DiscountedGainMode = \\\"linear\\\"\\n\\n    def compute(\\n        self,\\n        query: Optional[str] = None,\\n        expected_ids: Optional[List[str]] = None,\\n        retrieved_ids: Optional[List[str]] = None,\\n        expected_texts: Optional[List[str]] = None,\\n        retrieved_texts: Optional[List[str]] = None,\\n        **kwargs: Any,\\n    ) -> RetrievalMetricResult:\\n        \\\"\\\"\\\"Compute NDCG based on the provided inputs and selected method.\\n\\n        Parameters:\\n            query (Optional[str]): The query string (not used in the current implementation).\\n            expected_ids (Optional[List[str]]): Expected document IDs, unordered by relevance.\\n            retrieved_ids (Optional[List[str]]): Retrieved document IDs, ordered by relevance from highest to lowest.\\n            expected_texts (Optional[List[str]]): Expected texts (not used in the current implementation).\\n            retrieved_texts (Optional[List[str]]): Retrieved texts (not used in the current implementation).\\n\\n        Raises:\\n            ValueError: If the necessary IDs are not provided.\\n\\n        Returns:\\n            RetrievalMetricResult: The result with the computed NDCG score.\\n        \\\"\\\"\\\"\\n        # Checking for the required arguments\\n        if (\\n            retrieved_ids is None\\n            or expected_ids is None\\n            or not retrieved_ids\\n            or not expected_ids\\n        ):\\n            raise ValueError(\\\"Retrieved ids and expected ids must be provided\\\")\\n\\n        mode = self.mode\\n        expected_set = set(expected_ids)\\n\\n        # Calculate DCG\\n        dcg = sum(\\n            discounted_gain(rel=docid in expected_set, i=i, mode=mode)\\n            for i, docid in enumerate(retrieved_ids, start=1)\\n        )\\n\\n        # Calculate IDCG using min(len(retrieved_ids), len(expected_ids))\\n        # Since we can't achieve better than perfect ranking of all relevant docs\\n        ideal_length = min(len(retrieved_ids), len(expected_ids))\\n        idcg = sum(\\n            discounted_gain(rel=True, i=i, mode=mode)\\n            for i in range(1, ideal_length + 1)\\n        )\\n\\n        # Handle edge case where there are no relevant documents\\n        if idcg == 0:\\n            return RetrievalMetricResult(score=0.0)\\n\\n        ndcg_score = dcg / idcg\\n        return RetrievalMetricResult(score=ndcg_score)\", \"new_string\": \"class NDCG(BaseRetrievalMetric):\\n    \\\"\\\"\\\"NDCG (Normalized Discounted Cumulative Gain) metric.\\n\\n    The position `p` is taken as the size of the query results (which is usually\\n    `top_k` of the retriever).\\n\\n    By default, uses binary relevance\\n    (``rel=1`` if document is in ``expected_ids``, otherwise ``rel=0``)\\n    since we assume that ``expected_ids`` is unordered. Graded relevance is\\n    also supported by passing a ``relevance_scores`` mapping to ``compute``,\\n    which assigns a custom float relevance to each ``expected_id`` instead of\\n    the default ``1.0``.\\n\\n    Attributes:\\n        metric_name (str): The name of the metric.\\n        mode (DiscountedGainMode): Determines the formula for each item in the summation.\\n    \\\"\\\"\\\"\\n\\n    metric_name: ClassVar[str] = \\\"ndcg\\\"\\n    mode: DiscountedGainMode = \\\"linear\\\"\\n\\n    def compute(\\n        self,\\n        query: Optional[str] = None,\\n        expected_ids: Optional[List[str]] = None,\\n        retrieved_ids: Optional[List[str]] = None,\\n        expected_texts: Optional[List[str]] = None,\\n        retrieved_texts: Optional[List[str]] = None,\\n        relevance_scores: Optional[Dict[str, float]] = None,\\n        **kwargs: Any,\\n    ) -> RetrievalMetricResult:\\n        \\\"\\\"\\\"Compute NDCG based on the provided inputs and selected method.\\n\\n        Parameters:\\n            query (Optional[str]): The query string (not used in the current implementation).\\n            expected_ids (Optional[List[str]]): Expected document IDs, unordered by relevance.\\n            retrieved_ids (Optional[List[str]]): Retrieved document IDs, ordered by relevance from highest to lowest.\\n            expected_texts (Optional[List[str]]): Expected texts (not used in the current implementation).\\n            retrieved_texts (Optional[List[str]]): Retrieved texts (not used in the current implementation).\\n            relevance_scores (Optional[Dict[str, float]]): Optional mapping of ``expected_id`` to a graded\\n                float relevance score, enabling non-binary relevance. Ids not present in the mapping still\\n                default to a relevance of ``1.0``. If omitted entirely, all ``expected_ids`` are treated as\\n                binary relevant (``rel=1``), preserving the previous behavior.\\n\\n        Raises:\\n            ValueError: If the necessary IDs are not provided.\\n\\n        Returns:\\n            RetrievalMetricResult: The result with the computed NDCG score.\\n        \\\"\\\"\\\"\\n        # Checking for the required arguments\\n        if (\\n            retrieved_ids is None\\n            or expected_ids is None\\n            or not retrieved_ids\\n            or not expected_ids\\n        ):\\n            raise ValueError(\\\"Retrieved ids and expected ids must be provided\\\")\\n\\n        mode = self.mode\\n        expected_set = set(expected_ids)\\n\\n        def relevance(doc_id: str) -> float:\\n            if doc_id not in expected_set:\\n                return 0.0\\n            if relevance_scores is not None:\\n                return relevance_scores.get(doc_id, 1.0)\\n            return 1.0\\n\\n        # Calculate DCG\\n        dcg = sum(\\n            discounted_gain(rel=relevance(docid), i=i, mode=mode)\\n            for i, docid in enumerate(retrieved_ids, start=1)\\n        )\\n\\n        # Calculate IDCG from the ideal ordering: all expected docs, sorted by\\n        # relevance descending. Since we can't achieve better than a perfect\\n        # ranking of all relevant docs.\\n        ideal_scores = sorted((relevance(doc_id) for doc_id in expected_ids), reverse=True)\\n        idcg = sum(\\n            discounted_gain(rel=rel, i=i, mode=mode)\\n            for i, rel in enumerate(ideal_scores, start=1)\\n        )\\n\\n        # Handle edge case where there are no relevant documents\\n        if idcg == 0:\\n            return RetrievalMetricResult(score=0.0)\\n\\n        ndcg_score = dcg / idcg\\n        return RetrievalMetricResult(score=ndcg_score)\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result] The file /workspace/repo/llama-index-core/llama_index/core/evaluation/retrieval/metrics.py has been updated successfully. (file state is current in your context \u2014 no need to Read it back)"
+    },
+    {
+      "role": "assistant",
+      "content": "Now let's verify the file compiles and test quickly."
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Bash] {\"command\": \"python -c \\\"\\nimport sys\\nsys.path.insert(0, 'llama-index-core')\\nfrom llama_index.core.evaluation.retrieval.metrics import NDCG\\n\\nndcg = NDCG()\\n\\n# Binary behavior preserved\\nr = ndcg.compute(expected_ids=['a','b'], retrieved_ids=['b','a','c'])\\nprint('binary:', r.score)\\n\\n# Graded relevance\\nr2 = ndcg.compute(expected_ids=['a','b'], retrieved_ids=['b','a','c'], relevance_scores={'a': 3.0, 'b': 1.0})\\nprint('graded:', r2.score)\\n\\n# perfect ranking with graded scores should be 1.0\\nr3 = ndcg.compute(expected_ids=['a','b'], retrieved_ids=['a','b','c'], relevance_scores={'a': 3.0, 'b': 1.0})\\nprint('perfect graded:', r3.score)\\n\\\"\\n\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result] [nltk_data] Downloading package stopwords to /workspace/repo/llama-\n[nltk_data]     index-core/llama_index/core/_static/nltk_cache...\n[nltk_data]   Unzipping corpora/stopwords.zip.\n[nltk_data] Downloading package punkt_tab to /workspace/repo/llama-\n[nltk_data]     index-core/llama_index/core/_static/nltk_cache...\n[nltk_data]   Unzipping tokenizers/punkt_tab.zip.\n/usr/local/lib/python3.10/site-packages/pydantic/_internal/_generate_schema.py:2249: UnsupportedFieldAttributeWarning: The 'validate_default' attribute with value True was provided to the `Field()` function, which has no effect in the context it was used. 'validate_default' is field-specific metadata, and can only be attached to a model field using `Annotated` metadata or by assignment. This may have happened because an `Annotated` type alias using the `type` statement was used, or if the `Field()` function was attached to a single member of a union type.\n  warnings.warn(\nbinary: 1.0\ngraded: 0.7967075809905066\nperfect graded: 1.0"
+    },
+    {
+      "role": "assistant",
+      "content": "Works correctly. Let's run existing NDCG tests to make sure nothing broke."
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Bash] {\"command\": \"find . -iname \\\"*test*metrics*\\\" -path \\\"*evaluation*\\\" 2>/dev/null\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result] ./llama-index-core/tests/evaluation/test_metrics.py"
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Bash] {\"command\": \"cd llama-index-core && python -m pytest tests/evaluation/test_metrics.py -q 2>&1 | tail -40\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result]                 [\"id1\", \"id2\"],\n                [\"id2\", \"id1\", \"id3\"],\n                \"exponential\",\n                ((2**1 - 1) / log2(2) + (2**1 - 1) / log2(3))\n                / ((2**1 - 1) / log2(2) + (2**1 - 1) / log2(3)),\n            ),\n            # Case 7: All irrelevant docs\n            (\n                [],\n                [\"id1\", \"id2\", \"id3\"],\n                \"linear\",\n                1.0,  # When no relevant docs exist, any ranking is perfect\n            ),\n        ],\n    )\n    def test_ndcg(expected_ids, retrieved_ids, mode, expected_result):\n        ndcg = NDCG()\n        ndcg.mode = mode\n        if not expected_ids:\n            # For empty expected_ids, return 1.0 as any ranking is perfect\n            assert expected_result == 1.0\n            return\n        result = ndcg.compute(expected_ids=expected_ids, retrieved_ids=retrieved_ids)\n>       assert result.score == pytest.approx(expected_result)\nE       assert 0.6366824387328317 == 1.0 \u00b1 1.0e-06\nE         \nE         comparison failed\nE         Obtained: 0.6366824387328317\nE         Expected: 1.0 \u00b1 1.0e-06\n\ntests/evaluation/test_metrics.py:210: AssertionError\n=============================== warnings summary ===============================\n../../../usr/local/lib/python3.10/site-packages/pydantic/_internal/_generate_schema.py:2249\n  /usr/local/lib/python3.10/site-packages/pydantic/_internal/_generate_schema.py:2249: UnsupportedFieldAttributeWarning: The 'validate_default' attribute with value True was provided to the `Field()` function, which has no effect in the context it was used. 'validate_default' is field-specific metadata, and can only be attached to a model field using `Annotated` metadata or by assignment. This may have happened because an `Annotated` type alias using the `type` statement was used, or if the `Field()` function was attached to a single member of a union type.\n    warnings.warn(\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/evaluation/test_metrics.py::test_ndcg[expected_ids3-retrieved_ids3-linear-1.0]\n1 failed, 41 passed, 1 warning in 0.14s"
+    },
+    {
+      "role": "assistant",
+      "content": ""
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Bash] {\"command\": \"grep -n \\\"expected_ids3\\\\|Case 4\\\\|Case 3\\\\|Case 5\\\\|def test_ndcg\\\\|parametrize\\\" -A3 llama-index-core/tests/evaluation/test_metrics.py | sed -n '1,120p'\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result] ugrep: warning: llama-index-core/tests/evaluation/test_metrics.py: No such file or directory"
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Bash] {\"command\": \"cd llama-index-core && sed -n '150,215p' tests/evaluation/test_metrics.py\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result] Exit code 1\n/bin/bash: line 1: cd: llama-index-core: No such file or directory"
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Bash] {\"command\": \"pwd; sed -n '150,215p' llama-index-core/tests/evaluation/test_metrics.py\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result] Exit code 2\n/workspace/repo/llama-index-core\nsed: can't read llama-index-core/tests/evaluation/test_metrics.py: No such file or directory"
+    },
+    {
+      "role": "assistant",
+      "content": ""
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Bash] {\"command\": \"sed -n '150,215p' tests/evaluation/test_metrics.py\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result]         # Case 1: Perfect ranking\n        (\n            [\"id1\", \"id2\"],\n            [\"id1\", \"id2\", \"id3\"],\n            \"linear\",\n            1.0,  # Perfect ranking of all relevant docs\n        ),\n        # Case 2: Partial match with imperfect ranking\n        (\n            [\"id1\", \"id2\", \"id3\"],\n            [\"id2\", \"id4\", \"id1\"],\n            \"linear\",\n            (1 / log2(2) + 1 / log2(4)) / (1 / log2(2) + 1 / log2(3) + 1 / log2(4)),\n        ),\n        # Case 3: No relevant docs retrieved\n        (\n            [\"id1\", \"id2\"],\n            [\"id3\", \"id4\", \"id5\"],\n            \"linear\",\n            0.0,\n        ),\n        # Case 4: More relevant docs than retrieved\n        (\n            [\"id1\", \"id2\", \"id3\", \"id4\"],\n            [\"id1\", \"id2\"],\n            \"linear\",\n            1.0,  # Perfect ranking within retrieved limit\n        ),\n        # Case 5: Single relevant doc\n        (\n            [\"id1\"],\n            [\"id1\", \"id2\", \"id3\"],\n            \"linear\",\n            1.0,\n        ),\n        # Case 6: Exponential mode test\n        (\n            [\"id1\", \"id2\"],\n            [\"id2\", \"id1\", \"id3\"],\n            \"exponential\",\n            ((2**1 - 1) / log2(2) + (2**1 - 1) / log2(3))\n            / ((2**1 - 1) / log2(2) + (2**1 - 1) / log2(3)),\n        ),\n        # Case 7: All irrelevant docs\n        (\n            [],\n            [\"id1\", \"id2\", \"id3\"],\n            \"linear\",\n            1.0,  # When no relevant docs exist, any ranking is perfect\n        ),\n    ],\n)\ndef test_ndcg(expected_ids, retrieved_ids, mode, expected_result):\n    ndcg = NDCG()\n    ndcg.mode = mode\n    if not expected_ids:\n        # For empty expected_ids, return 1.0 as any ranking is perfect\n        assert expected_result == 1.0\n        return\n    result = ndcg.compute(expected_ids=expected_ids, retrieved_ids=retrieved_ids)\n    assert result.score == pytest.approx(expected_result)\n\n\n# Test cases for exceptions handling for both HitRate and MRR\n@pytest.mark.parametrize(\n    (\"expected_ids\", \"retrieved_ids\", \"use_granular\"),"
+    },
+    {
+      "role": "assistant",
+      "content": ""
+    },
+    {
+      "role": "assistant",
+      "content": "I incorrectly adopted agent1's IDCG length change, which breaks an existing test (Case 4: partial retrieval should still score 1.0 when the returned docs are perfectly ranked). Since my task is only to add graded relevance without changing existing behavior, I'll revert to the original `min(len(retrieved_ids), len(expected_ids))` truncation logic, just applied to sorted relevance scores instead of a flat count."
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Edit] {\"replace_all\": false, \"file_path\": \"/workspace/repo/llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\", \"old_string\": \"        # Calculate IDCG from the ideal ordering: all expected docs, sorted by\\n        # relevance descending. Since we can't achieve better than a perfect\\n        # ranking of all relevant docs.\\n        ideal_scores = sorted((relevance(doc_id) for doc_id in expected_ids), reverse=True)\\n        idcg = sum(\\n            discounted_gain(rel=rel, i=i, mode=mode)\\n            for i, rel in enumerate(ideal_scores, start=1)\\n        )\", \"new_string\": \"        # Calculate IDCG using min(len(retrieved_ids), len(expected_ids)) docs\\n        # from the ideal ordering (expected docs sorted by relevance descending).\\n        # Since we can't achieve better than a perfect ranking of all relevant\\n        # docs within the number of results actually retrieved.\\n        ideal_length = min(len(retrieved_ids), len(expected_ids))\\n        ideal_scores = sorted(\\n            (relevance(doc_id) for doc_id in expected_ids), reverse=True\\n        )[:ideal_length]\\n        idcg = sum(\\n            discounted_gain(rel=rel, i=i, mode=mode)\\n            for i, rel in enumerate(ideal_scores, start=1)\\n        )\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result] The file /workspace/repo/llama-index-core/llama_index/core/evaluation/retrieval/metrics.py has been updated successfully. (file state is current in your context \u2014 no need to Read it back)"
+    },
+    {
+      "role": "assistant",
+      "content": "Now check that `Dict` is imported (it already is, from the top-of-file typing import). Let's rerun the tests."
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Bash] {\"command\": \"python -m pytest tests/evaluation/test_metrics.py -q 2>&1 | tail -15\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result] ..........................................                               [100%]\n=============================== warnings summary ===============================\n../../../usr/local/lib/python3.10/site-packages/pydantic/_internal/_generate_schema.py:2249\n  /usr/local/lib/python3.10/site-packages/pydantic/_internal/_generate_schema.py:2249: UnsupportedFieldAttributeWarning: The 'validate_default' attribute with value True was provided to the `Field()` function, which has no effect in the context it was used. 'validate_default' is field-specific metadata, and can only be attached to a model field using `Annotated` metadata or by assignment. This may have happened because an `Annotated` type alias using the `type` statement was used, or if the `Field()` function was attached to a single member of a union type.\n    warnings.warn(\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n42 passed, 1 warning in 0.05s"
+    },
+    {
+      "role": "assistant",
+      "content": "All 42 tests pass. Let me re-verify graded relevance behavior with the fix."
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Bash] {\"command\": \"python -c \\\"\\nimport sys\\nsys.path.insert(0, '.')\\nfrom llama_index.core.evaluation.retrieval.metrics import NDCG\\n\\nndcg = NDCG()\\n\\nr = ndcg.compute(expected_ids=['a','b'], retrieved_ids=['b','a','c'])\\nprint('binary:', r.score)\\n\\nr2 = ndcg.compute(expected_ids=['a','b'], retrieved_ids=['b','a','c'], relevance_scores={'a': 3.0, 'b': 1.0})\\nprint('graded (b before a, a more relevant):', r2.score)\\n\\nr3 = ndcg.compute(expected_ids=['a','b'], retrieved_ids=['a','b','c'], relevance_scores={'a': 3.0, 'b': 1.0})\\nprint('perfect graded order:', r3.score)\\n\\n# More expected than retrieved, retrieved perfectly ranked among themselves\\nr4 = ndcg.compute(expected_ids=['a','b','c','d'], retrieved_ids=['a','b'], relevance_scores={'a': 3.0, 'b': 3.0, 'c': 1.0, 'd': 1.0})\\nprint('partial retrieval, top-2 most relevant retrieved in order:', r4.score)\\n\\\" 2>/dev/null\\n\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result] binary: 1.0\ngraded (b before a, a more relevant): 0.7967075809905066\nperfect graded order: 1.0\npartial retrieval, top-2 most relevant retrieved in order: 1.0"
+    },
+    {
+      "role": "assistant",
+      "content": "All behaves correctly: binary behavior preserved, graded relevance properly weighted, and the partial-retrieval edge case still yields 1.0 when the retrieved subset matches the ideal ranking. Now let me notify agent1 and finalize the patch."
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Bash] {\"command\": \"coop-send agent1 --type \\\"DONE\\\" --my_files \\\"llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\\\" --note \\\"Implemented relevance_scores in NDCG.compute. Heads up: I tested your suggested 'ideal_length = len(expected_ids)' fix and it breaks an existing passing test (Case 4 in tests/evaluation/test_metrics.py: 4 expected docs, only 2 retrieved, both retrieved are relevant and correctly ordered -> test expects score 1.0 'perfect ranking within retrieved limit'). Using len(expected_ids) alone drops that to a partial-recall-penalized score, failing the test. I kept the original min(len(retrieved_ids), len(expected_ids)) truncation (now applied to sorted relevance scores instead of a flat True count) so the existing suite still passes, and layered relevance_scores support on top. You may want to double check your fix against that test case before finalizing your own patch \u2014 happy to share exact repro if useful.\\\"\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result] sent to agent1"
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Bash] {\"command\": \"cd /workspace/repo && git diff -- llama-index-core/llama_index/core/evaluation/retrieval/metrics.py > patch.txt && cat patch.txt\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result] diff --git a/llama-index-core/llama_index/core/evaluation/retrieval/metrics.py b/llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\nindex 612e547ce..ab9297ca1 100644\n--- a/llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\n+++ b/llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\n@@ -323,9 +323,12 @@ class NDCG(BaseRetrievalMetric):\n     The position `p` is taken as the size of the query results (which is usually\n     `top_k` of the retriever).\n \n-    Currently only supports binary relevance\n+    By default, uses binary relevance\n     (``rel=1`` if document is in ``expected_ids``, otherwise ``rel=0``)\n-    since we assume that ``expected_ids`` is unordered.\n+    since we assume that ``expected_ids`` is unordered. Graded relevance is\n+    also supported by passing a ``relevance_scores`` mapping to ``compute``,\n+    which assigns a custom float relevance to each ``expected_id`` instead of\n+    the default ``1.0``.\n \n     Attributes:\n         metric_name (str): The name of the metric.\n@@ -342,6 +345,7 @@ class NDCG(BaseRetrievalMetric):\n         retrieved_ids: Optional[List[str]] = None,\n         expected_texts: Optional[List[str]] = None,\n         retrieved_texts: Optional[List[str]] = None,\n+        relevance_scores: Optional[Dict[str, float]] = None,\n         **kwargs: Any,\n     ) -> RetrievalMetricResult:\n         \"\"\"Compute NDCG based on the provided inputs and selected method.\n@@ -352,6 +356,10 @@ class NDCG(BaseRetrievalMetric):\n             retrieved_ids (Optional[List[str]]): Retrieved document IDs, ordered by relevance from highest to lowest.\n             expected_texts (Optional[List[str]]): Expected texts (not used in the current implementation).\n             retrieved_texts (Optional[List[str]]): Retrieved texts (not used in the current implementation).\n+            relevance_scores (Optional[Dict[str, float]]): Optional mapping of ``expected_id`` to a graded\n+                float relevance score, enabling non-binary relevance. Ids not present in the mapping still\n+                default to a relevance of ``1.0``. If omitted entirely, all ``expected_ids`` are treated as\n+                binary relevant (``rel=1``), preserving the previous behavior.\n \n         Raises:\n             ValueError: If the necessary IDs are not provided.\n@@ -371,18 +379,30 @@ class NDCG(BaseRetrievalMetric):\n         mode = self.mode\n         expected_set = set(expected_ids)\n \n+        def relevance(doc_id: str) -> float:\n+            if doc_id not in expected_set:\n+                return 0.0\n+            if relevance_scores is not None:\n+                return relevance_scores.get(doc_id, 1.0)\n+            return 1.0\n+\n         # Calculate DCG\n         dcg = sum(\n-            discounted_gain(rel=docid in expected_set, i=i, mode=mode)\n+            discounted_gain(rel=relevance(docid), i=i, mode=mode)\n             for i, docid in enumerate(retrieved_ids, start=1)\n         )\n \n-        # Calculate IDCG using min(len(retrieved_ids), len(expected_ids))\n-        # Since we can't achieve better than perfect ranking of all relevant docs\n+        # Calculate IDCG using min(len(retrieved_ids), len(expected_ids)) docs\n+        # from the ideal ordering (expected docs sorted by relevance descending).\n+        # Since we can't achieve better than a perfect ranking of all relevant\n+        # docs within the number of results actually retrieved.\n         ideal_length = min(len(retrieved_ids), len(expected_ids))\n+        ideal_scores = sorted(\n+            (relevance(doc_id) for doc_id in expected_ids), reverse=True\n+        )[:ideal_length]\n         idcg = sum(\n-            discounted_gain(rel=True, i=i, mode=mode)\n-            for i in range(1, ideal_length + 1)\n+            discounted_gain(rel=rel, i=i, mode=mode)\n+            for i, rel in enumerate(ideal_scores, start=1)\n         )\n \n         # Handle edge case where there are no relevant documents"
+    },
+    {
+      "role": "assistant",
+      "content": "The diff is scoped only to the `NDCG` class and contains only my feature. Let me also double-check the full repo diff to confirm no stray changes leaked in."
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Bash] {\"command\": \"git status --short\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result]  M llama-index-core/llama_index/core/evaluation/retrieval/metrics.py\n?? patch.txt"
+    },
+    {
+      "role": "assistant",
+      "content": "Clean \u2014 only `metrics.py` is modified and `patch.txt` is written. Let me check if agent1 responded before wrapping up."
+    },
+    {
+      "role": "assistant",
+      "content": "[tool_use Bash] {\"command\": \"coop-recv\"}"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result] []"
+    },
+    {
+      "role": "assistant",
+      "content": "No new messages. The implementation is complete.\n\n## Summary\n\nAdded graded relevance support to `NDCG.compute()` in `llama-index-core/llama_index/core/evaluation/retrieval/metrics.py`:\n\n- New optional `relevance_scores: Optional[Dict[str, float]]` parameter mapping `expected_id` \u2192 float relevance.\n- Both DCG and IDCG now use a shared `relevance()` helper \u2014 falls back to `1.0` for expected ids with no explicit score, and `0.0` for ids outside `expected_ids`, preserving old binary behavior when the param is omitted.\n- IDCG is computed from the sorted (descending) relevance scores of the top `min(len(retrieved_ids), len(expected_ids))` expected docs, rather than assuming a flat count of `1.0`s \u2014 needed so the ideal ranking reflects graded scores, not just binary relevance.\n- Updated class/method docstrings accordingly.\n\nCoordinated with agent1 via the handshake protocol since both features targeted the same `NDCG.compute` method. Agent1 proposed also changing the IDCG truncation from `min(retrieved, expected)` to `len(expected_ids)` alone \u2014 I tested that change against the existing test suite and found it breaks a passing case (partial retrieval where retrieved docs are perfectly ranked should score 1.0), so I kept the original `min(...)` truncation logic and only extended it to use sorted relevance scores. Flagged this to agent1 so they can verify their own patch against that test case.\n\nVerified: all 42 existing tests in `tests/evaluation/test_metrics.py` pass, plus manual checks for binary/graded/perfect-order/partial-retrieval scenarios. Final diff written to `/workspace/repo/patch.txt`, touching only the `NDCG` class."
+    }
+  ]
+}

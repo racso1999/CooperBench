@@ -1,0 +1,108 @@
+diff --git a/Tests/test_imageops.py b/Tests/test_imageops.py
+index 3621aa50f..b8fd4e7eb 100644
+--- a/Tests/test_imageops.py
++++ b/Tests/test_imageops.py
+@@ -470,6 +470,34 @@ def test_exif_transpose_in_place() -> None:
+         assert_image_equal(im, expected)
+ 
+ 
++def test_exif_transpose_strip_metadata() -> None:
++    with Image.open("Tests/images/hopper_orientation_2.jpg") as im:
++        assert "exif" in im.info
++        assert len(im.getexif()) > 0
++
++        transposed_im = ImageOps.exif_transpose(im, strip_metadata=True)
++        assert "exif" not in transposed_im.info
++        assert len(transposed_im.getexif()) == 0
++
++    # No orientation to transpose, metadata should still be stripped
++    with Image.open("Tests/images/icc_profile.png") as im:
++        assert "icc_profile" in im.info
++
++        transposed_im = ImageOps.exif_transpose(im, strip_metadata=True)
++        assert "icc_profile" not in transposed_im.info
++
++    # in_place=True should also strip metadata
++    with Image.open("Tests/images/hopper_orientation_2.jpg") as im:
++        ImageOps.exif_transpose(im, in_place=True, strip_metadata=True)
++        assert "exif" not in im.info
++        assert len(im.getexif()) == 0
++
++    # Default behaviour is unchanged
++    with Image.open("Tests/images/hopper_orientation_2.jpg") as im:
++        transposed_im = ImageOps.exif_transpose(im)
++        assert "exif" in transposed_im.info
++
++
+ def test_autocontrast_unsupported_mode() -> None:
+     im = Image.new("RGBA", (1, 1))
+     with pytest.raises(OSError):
+diff --git a/src/PIL/ImageOps.py b/src/PIL/ImageOps.py
+index fef1d7328..0c5628eb9 100644
+--- a/src/PIL/ImageOps.py
++++ b/src/PIL/ImageOps.py
+@@ -674,16 +674,23 @@ def solarize(image: Image.Image, threshold: int = 128) -> Image.Image:
+ 
+ 
+ @overload
+-def exif_transpose(image: Image.Image, *, in_place: Literal[True]) -> None: ...
++def exif_transpose(
++    image: Image.Image, *, in_place: Literal[True], strip_metadata: bool = False
++) -> None: ...
+ 
+ 
+ @overload
+ def exif_transpose(
+-    image: Image.Image, *, in_place: Literal[False] = False
++    image: Image.Image,
++    *,
++    in_place: Literal[False] = False,
++    strip_metadata: bool = False,
+ ) -> Image.Image: ...
+ 
+ 
+-def exif_transpose(image: Image.Image, *, in_place: bool = False) -> Image.Image | None:
++def exif_transpose(
++    image: Image.Image, *, in_place: bool = False, strip_metadata: bool = False
++) -> Image.Image | None:
+     """
+     If an image has an EXIF Orientation tag, other than 1, transpose the image
+     accordingly, and remove the orientation data.
+@@ -694,7 +701,20 @@ def exif_transpose(image: Image.Image, *, in_place: bool = False) -> Image.Image
+         If ``False`` (default), a new :py:class:`~PIL.Image.Image` object is returned
+         with the transposition applied. If there is no transposition, a copy of the
+         image will be returned.
++    :param strip_metadata: Boolean. Keyword-only argument.
++        If ``True``, all metadata (EXIF, XMP, ICC profile, etc.) is removed from
++        the image after transposing, instead of only removing the orientation
++        data. If ``False`` (default), only the orientation data is removed.
+     """
++
++    def _strip_metadata(im: Image.Image) -> None:
++        for key in ("exif", "Raw profile type exif", "icc_profile", "xmp"):
++            im.info.pop(key, None)
++        im.info.pop("XML:com.adobe.xmp", None)
++        new_exif = im.getexif()
++        for key in list(new_exif.keys()):
++            del new_exif[key]
++
+     image.load()
+     image_exif = image.getexif()
+     orientation = image_exif.get(ExifTags.Base.Orientation, 1)
+@@ -734,8 +754,15 @@ def exif_transpose(image: Image.Image, *, in_place: bool = False) -> Image.Image
+                             if isinstance(value, str)
+                             else re.sub(pattern.encode(), b"", value)
+                         )
++        if strip_metadata:
++            _strip_metadata(exif_image)
+         if not in_place:
+             return transposed_image
+     elif not in_place:
+-        return image.copy()
++        stripped_image = image.copy()
++        if strip_metadata:
++            _strip_metadata(stripped_image)
++        return stripped_image
++    elif strip_metadata:
++        _strip_metadata(image)
+     return None

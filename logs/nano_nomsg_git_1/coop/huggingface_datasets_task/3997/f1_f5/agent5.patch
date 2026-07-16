@@ -1,0 +1,96 @@
+diff --git a/src/datasets/features/features.py b/src/datasets/features/features.py
+index 6a0da6401..8750efee1 100644
+--- a/src/datasets/features/features.py
++++ b/src/datasets/features/features.py
+@@ -1198,6 +1198,20 @@ def require_decoding(feature: FeatureType, ignore_decode_attribute: bool = False
+         return hasattr(feature, "decode_example") and (feature.decode if not ignore_decode_attribute else True)
+ 
+ 
++def _deep_merge_dicts(a: dict, b: dict) -> dict:
++    """Recursively merge dict ``b`` into a copy of dict ``a`` and return the result.
++
++    Keys present in both are merged recursively if both values are dicts, otherwise ``b``'s value wins.
++    """
++    merged = dict(a)
++    for key, value in b.items():
++        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
++            merged[key] = _deep_merge_dicts(merged[key], value)
++        else:
++            merged[key] = value
++    return merged
++
++
+ class Features(dict):
+     """A special dictionary that defines the internal structure of a dataset.
+ 
+@@ -1245,15 +1259,21 @@ class Features(dict):
+         super().__delitem__(column_name)
+         del self._column_requires_decoding[column_name]
+ 
+-    def update(self, iterable, **kwds):
++    def update(self, iterable=(), **kwds):
+         if hasattr(iterable, "keys"):
+             for key in iterable.keys():
+-                self[key] = iterable[key]
++                self._update_value(key, iterable[key])
+         else:
+             for key, value in iterable:
+-                self[key] = value
+-        for key in kwds:
+-            self[key] = kwds[key]
++                self._update_value(key, value)
++        for key, value in kwds.items():
++            self._update_value(key, value)
++
++    def _update_value(self, key: str, value: FeatureType):
++        if key in self and isinstance(self[key], dict) and isinstance(value, dict):
++            self[key] = _deep_merge_dicts(self[key], value)
++        else:
++            self[key] = value
+ 
+     def __reduce__(self):
+         return Features, (dict(self),)
+diff --git a/tests/features/test_features.py b/tests/features/test_features.py
+index 9a563f96d..99fc7aece 100644
+--- a/tests/features/test_features.py
++++ b/tests/features/test_features.py
+@@ -233,6 +233,39 @@ class FeaturesTest(TestCase):
+         assert flattened_features == {"foo.bar": [{"my_value": Value("int32")}]}
+         assert features == _features, "calling flatten shouldn't alter the current features"
+ 
++    def test_update_deep_merges_nested_dicts(self):
++        features = Features({"foo": {"bar1": Value("int32"), "bar2": Value("string")}})
++        features.update({"foo": {"bar2": Value("float32"), "bar3": Value("bool")}})
++        expected = {"bar1": Value("int32"), "bar2": Value("float32"), "bar3": Value("bool")}
++        assert features == Features({"foo": expected})
++
++    def test_update_deep_merges_deeply_nested_dicts(self):
++        features = Features({"foo": {"bar": {"baz1": Value("int32")}}})
++        features.update({"foo": {"bar": {"baz2": Value("string")}}})
++        assert features == Features({"foo": {"bar": {"baz1": Value("int32"), "baz2": Value("string")}}})
++
++    def test_update_overwrites_non_dict_values(self):
++        features = Features({"foo": Value("int32")})
++        features.update({"foo": Value("string")})
++        assert features == Features({"foo": Value("string")})
++
++    def test_update_adds_new_keys(self):
++        features = Features({"foo": Value("int32")})
++        features.update({"bar": Value("string")})
++        assert features == Features({"foo": Value("int32"), "bar": Value("string")})
++
++    def test_update_with_kwds_deep_merges(self):
++        features = Features({"foo": {"bar1": Value("int32")}})
++        features.update(foo={"bar2": Value("string")}, baz=Value("bool"))
++        expected = {"bar1": Value("int32"), "bar2": Value("string")}
++        assert features == Features({"foo": expected, "baz": Value("bool")})
++
++    def test_update_with_sequence_of_nested_dict(self):
++        features = Features({"foo": Sequence({"bar": {"baz1": Value("int32")}})})
++        new_bar = {"baz1": Value("int32"), "baz2": Value("string")}
++        features.update({"foo": Sequence({"bar": new_bar})})
++        assert features == Features({"foo": Sequence({"bar": new_bar})})
++
+ 
+ def test_classlabel_init(tmp_path_factory):
+     names = ["negative", "positive"]

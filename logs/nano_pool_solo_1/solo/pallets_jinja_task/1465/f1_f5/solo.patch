@@ -1,0 +1,109 @@
+diff --git a/src/jinja2/filters.py b/src/jinja2/filters.py
+index 80ea6504..d2cd1efb 100644
+--- a/src/jinja2/filters.py
++++ b/src/jinja2/filters.py
+@@ -1163,6 +1163,8 @@ def sync_do_groupby(
+     value: "t.Iterable[V]",
+     attribute: t.Union[str, int],
+     default: t.Optional[t.Any] = None,
++    case_sensitive: bool = False,
++    include_empty: bool = True,
+ ) -> "t.List[t.Tuple[t.Any, t.List[V]]]":
+     """Group a sequence of objects by an attribute using Python's
+     :func:`itertools.groupby`. The attribute can use dot notation for
+@@ -1203,6 +1205,31 @@ def sync_do_groupby(
+           <li>{{ city }}: {{ items|map(attribute="name")|join(", ") }}</li>
+         {% endfor %}</ul>
+ 
++    Like the :func:`~jinja-filters.sort` filter, sorting and grouping is
++    case-insensitive by default. The ``key`` for each group will use the
++    case of the first item encountered for that value. For example, if a
++    list of items has cities ``["CA", "NY", "ca"]``, the ``"CA"`` and
++    ``"ca"`` entries will be grouped together, under a group named
++    ``"CA"``. This can be disabled by passing ``case_sensitive=True``.
++
++    .. sourcecode:: jinja
++
++        <ul>{% for city, items in users|groupby("city", case_sensitive=true) %}
++          <li>{{ city }}: {{ items|map(attribute="name")|join(", ") }}</li>
++        {% endfor %}</ul>
++
++    You can use ``include_empty=False`` to exclude groups where the
++    attribute is ``None``, an empty string, or another falsy value.
++
++    .. sourcecode:: jinja
++
++        <ul>{% for city, items in users|groupby("city", include_empty=false) %}
++          <li>{{ city }}: {{ items|map(attribute="name")|join(", ") }}</li>
++        {% endfor %}</ul>
++
++    .. versionchanged:: 3.1
++        Added the ``case_sensitive`` and ``include_empty`` parameters.
++
+     .. versionchanged:: 3.0
+         Added the ``default`` parameter.
+ 
+@@ -1210,10 +1237,24 @@ def sync_do_groupby(
+         The attribute supports dot notation for nested access.
+     """
+     expr = make_attrgetter(environment, attribute, default=default)
+-    return [
+-        _GroupTuple(key, list(values))
+-        for key, values in groupby(sorted(value, key=expr), expr)
+-    ]
++
++    if case_sensitive:
++        key_func = expr
++    else:
++        key_func = make_attrgetter(
++            environment, attribute, default=default, postprocess=ignore_case
++        )
++
++    if not include_empty:
++        value = [item for item in value if expr(item)]
++
++    out = []
++
++    for _, group in groupby(sorted(value, key=key_func), key_func):
++        group_items = list(group)
++        out.append(_GroupTuple(expr(group_items[0]), group_items))
++
++    return out
+ 
+ 
+ @async_variant(sync_do_groupby)  # type: ignore
+@@ -1222,12 +1263,30 @@ async def do_groupby(
+     value: "t.Union[t.AsyncIterable[V], t.Iterable[V]]",
+     attribute: t.Union[str, int],
+     default: t.Optional[t.Any] = None,
++    case_sensitive: bool = False,
++    include_empty: bool = True,
+ ) -> "t.List[t.Tuple[t.Any, t.List[V]]]":
+     expr = make_attrgetter(environment, attribute, default=default)
+-    return [
+-        _GroupTuple(key, await auto_to_list(values))
+-        for key, values in groupby(sorted(await auto_to_list(value), key=expr), expr)
+-    ]
++
++    if case_sensitive:
++        key_func = expr
++    else:
++        key_func = make_attrgetter(
++            environment, attribute, default=default, postprocess=ignore_case
++        )
++
++    value = await auto_to_list(value)
++
++    if not include_empty:
++        value = [item for item in value if expr(item)]
++
++    out = []
++
++    for _, group in groupby(sorted(value, key=key_func), key_func):
++        group_items = list(group)
++        out.append(_GroupTuple(expr(group_items[0]), group_items))
++
++    return out
+ 
+ 
+ @pass_environment

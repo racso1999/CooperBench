@@ -1,0 +1,86 @@
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..53596c566 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -1048,7 +1048,15 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        sort_palette=None,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1081,15 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param sort_palette: How the palette should be sorted after
++           quantization. This does not apply when ``palette`` is given.
++           Available methods are ``"rgb"`` (sort by the RGB value of each
++           color) and ``"luminance"`` (sort by the perceptual brightness of
++           each color, darkest first). A callable may also be given, which
++           will be called with each color's ``(r, g, b)`` (or ``(r, g, b,
++           a)``) tuple and should return a sort key. By default, no sorting
++           is performed and the palette order produced by the quantization
++           method is kept.
+         :returns: A new image
+ 
+         """
+@@ -1113,8 +1130,48 @@ class Image:
+         mode = im.im.getpalettemode()
+         im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
+ 
++        if sort_palette:
++            im = im._sort_palette(sort_palette)
++
+         return im
+ 
++    def _sort_palette(self, sort_palette):
++        """
++        Reorders this image's palette according to ``sort_palette``, which
++        may be ``"rgb"``, ``"luminance"`` or a callable. See
++        :py:meth:`~PIL.Image.Image.quantize` for details.
++
++        Only palette entries that are actually used by a pixel are
++        reordered; unused entries are left in place at the end of the
++        palette.
++        """
++        channels = len(self.palette.mode)
++        palette = self.palette.palette
++        num_colors = len(palette) // channels
++        colors = [
++            tuple(palette[i * channels : i * channels + channels])
++            for i in range(num_colors)
++        ]
++
++        if sort_palette == "rgb":
++            key = lambda i: colors[i]  # noqa: E731
++        elif sort_palette == "luminance":
++            key = lambda i: (  # noqa: E731
++                colors[i][0] * 299 + colors[i][1] * 587 + colors[i][2] * 114
++            )
++        elif callable(sort_palette):
++            key = lambda i: sort_palette(colors[i])  # noqa: E731
++        else:
++            msg = "sort_palette must be 'rgb', 'luminance' or a callable"
++            raise ValueError(msg)
++
++        histogram = self.histogram()
++        used = [i for i in range(num_colors) if histogram[i]]
++        unused = [i for i in range(num_colors) if not histogram[i]]
++        order = sorted(used, key=key) + unused
++
++        return self.remap_palette(order)
++
+     def copy(self):
+         """
+         Copies this image. Use this method if you wish to paste things

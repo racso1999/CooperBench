@@ -1,0 +1,104 @@
+diff --git a/dirty_equals/__init__.py b/dirty_equals/__init__.py
+index ba8214e..3bec5fa 100644
+--- a/dirty_equals/__init__.py
++++ b/dirty_equals/__init__.py
+@@ -18,7 +18,7 @@ from ._numeric import (
+     IsPositiveFloat,
+     IsPositiveInt,
+ )
+-from ._other import FunctionCheck, IsJson, IsUUID
++from ._other import FunctionCheck, IsJson, IsPhoneNumber, IsUUID
+ from ._sequence import Contains, HasLen, IsList, IsListOrTuple, IsTuple
+ from ._strings import IsAnyStr, IsBytes, IsStr
+ 
+@@ -68,6 +68,7 @@ __all__ = (
+     # other
+     'FunctionCheck',
+     'IsJson',
++    'IsPhoneNumber',
+     'IsUUID',
+     # strings
+     'IsStr',
+diff --git a/dirty_equals/_other.py b/dirty_equals/_other.py
+index b2b8379..1036b94 100644
+--- a/dirty_equals/_other.py
++++ b/dirty_equals/_other.py
+@@ -1,5 +1,6 @@
+ import json
+-from typing import Any, Callable, TypeVar, overload
++import re
++from typing import Any, Callable, Optional, TypeVar, overload
+ from uuid import UUID
+ 
+ from ._base import DirtyEquals
+@@ -145,3 +146,70 @@ class FunctionCheck(DirtyEquals[Any]):
+ 
+     def equals(self, other: Any) -> bool:
+         return self.func(other)
++
++
++# characters commonly used to delimit groups of digits within a phone number
++_PHONE_DELIMITERS_RE = re.compile(r'[\s\-.()]')
++# after delimiters are stripped, only an optional leading `+` and digits should remain
++_PHONE_CHARS_RE = re.compile(r'^\+?\d+$')
++
++# generic patterns used when no country is given, or the country isn't specifically supported
++_GENERIC_INTL_PHONE_RE = re.compile(r'^\+\d{7,15}$')
++_GENERIC_NATIONAL_PHONE_RE = re.compile(r'^\d{7,15}$')
++
++# US: 10 digit national numbers, or +1 followed by the 10 digit national number
++_US_NATIONAL_PHONE_RE = re.compile(r'^\d{10}$')
++_US_INTL_PHONE_RE = re.compile(r'^\+1\d{10}$')
++
++# GB: national numbers start with a trunk `0`, or +44 followed by the number without that `0`
++_GB_NATIONAL_PHONE_RE = re.compile(r'^0\d{9,10}$')
++_GB_INTL_PHONE_RE = re.compile(r'^\+44\d{9,10}$')
++
++
++class IsPhoneNumber(DirtyEquals[str]):
++    """
++    A class that checks if a value is a valid phone number string, optionally checking it conforms to a
++    specific country's formatting rules.
++    """
++
++    def __init__(self, country: Optional[str] = None):
++        """
++        Args:
++            country: ISO 3166-1 alpha-2 country code (e.g. `'US'`, `'GB'`) to check the phone number against
++                that country's national or international format. If omitted, generic phone number
++                validation is used. Countries other than `US` and `GB` fall back to generic international
++                format validation (`+` followed by 7-15 digits).
++
++        ```py title="IsPhoneNumber"
++        from dirty_equals import IsPhoneNumber
++
++        assert '+1-555-123-4567' == IsPhoneNumber
++        assert '555-123-4567' == IsPhoneNumber('US')
++        assert '+1-555-123-4567' == IsPhoneNumber('US')
++        assert '15551234567' != IsPhoneNumber('US')
++        assert '020 7946 0958' == IsPhoneNumber('GB')
++        assert '+44 20 7946 0958' == IsPhoneNumber('GB')
++        assert '555-123-4567' != IsPhoneNumber('GB')
++        assert 'not a phone number' != IsPhoneNumber
++        assert 1234567890 != IsPhoneNumber
++        ```
++        """
++        self.country: Optional[str] = country.upper() if country else None
++        super().__init__(plain_repr('*') if country is None else self.country)
++
++    def equals(self, other: Any) -> bool:
++        if not isinstance(other, str):
++            return False
++
++        cleaned = _PHONE_DELIMITERS_RE.sub('', other)
++        if not _PHONE_CHARS_RE.match(cleaned):
++            return False
++
++        if self.country == 'US':
++            return bool(_US_INTL_PHONE_RE.match(cleaned) or _US_NATIONAL_PHONE_RE.match(cleaned))
++        elif self.country == 'GB':
++            return bool(_GB_INTL_PHONE_RE.match(cleaned) or _GB_NATIONAL_PHONE_RE.match(cleaned))
++        elif self.country is not None:
++            return bool(_GENERIC_INTL_PHONE_RE.match(cleaned))
++        else:
++            return bool(_GENERIC_INTL_PHONE_RE.match(cleaned) or _GENERIC_NATIONAL_PHONE_RE.match(cleaned))

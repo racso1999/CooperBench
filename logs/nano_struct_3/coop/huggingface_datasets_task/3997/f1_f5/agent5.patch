@@ -1,0 +1,87 @@
+diff --git a/src/datasets/features/features.py b/src/datasets/features/features.py
+index 6a0da6401..20c93873c 100644
+--- a/src/datasets/features/features.py
++++ b/src/datasets/features/features.py
+@@ -1245,15 +1245,36 @@ class Features(dict):
+         super().__delitem__(column_name)
+         del self._column_requires_decoding[column_name]
+ 
++    @staticmethod
++    def _merge_dict_like(current: FeatureType, new: FeatureType) -> FeatureType:
++        """Recursively merge ``new`` into ``current`` when both sides are dictionaries
++        (or `Sequence` objects wrapping dictionaries). Otherwise ``new`` simply
++        overwrites ``current``."""
++        if isinstance(current, dict) and isinstance(new, dict):
++            merged = dict(current)
++            for key, value in new.items():
++                merged[key] = Features._merge_dict_like(merged[key], value) if key in merged else value
++            return merged
++        elif (
++            isinstance(current, Sequence)
++            and isinstance(new, Sequence)
++            and isinstance(current.feature, dict)
++            and isinstance(new.feature, dict)
++        ):
++            current.feature = Features._merge_dict_like(current.feature, new.feature)
++            return current
++        else:
++            return new
++
+     def update(self, iterable, **kwds):
+         if hasattr(iterable, "keys"):
+-            for key in iterable.keys():
+-                self[key] = iterable[key]
++            items = ((key, iterable[key]) for key in iterable.keys())
+         else:
+-            for key, value in iterable:
+-                self[key] = value
+-        for key in kwds:
+-            self[key] = kwds[key]
++            items = iterable
++        for key, value in items:
++            self[key] = self._merge_dict_like(self[key], value) if key in self else value
++        for key, value in kwds.items():
++            self[key] = self._merge_dict_like(self[key], value) if key in self else value
+ 
+     def __reduce__(self):
+         return Features, (dict(self),)
+diff --git a/tests/features/test_features.py b/tests/features/test_features.py
+index 9a563f96d..9537a105a 100644
+--- a/tests/features/test_features.py
++++ b/tests/features/test_features.py
+@@ -44,6 +44,35 @@ class FeaturesTest(TestCase):
+         self.assertDictEqual(dset[0], new_dset[0])
+         self.assertDictEqual(dset[:], new_dset[:])
+ 
++    def test_update_deep_merges_nested_dicts(self):
++        features = Features({"a": {"x": Value("int32"), "y": Value("string")}, "b": Value("int64")})
++        features.update({"a": {"z": Value("float32")}, "c": Value("bool")})
++        self.assertEqual(
++            features,
++            Features(
++                {
++                    "a": {"x": Value("int32"), "y": Value("string"), "z": Value("float32")},
++                    "b": Value("int64"),
++                    "c": Value("bool"),
++                }
++            ),
++        )
++
++    def test_update_deep_merges_nested_sequences(self):
++        features = Features({"a": Sequence({"x": Value("int32")})})
++        features.update({"a": Sequence({"y": Value("string")})})
++        self.assertEqual(features, Features({"a": Sequence({"x": Value("int32"), "y": Value("string")})}))
++
++    def test_update_overwrites_non_dict_values(self):
++        features = Features({"a": Value("int32")})
++        features.update({"a": Value("string"), "b": Value("bool")})
++        self.assertEqual(features, Features({"a": Value("string"), "b": Value("bool")}))
++
++    def test_update_with_kwargs_deep_merges_nested_dicts(self):
++        features = Features({"a": {"x": Value("int32")}})
++        features.update({}, a={"y": Value("string")}, b=Value("bool"))
++        self.assertEqual(features, Features({"a": {"x": Value("int32"), "y": Value("string")}, "b": Value("bool")}))
++
+     def test_string_to_arrow_bijection_for_primitive_types(self):
+         supported_pyarrow_datatypes = [
+             pa.time32("s"),

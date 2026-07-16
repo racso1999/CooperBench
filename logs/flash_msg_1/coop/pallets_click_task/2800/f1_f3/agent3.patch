@@ -1,0 +1,93 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index 666ad68..b2e0003 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -228,6 +228,11 @@ class Context:
+         value is not set, it defaults to the value from the parent
+         context. ``Command.show_default`` overrides this default for the
+         specific command.
++    :param max_resources: the maximum number of resources that may be
++        registered with :meth:`with_resource` on this context and any of
++        its child contexts combined. If this is `None` (the default)
++        then no limit is enforced. The default is to inherit from the
++        parent context.
+ 
+     .. versionchanged:: 8.2
+         The ``protected_args`` attribute is deprecated and will be removed in
+@@ -280,6 +285,7 @@ class Context:
+         token_normalize_func: t.Callable[[str], str] | None = None,
+         color: bool | None = None,
+         show_default: bool | None = None,
++        max_resources: int | None = None,
+     ) -> None:
+         #: the parent context or `None` if none exists.
+         self.parent = parent
+@@ -427,6 +433,25 @@ class Context:
+         #: Show option default values when formatting help text.
+         self.show_default: bool | None = show_default
+ 
++        if max_resources is None and parent is not None:
++            max_resources = parent.max_resources
++
++        #: The maximum number of resources that may be registered with
++        #: :meth:`with_resource` on this context and any of its child
++        #: contexts combined. ``None`` means no limit is enforced.
++        #:
++        #: .. versionadded:: 8.3
++        self.max_resources: int | None = max_resources
++
++        #: A mutable, shared counter of how many resources have been
++        #: registered with :meth:`with_resource` across this context and
++        #: its parents/children. Child contexts share the same counter
++        #: instance as their parent so the limit applies to the whole
++        #: hierarchy.
++        self._resource_count: list[int] = (
++            parent._resource_count if parent is not None else [0]
++        )
++
+         self._close_callbacks: list[t.Callable[[], t.Any]] = []
+         self._depth = 0
+         self._parameter_source: dict[str, ParameterSource] = {}
+@@ -587,8 +612,23 @@ class Context:
+         :return: Whatever ``context_manager.__enter__()`` returns.
+ 
+         .. versionadded:: 8.0
++
++        .. versionchanged:: 8.3
++            Raises :exc:`RuntimeError` if :attr:`max_resources` is set
++            and the limit has already been reached.
+         """
+-        return self._exit_stack.enter_context(context_manager)
++        if (
++            self.max_resources is not None
++            and self._resource_count[0] >= self.max_resources
++        ):
++            raise RuntimeError(
++                f"Cannot register more than {self.max_resources} resource(s)"
++                " on this context."
++            )
++
++        rv = self._exit_stack.enter_context(context_manager)
++        self._resource_count[0] += 1
++        return rv
+ 
+     def call_on_close(self, f: t.Callable[..., t.Any]) -> t.Callable[..., t.Any]:
+         """Register a function to be called when the context tears down.
+diff --git a/src/click/shell_completion.py b/src/click/shell_completion.py
+index 6fd9e54..050c0fd 100644
+--- a/src/click/shell_completion.py
++++ b/src/click/shell_completion.py
+@@ -544,6 +544,13 @@ def _resolve_context(
+     :param args: List of complete args before the incomplete value.
+     """
+     ctx_args["resilient_parsing"] = True
++    # Contexts built here are only used to introspect the command
++    # hierarchy for completion and are never closed, so any resources
++    # registered through ``with_resource`` would never be released. Do
++    # not enforce ``max_resources`` here, otherwise repeated completion
++    # requests could permanently exhaust the limit for the running
++    # process.
++    ctx_args["max_resources"] = None
+     ctx = cli.make_context(prog_name, args.copy(), **ctx_args)
+     args = ctx._protected_args + ctx.args
+ 

@@ -1,0 +1,147 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..958b8ab 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -1207,8 +1207,34 @@ class Command:
+ 
+         ctx.args = args
+         ctx._opt_prefixes.update(parser._opt_prefixes)
++        self._resolve_dynamic_defaults(ctx)
+         return args
+ 
++    def _resolve_dynamic_defaults(self, ctx: Context) -> None:
++        """Second pass over the parsed parameters to resolve any dynamic
++        defaults (a ``dict`` mapping other option declarations to value
++        mappings) now that every option has its final value.
++
++        Only applies to parameters whose value still comes from their own
++        (static) default, i.e. no value was given on the command line, in
++        an environment variable, or a configuration file.
++
++        .. versionadded:: 8.3
++        """
++        for param in self.get_params(ctx):
++            dynamic_default = getattr(param, "_dynamic_default", None)
++
++            if dynamic_default is None:
++                continue
++
++            if ctx.get_parameter_source(param.name) is not ParameterSource.DEFAULT:
++                continue
++
++            value = param.resolve_dynamic_default(ctx)  # type: ignore[attr-defined]
++
++            if value is not None and param.expose_value:
++                ctx.params[param.name] = value
++
+     def invoke(self, ctx: Context) -> t.Any:
+         """Given a context, this invokes the attached callback (if it exists)
+         in the right way.
+@@ -2508,6 +2534,21 @@ class Option(Parameter):
+     :param hidden: hide this option from help outputs.
+     :param attrs: Other command arguments described in :class:`Parameter`.
+ 
++    In addition to a static value or callable, ``default`` accepts a
++    ``dict`` mapping other option declarations (including the leading
++    ``--``) to a mapping of that option's value (as a string) to the
++    default to use here, e.g.
++    ``default={"--protocol": {"http": 80, "https": 443}}``. This dynamic
++    default is resolved in a second pass once all other options have been
++    parsed, and only applies if no value was given for this option on the
++    command line, an environment variable, or a configuration file. If
++    multiple source options are given, later entries take precedence. If
++    no mapping matches, the value is ``None``.
++
++    .. versionchanged:: 8.3
++        ``default`` can be a dict of other option declarations to value
++        mappings to compute a dynamic default based on other options.
++
+     .. versionchanged:: 8.2
+         ``envvar`` used with ``flag_value`` will always use the ``flag_value``,
+         previously it would use the value of the environment variable.
+@@ -2555,9 +2596,26 @@ class Option(Parameter):
+             help = inspect.cleandoc(help)
+ 
+         default_is_missing = "default" not in attrs
++        dynamic_default: dict[str, dict[str, t.Any]] | None = attrs.get("default")
++
++        if isinstance(dynamic_default, dict):
++            for key, mapping in dynamic_default.items():
++                if not isinstance(key, str):
++                    raise TypeError("Dynamic default keys must be strings")
++
++                if not isinstance(mapping, dict):
++                    raise TypeError("Dynamic default values must be dictionaries")
++
++            # The dynamic default is resolved in a second pass after all
++            # options have been parsed, not by the normal default lookup.
++            del attrs["default"]
++        else:
++            dynamic_default = None
++
+         super().__init__(
+             param_decls, type=type, multiple=multiple, deprecated=deprecated, **attrs
+         )
++        self._dynamic_default = dynamic_default
+ 
+         if prompt is True:
+             if self.name is None:
+@@ -2861,9 +2919,14 @@ class Option(Parameter):
+         elif ctx.show_default is not None:
+             show_default = ctx.show_default
+ 
+-        if show_default_is_str or (show_default and (default_value is not None)):
++        if show_default_is_str or (
++            show_default
++            and (default_value is not None or self._dynamic_default is not None)
++        ):
+             if show_default_is_str:
+                 default_string = f"({self.show_default})"
++            elif self._dynamic_default is not None:
++                default_string = _("(dynamic)")
+             elif isinstance(default_value, (list, tuple)):
+                 default_string = ", ".join(str(d) for d in default_value)
+             elif inspect.isfunction(default_value):
+@@ -2925,6 +2988,42 @@ class Option(Parameter):
+ 
+         return super().get_default(ctx, call=call)
+ 
++    def resolve_dynamic_default(self, ctx: Context) -> t.Any | None:
++        """Resolve this option's dynamic default, if any, based on the
++        current values of the options it depends on.
++
++        Later entries in the dynamic default mapping take precedence
++        over earlier ones. Returns ``None`` if there is no dynamic
++        default or none of its mappings match.
++
++        .. versionadded:: 8.3
++        """
++        if self._dynamic_default is None:
++            return None
++
++        value = None
++
++        for source_decl, mapping in self._dynamic_default.items():
++            source_param = next(
++                (
++                    param
++                    for param in ctx.command.get_params(ctx)
++                    if source_decl in param.opts or source_decl in param.secondary_opts
++                ),
++                None,
++            )
++
++            if source_param is None:
++                continue
++
++            source_value = ctx.params.get(source_param.name)
++            key = str(source_value)
++
++            if key in mapping:
++                value = mapping[key]
++
++        return value
++
+     def prompt_for_value(self, ctx: Context) -> t.Any:
+         """This is an alternative flow that can be activated in the full
+         value processing if a value does not exist.  It will prompt the

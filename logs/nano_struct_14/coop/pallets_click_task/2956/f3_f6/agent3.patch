@@ -1,0 +1,95 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..0196263 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -4,6 +4,7 @@ import collections.abc as cabc
+ import enum
+ import errno
+ import inspect
++import itertools
+ import os
+ import sys
+ import typing as t
+@@ -1981,6 +1982,18 @@ def _check_iter(value: t.Any) -> cabc.Iterator[t.Any]:
+     return iter(value)
+ 
+ 
++def _batched(
++    values: cabc.Sequence[t.Any], batch_size: int
++) -> cabc.Iterator[tuple[t.Any, ...]]:
++    """Yield successive batches of up to ``batch_size`` items from
++    ``values``.
++    """
++    it = iter(values)
++
++    while batch := tuple(itertools.islice(it, batch_size)):
++        yield batch
++
++
+ class Parameter:
+     r"""A parameter to a command comes in two versions: they are either
+     :class:`Option`\s or :class:`Argument`\s.  Other subclasses are currently
+@@ -2499,6 +2512,10 @@ class Option(Parameter):
+                      multiple times and recorded.  This is similar to ``nargs``
+                      in how it works but supports arbitrary number of
+                      arguments.
++    :param batch_size: if set, and ``multiple`` is ``True``, the collected
++                       values are yielded in batches of at most this many
++                       items instead of as a single tuple. Requires
++                       ``multiple=True`` and a non-negative value.
+     :param count: this flag makes an option increment an integer.
+     :param allow_from_autoenv: if this is enabled then the value of this
+                                parameter will be pulled from an environment
+@@ -2541,6 +2558,7 @@ class Option(Parameter):
+         is_flag: bool | None = None,
+         flag_value: t.Any | None = None,
+         multiple: bool = False,
++        batch_size: int | None = None,
+         count: bool = False,
+         allow_from_autoenv: bool = True,
+         type: types.ParamType | t.Any | None = None,
+@@ -2631,6 +2649,8 @@ class Option(Parameter):
+             if default_is_missing:
+                 self.default = 0
+ 
++        self.batch_size = batch_size
++
+         self.allow_from_autoenv = allow_from_autoenv
+         self.help = help
+         self.show_default = show_default
+@@ -2662,6 +2682,12 @@ class Option(Parameter):
+                 if self.is_flag:
+                     raise TypeError("'count' is not valid with 'is_flag'.")
+ 
++            if self.batch_size is not None and not self.multiple:
++                raise TypeError("'batch_size' is only valid with 'multiple'.")
++
++        if self.batch_size is not None and self.batch_size < 0:
++            raise ValueError("'batch_size' must not be negative.")
++
+     def to_info_dict(self) -> dict[str, t.Any]:
+         info_dict = super().to_info_dict()
+         info_dict.update(
+@@ -2671,6 +2697,7 @@ class Option(Parameter):
+             flag_value=self.flag_value,
+             count=self.count,
+             hidden=self.hidden,
++            batch_size=self.batch_size,
+         )
+         return info_dict
+ 
+@@ -2774,6 +2801,14 @@ class Option(Parameter):
+                 nargs=self.nargs,
+             )
+ 
++    def process_value(self, ctx: Context, value: t.Any) -> t.Any:
++        value = super().process_value(ctx, value)
++
++        if self.batch_size is not None and self.multiple and value:
++            return _batched(value, self.batch_size)
++
++        return value
++
+     def get_help_record(self, ctx: Context) -> tuple[str, str] | None:
+         if self.hidden:
+             return None

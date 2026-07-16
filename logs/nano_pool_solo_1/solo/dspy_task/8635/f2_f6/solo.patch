@@ -1,0 +1,118 @@
+diff --git a/dspy/propose/grounded_proposer.py b/dspy/propose/grounded_proposer.py
+index 13722b4b..5d4ca8b2 100644
+--- a/dspy/propose/grounded_proposer.py
++++ b/dspy/propose/grounded_proposer.py
+@@ -11,9 +11,6 @@ from dspy.propose.utils import (
+ )
+ from dspy.teleprompt.utils import get_prompt_model, get_signature
+ 
+-# Hardcoded variables (TODO: update)
+-MAX_INSTRUCT_IN_HISTORY = 5  # 10
+-
+ TIPS = {
+         "none": "",
+         "creative": "Don't be afraid to be creative when creating the new instruction!",
+@@ -72,6 +69,31 @@ class DescribeModule(dspy.Signature):
+     )
+ 
+ 
++class ShortenInstruction(dspy.Signature):
++    (
++        """Given an instruction that is too long, rewrite it to be more concise while preserving its meaning and intent."""
++    )
++    instruction = dspy.InputField(
++        format=str,
++        desc="An instruction that is too long and needs to be shortened.",
++        prefix="INSTRUCTION:",
++    )
++    proposed_instruction = dspy.OutputField(
++        desc="A more concise version of the instruction.",
++        prefix="PROPOSED INSTRUCTION:",
++    )
++
++
++def _truncate_instruction(instruction, max_chars):
++    """Trim ``instruction`` to fit within ``max_chars``, preferring to cut at the last sentence boundary."""
++    limit = max_chars - 1
++    truncated = instruction[:limit]
++    last_boundary = max(truncated.rfind("."), truncated.rfind("!"), truncated.rfind("?"))
++    if last_boundary != -1:
++        return truncated[:last_boundary + 1] + "…"
++    return truncated + "…"
++
++
+ def generate_instruction_class(
+     use_dataset_summary=True,
+     program_aware=True,
+@@ -284,7 +306,11 @@ class GroundedProposer(Proposer):
+         set_tip_randomly=True,
+         set_history_randomly=True,
+         verbose=False,
+-        rng=None
++        rng=None,
++        max_instruct_history: int = 5,
++        min_instr_chars: int = 30,
++        max_instr_chars: int = 600,
++        rephrase_when_too_long: bool = False,
+     ):
+         super().__init__()
+         self.program_aware = program_aware
+@@ -297,6 +323,10 @@ class GroundedProposer(Proposer):
+         self.set_history_randomly=set_history_randomly
+         self.verbose = verbose
+         self.rng = rng or random
++        self.max_instruct_history = max(0, min(20, max_instruct_history))
++        self.min_instr_chars = min_instr_chars
++        self.max_instr_chars = max_instr_chars
++        self.rephrase_when_too_long = rephrase_when_too_long
+ 
+         self.prompt_model = get_prompt_model(prompt_model)
+ 
+@@ -400,7 +430,7 @@ class GroundedProposer(Proposer):
+ 
+         # Create an instruction history string for our predictor
+         instruction_history = create_predictor_level_history_string(
+-            program, pred_i, trial_logs, MAX_INSTRUCT_IN_HISTORY,
++            program, pred_i, trial_logs, self.max_instruct_history,
+         )
+ 
+         # Create our instruction generator class (given specific criteria for this round of proposal)
+@@ -439,4 +469,37 @@ class GroundedProposer(Proposer):
+             self.prompt_model.inspect_history(n=1)
+             print(f"PROPOSED INSTRUCTION: {proposed_instruction}")
+ 
+-        return strip_prefix(proposed_instruction)
++        proposed_instruction = strip_prefix(proposed_instruction)
++        instr_len = len(proposed_instruction)
++
++        if instr_len < self.min_instr_chars:
++            basic_instruction = get_signature(predictor).instructions
++            if self.verbose:
++                print(
++                    f"Proposed instruction is too short ({instr_len} chars < min_instr_chars={self.min_instr_chars}). "
++                    "Falling back to the predictor's basic instruction.",
++                )
++            proposed_instruction = basic_instruction
++        elif instr_len > self.max_instr_chars:
++            if self.rephrase_when_too_long:
++                if self.verbose:
++                    print(
++                        f"Proposed instruction is too long ({instr_len} chars > max_instr_chars={self.max_instr_chars}). "
++                        "Rephrasing via an LM call to make it more concise.",
++                    )
++                with dspy.settings.context(lm=self.prompt_model):
++                    shortened_instruction = strip_prefix(
++                        dspy.Predict(ShortenInstruction)(instruction=proposed_instruction).proposed_instruction,
++                    )
++                if len(shortened_instruction) > self.max_instr_chars:
++                    shortened_instruction = shortened_instruction[:self.max_instr_chars]
++                proposed_instruction = shortened_instruction
++            else:
++                if self.verbose:
++                    print(
++                        f"Proposed instruction is too long ({instr_len} chars > max_instr_chars={self.max_instr_chars}). "
++                        "Trimming to the last sentence boundary under the cap.",
++                    )
++                proposed_instruction = _truncate_instruction(proposed_instruction, self.max_instr_chars)
++
++        return proposed_instruction

@@ -1,0 +1,89 @@
+diff --git a/src/datasets/features/features.py b/src/datasets/features/features.py
+index 6a0da6401..d9ad69180 100644
+--- a/src/datasets/features/features.py
++++ b/src/datasets/features/features.py
+@@ -1178,6 +1178,9 @@ def list_of_np_array_to_pyarrow_listarray(l_arr: List[np.ndarray], type: pa.Data
+         return pa.array([], type=type)
+ 
+ 
++_require_decoding_cache: Dict[Tuple[str, bool], bool] = {}
++
++
+ def require_decoding(feature: FeatureType, ignore_decode_attribute: bool = False) -> bool:
+     """Check if a (possibly nested) feature requires decoding.
+ 
+@@ -1188,14 +1191,21 @@ def require_decoding(feature: FeatureType, ignore_decode_attribute: bool = False
+     Returns:
+         :obj:`bool`
+     """
++    cache_key = (repr(feature), ignore_decode_attribute)
++    if cache_key in _require_decoding_cache:
++        return _require_decoding_cache[cache_key]
++
+     if isinstance(feature, dict):
+-        return any(require_decoding(f) for f in feature.values())
++        result = any(require_decoding(f) for f in feature.values())
+     elif isinstance(feature, (list, tuple)):
+-        return require_decoding(feature[0])
++        result = require_decoding(feature[0])
+     elif isinstance(feature, Sequence):
+-        return require_decoding(feature.feature)
++        result = require_decoding(feature.feature)
+     else:
+-        return hasattr(feature, "decode_example") and (feature.decode if not ignore_decode_attribute else True)
++        result = hasattr(feature, "decode_example") and (feature.decode if not ignore_decode_attribute else True)
++
++    _require_decoding_cache[cache_key] = result
++    return result
+ 
+ 
+ class Features(dict):
+@@ -1245,15 +1255,45 @@ class Features(dict):
+         super().__delitem__(column_name)
+         del self._column_requires_decoding[column_name]
+ 
++    @staticmethod
++    def _as_mergeable_dict(value: Any) -> Optional[dict]:
++        """Return the underlying dict of `value` if it (or its `Sequence` wrapper) is dict-backed, else ``None``."""
++        if isinstance(value, dict):
++            return value
++        if isinstance(value, Sequence) and isinstance(value.feature, dict):
++            return value.feature
++        return None
++
++    @classmethod
++    def _deep_merge_dicts(cls, a: dict, b: dict) -> None:
++        """Recursively merge dict `b` into dict `a` in place."""
++        for key, b_value in b.items():
++            a_value = a.get(key)
++            a_sub_dict = cls._as_mergeable_dict(a_value) if key in a else None
++            b_sub_dict = cls._as_mergeable_dict(b_value)
++            if a_sub_dict is not None and b_sub_dict is not None:
++                cls._deep_merge_dicts(a_sub_dict, b_sub_dict)
++            else:
++                a[key] = b_value
++
++    def _update_one(self, key, value):
++        existing_dict = self._as_mergeable_dict(self[key]) if key in self else None
++        incoming_dict = self._as_mergeable_dict(value)
++        if existing_dict is not None and incoming_dict is not None:
++            self._deep_merge_dicts(existing_dict, incoming_dict)
++            self[key] = self[key]  # refresh the decoding cache for the merged feature
++        else:
++            self[key] = value
++
+     def update(self, iterable, **kwds):
+         if hasattr(iterable, "keys"):
+             for key in iterable.keys():
+-                self[key] = iterable[key]
++                self._update_one(key, iterable[key])
+         else:
+             for key, value in iterable:
+-                self[key] = value
++                self._update_one(key, value)
+         for key in kwds:
+-            self[key] = kwds[key]
++            self._update_one(key, kwds[key])
+ 
+     def __reduce__(self):
+         return Features, (dict(self),)

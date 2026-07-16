@@ -1,0 +1,139 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..c3d73f2 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -1225,6 +1225,58 @@ class Command:
+         if self.callback is not None:
+             return ctx.invoke(self.callback, **ctx.params)
+ 
++    def _resolve_dynamic_defaults(self, ctx: Context) -> None:
++        """Resolve dict-based dynamic defaults now that every parameter
++        has been parsed and :attr:`Context.params` is fully populated.
++
++        An :class:`Option` may specify ``default`` as a mapping of
++        ``{other_option_decl: {value: default}}``. Once all values are
++        known, look up the referenced options' current values and use
++        them to pick this option's default, but only if this option's
++        value wasn't otherwise provided.
++
++        .. versionadded:: 8.3
++        """
++        params = self.get_params(ctx)
++
++        def _find_param(opt: str) -> Parameter | None:
++            for candidate in params:
++                if opt in candidate.opts or opt in candidate.secondary_opts:
++                    return candidate
++
++            return None
++
++        for param in params:
++            if not isinstance(param, Option) or param._dynamic_default is None:
++                continue
++
++            if ctx.get_parameter_source(param.name) is not ParameterSource.DEFAULT:  # type: ignore[arg-type]
++                continue
++
++            resolved = None
++
++            for opt, mapping in param._dynamic_default.items():
++                source = _find_param(opt)
++
++                if source is None:
++                    continue
++
++                key = str(ctx.params.get(source.name))  # type: ignore[arg-type]
++
++                if key in mapping:
++                    resolved = mapping[key]
++
++            if resolved is None:
++                continue
++
++            value = param.type_cast_value(ctx, resolved)
++
++            if param.callback is not None:
++                value = param.callback(ctx, param, value)
++
++            if param.expose_value:
++                ctx.params[param.name] = value  # type: ignore[index]
++
+     def shell_complete(self, ctx: Context, incomplete: str) -> list[CompletionItem]:
+         """Return a list of completions for the incomplete value. Looks
+         at the names of options and chained multi-commands.
+@@ -1360,6 +1412,7 @@ class Command:
+         try:
+             try:
+                 with self.make_context(prog_name, args, **extra) as ctx:
++                    self._resolve_dynamic_defaults(ctx)
+                     rv = self.invoke(ctx)
+                     if not standalone_mode:
+                         return rv
+@@ -2468,6 +2521,15 @@ class Option(Parameter):
+ 
+     All other parameters are passed onwards to the parameter constructor.
+ 
++    :param default: In addition to the usual static value or callable
++        accepted by :class:`Parameter`, ``default`` may be a dict
++        mapping other options' declarations (including the ``--``
++        prefix) to a ``{value: default}`` mapping. Once every option
++        has been parsed, if this option was not given an explicit
++        value, its default is looked up from the mapping using the
++        referenced options' final values (converted with ``str()``).
++        If multiple option references match, later entries take
++        precedence. If nothing matches, the option's value is ``None``.
+     :param show_default: Show the default value for this option in its
+         help text. Values are not shown by default, unless
+         :attr:`Context.show_default` is ``True``. If this value is a
+@@ -2508,6 +2570,11 @@ class Option(Parameter):
+     :param hidden: hide this option from help outputs.
+     :param attrs: Other command arguments described in :class:`Parameter`.
+ 
++    .. versionchanged:: 8.3
++        ``default`` may be a dict mapping other options to
++        ``{value: default}`` mappings, resolved once all options are
++        parsed. See :meth:`Command._resolve_dynamic_defaults`.
++
+     .. versionchanged:: 8.2
+         ``envvar`` used with ``flag_value`` will always use the ``flag_value``,
+         previously it would use the value of the environment variable.
+@@ -2555,9 +2622,24 @@ class Option(Parameter):
+             help = inspect.cleandoc(help)
+ 
+         default_is_missing = "default" not in attrs
++        dynamic_default: dict[str, dict[str, t.Any]] | None = None
++
++        if not default_is_missing and isinstance(attrs["default"], dict):
++            dynamic_default = attrs["default"]
++
++            for key, mapping in dynamic_default.items():
++                if not isinstance(key, str):
++                    raise TypeError("Dynamic default keys must be strings")
++
++                if not isinstance(mapping, dict):
++                    raise TypeError("Dynamic default values must be dictionaries")
++
++            attrs["default"] = None
++
+         super().__init__(
+             param_decls, type=type, multiple=multiple, deprecated=deprecated, **attrs
+         )
++        self._dynamic_default = dynamic_default
+ 
+         if prompt is True:
+             if self.name is None:
+@@ -2861,9 +2943,13 @@ class Option(Parameter):
+         elif ctx.show_default is not None:
+             show_default = ctx.show_default
+ 
+-        if show_default_is_str or (show_default and (default_value is not None)):
++        if show_default_is_str or (
++            show_default and (default_value is not None or self._dynamic_default)
++        ):
+             if show_default_is_str:
+                 default_string = f"({self.show_default})"
++            elif self._dynamic_default:
++                default_string = _("(dynamic)")
+             elif isinstance(default_value, (list, tuple)):
+                 default_string = ", ".join(str(d) for d in default_value)
+             elif inspect.isfunction(default_value):

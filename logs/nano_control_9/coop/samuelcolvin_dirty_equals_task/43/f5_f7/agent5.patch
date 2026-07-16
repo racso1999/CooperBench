@@ -1,0 +1,111 @@
+diff --git a/dirty_equals/__init__.py b/dirty_equals/__init__.py
+index ba8214e..cea2b25 100644
+--- a/dirty_equals/__init__.py
++++ b/dirty_equals/__init__.py
+@@ -18,7 +18,7 @@ from ._numeric import (
+     IsPositiveFloat,
+     IsPositiveInt,
+ )
+-from ._other import FunctionCheck, IsJson, IsUUID
++from ._other import FunctionCheck, IsJson, IsPhoneNumber, IsUUID
+ from ._sequence import Contains, HasLen, IsList, IsListOrTuple, IsTuple
+ from ._strings import IsAnyStr, IsBytes, IsStr
+ 
+@@ -69,6 +69,7 @@ __all__ = (
+     'FunctionCheck',
+     'IsJson',
+     'IsUUID',
++    'IsPhoneNumber',
+     # strings
+     'IsStr',
+     'IsBytes',
+diff --git a/dirty_equals/_other.py b/dirty_equals/_other.py
+index b2b8379..6edfc25 100644
+--- a/dirty_equals/_other.py
++++ b/dirty_equals/_other.py
+@@ -1,5 +1,6 @@
+ import json
+-from typing import Any, Callable, TypeVar, overload
++import re
++from typing import Any, Callable, Dict, Optional, Pattern, TypeVar, overload
+ from uuid import UUID
+ 
+ from ._base import DirtyEquals
+@@ -120,6 +121,77 @@ class IsJson(DirtyEquals[JsonType]):
+             return False
+ 
+ 
++class IsPhoneNumber(DirtyEquals[str]):
++    """
++    A class that checks if a value is a valid phone number string, optionally restricted to a specific country's
++    formatting rules.
++    """
++
++    _strip_re = re.compile(r'[\s\-.()]')
++    _generic_international_re = re.compile(r'^\+[1-9]\d{6,14}$')
++    _generic_national_re = re.compile(r'^\d{7,15}$')
++
++    _country_patterns: Dict[str, Dict[str, Pattern[str]]] = {
++        'US': {
++            'national': re.compile(r'^\d{10}$'),
++            'international': re.compile(r'^\+1\d{10}$'),
++        },
++        'GB': {
++            'national': re.compile(r'^0\d{10}$'),
++            'international': re.compile(r'^\+44\d{10}$'),
++        },
++    }
++
++    def __init__(self, country: Optional[str] = None):
++        """
++        Args:
++            country: ISO 3166-1 alpha-2 country code to restrict validation to, e.g. `'US'` or `'GB'`. If omitted,
++                generic phone number validation is used.
++
++        Numbers may include a country calling code (e.g. `+1`) or, for countries with dedicated support (currently
++        `US` and `GB`), be provided in their national format without the country's dialing code.
++
++        ```py title="IsPhoneNumber"
++        from dirty_equals import IsPhoneNumber
++
++        assert '+1-555-123-4567' == IsPhoneNumber
++        assert '555-123-4567' == IsPhoneNumber('US')
++        assert '555-123-4567' == IsPhoneNumber
++        assert '020 7946 0958' == IsPhoneNumber('GB')
++        assert '+44 20 7946 0958' == IsPhoneNumber('GB')
++        assert '555-123-4567' != IsPhoneNumber('GB')
++        assert '020 7946 0958' != IsPhoneNumber('US')
++        assert 1234567890 != IsPhoneNumber
++        ```
++        """
++        self.country = country
++        super().__init__(plain_repr('*') if country is None else country)
++
++    def equals(self, other: Any) -> bool:
++        if not isinstance(other, str):
++            return False
++
++        cleaned = self._strip_re.sub('', other)
++        if not cleaned:
++            return False
++
++        if self.country is None:
++            return self._is_valid_generic(cleaned)
++
++        patterns = self._country_patterns.get(self.country.upper())
++        if patterns is not None:
++            return bool(patterns['national'].match(cleaned)) or bool(patterns['international'].match(cleaned))
++        else:
++            # unsupported country, fall back to generic international validation
++            return bool(self._generic_international_re.match(cleaned))
++
++    def _is_valid_generic(self, cleaned: str) -> bool:
++        if cleaned.startswith('+'):
++            return bool(self._generic_international_re.match(cleaned))
++        else:
++            return bool(self._generic_national_re.match(cleaned))
++
++
+ class FunctionCheck(DirtyEquals[Any]):
+     """
+     Use a function to check if a value "equals" whatever you want to check

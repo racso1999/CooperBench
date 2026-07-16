@@ -1,0 +1,95 @@
+diff --git a/outlines/prompts.py b/outlines/prompts.py
+index 86519ada..2a712c7e 100644
+--- a/outlines/prompts.py
++++ b/outlines/prompts.py
+@@ -4,6 +4,7 @@ import json
+ import os
+ import re
+ import textwrap
++import weakref
+ from dataclasses import dataclass
+ from pathlib import Path
+ from typing import Any, Callable, Dict, Optional, Type, cast
+@@ -11,6 +12,65 @@ from typing import Any, Callable, Dict, Optional, Type, cast
+ import jinja2
+ import pydantic
+ 
++# Filters registered here are made available to every prompt template,
++# in addition to any filters provided locally to a specific template.
++_FILTERS: Dict[str, Callable] = {}
++
++# Environments created for previously defined prompts, so that filters
++# registered/unregistered after a prompt was created are still reflected.
++_ENVIRONMENTS: "weakref.WeakSet[jinja2.Environment]" = weakref.WeakSet()
++
++
++def register_filter(name: str, func: Callable) -> None:
++    """Register a custom filter in the global filter registry.
++
++    Once registered, the filter is automatically available in every prompt
++    template (via `{{ value | name }}`), without having to be passed to each
++    template individually.
++
++    Parameters
++    ----------
++    name
++        The name under which the filter will be available in templates.
++    func
++        The callable that implements the filter.
++
++    """
++    _FILTERS[name] = func
++    for env in _ENVIRONMENTS:
++        env.filters[name] = func
++
++
++def unregister_filter(name: str) -> None:
++    """Remove a filter from the global filter registry.
++
++    Parameters
++    ----------
++    name
++        The name of the filter to remove, as passed to `register_filter`.
++
++    """
++    _FILTERS.pop(name, None)
++    for env in _ENVIRONMENTS:
++        env.filters.pop(name, None)
++
++
++def apply_registered_filters(env: jinja2.Environment) -> None:
++    """Add the globally registered filters to a Jinja2 environment.
++
++    This also keeps `env` up to date with future calls to `register_filter`
++    and `unregister_filter`. Any filter already set on `env` (e.g. a locally
++    provided filter) takes precedence and should be applied after this call.
++
++    Parameters
++    ----------
++    env
++        The Jinja2 environment to update.
++
++    """
++    env.filters.update(_FILTERS)
++    _ENVIRONMENTS.add(env)
++
+ 
+ @dataclass
+ class Prompt:
+@@ -105,6 +165,7 @@ class Prompt:
+         env.filters["signature"] = get_fn_signature
+         env.filters["schema"] = get_schema
+         env.filters["args"] = get_fn_args
++        apply_registered_filters(env)
+ 
+         return env.from_string(cleaned_template)
+ 
+@@ -118,6 +179,8 @@ class Prompt:
+             keep_trailing_newline=True,
+             undefined=jinja2.StrictUndefined,
+         )
++        apply_registered_filters(env)
++
+         return env.get_template(os.path.basename(path))
+ 
+ 

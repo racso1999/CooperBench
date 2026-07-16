@@ -1,0 +1,150 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..52dcd8f 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -1209,6 +1209,52 @@ class Command:
+         ctx._opt_prefixes.update(parser._opt_prefixes)
+         return args
+ 
++    def _resolve_dynamic_defaults(self, ctx: Context) -> None:
++        """Resolve dictionary-based dynamic defaults now that every
++        parameter has a final value.
++
++        A dynamic default maps another option's declaration (e.g.
++        ``"--protocol"``) to a ``{value: default}`` mapping. It's only
++        applied to options whose value still comes from their static
++        default, i.e. nothing was given on the command line, through an
++        environment variable, or a default map.
++        """
++        params = self.get_params(ctx)
++
++        for param in params:
++            if not isinstance(param, Option) or not isinstance(param.default, dict):
++                continue
++
++            if ctx.get_parameter_source(param.name) is not ParameterSource.DEFAULT:  # type: ignore[arg-type]
++                continue
++
++            resolved_value = None
++
++            for source_decl, mapping in param.default.items():
++                source_param = next(
++                    (
++                        p
++                        for p in params
++                        if source_decl in p.opts
++                        or source_decl in getattr(p, "secondary_opts", ())
++                    ),
++                    None,
++                )
++
++                if source_param is None or source_param.name is None:
++                    continue
++
++                source_value = ctx.params.get(source_param.name)
++                match = mapping.get(str(source_value))
++
++                if match is not None:
++                    resolved_value = match
++
++            if resolved_value is not None:
++                ctx.params[param.name] = param.type_cast_value(  # type: ignore[arg-type]
++                    ctx, resolved_value
++                )
++
+     def invoke(self, ctx: Context) -> t.Any:
+         """Given a context, this invokes the attached callback (if it exists)
+         in the right way.
+@@ -1360,6 +1406,7 @@ class Command:
+         try:
+             try:
+                 with self.make_context(prog_name, args, **extra) as ctx:
++                    self._resolve_dynamic_defaults(ctx)
+                     rv = self.invoke(ctx)
+                     if not standalone_mode:
+                         return rv
+@@ -1826,6 +1873,7 @@ class Group(Command):
+                 ctx.invoked_subcommand = cmd_name
+                 super().invoke(ctx)
+                 sub_ctx = cmd.make_context(cmd_name, args, parent=ctx)
++                cmd._resolve_dynamic_defaults(sub_ctx)
+                 with sub_ctx:
+                     return _process_result(sub_ctx.command.invoke(sub_ctx))
+ 
+@@ -1852,6 +1900,7 @@ class Group(Command):
+                     allow_extra_args=True,
+                     allow_interspersed_args=False,
+                 )
++                cmd._resolve_dynamic_defaults(sub_ctx)
+                 contexts.append(sub_ctx)
+                 args, sub_ctx.args = sub_ctx.args, []
+ 
+@@ -2127,8 +2176,9 @@ class Parameter:
+                     f" type {self.type!r}, but it was {nargs}."
+                 )
+ 
+-            # Skip no default or callable default.
+-            check_default = default if not callable(default) else None
++            # Skip no default, callable default, or dynamic (dict) default.
++            skip_default = callable(default) or isinstance(default, dict)
++            check_default = default if not skip_default else None
+ 
+             if check_default is not None:
+                 if multiple:
+@@ -2559,6 +2609,14 @@ class Option(Parameter):
+             param_decls, type=type, multiple=multiple, deprecated=deprecated, **attrs
+         )
+ 
++        if isinstance(self.default, dict):
++            for key, mapping in self.default.items():
++                if not isinstance(key, str):
++                    raise TypeError("Dynamic default keys must be strings")
++
++                if not isinstance(mapping, dict):
++                    raise TypeError("Dynamic default values must be dictionaries")
++
+         if prompt is True:
+             if self.name is None:
+                 raise TypeError("'name' is required with 'prompt=True'.")
+@@ -2864,6 +2922,8 @@ class Option(Parameter):
+         if show_default_is_str or (show_default and (default_value is not None)):
+             if show_default_is_str:
+                 default_string = f"({self.show_default})"
++            elif isinstance(default_value, dict):
++                default_string = _("(dynamic)")
+             elif isinstance(default_value, (list, tuple)):
+                 default_string = ", ".join(str(d) for d in default_value)
+             elif inspect.isfunction(default_value):
+@@ -3000,6 +3060,12 @@ class Option(Parameter):
+     ) -> tuple[t.Any, ParameterSource]:
+         value, source = super().consume_value(ctx, opts)
+ 
++        # Dynamic (dict) defaults are resolved in a second pass, once the
++        # values of all other parameters are known. Don't let the mapping
++        # itself be treated as the value in the meantime.
++        if source is ParameterSource.DEFAULT and isinstance(self.default, dict):
++            value = None
++
+         # The parser will emit a sentinel value if the option can be
+         # given as a flag without a value. This is different from None
+         # to distinguish from the flag not being given at all.
+diff --git a/src/click/types.py b/src/click/types.py
+index 684cb3b..e3165d6 100644
+--- a/src/click/types.py
++++ b/src/click/types.py
+@@ -1086,6 +1086,15 @@ def convert_type(ty: t.Any | None, default: t.Any | None = None) -> ParamType:
+                     ty = tuple(map(type, item))
+                 else:
+                     ty = type(item)
++        elif isinstance(default, dict):
++            # A dynamic default maps other option values to the actual
++            # default, e.g. {"--protocol": {"http": 80, "https": 443}}.
++            # Infer the type from the first mapped value instead of
++            # using ``dict`` itself.
++            for mapping in default.values():
++                if isinstance(mapping, dict) and mapping:
++                    ty = type(next(iter(mapping.values())))
++                    break
+         else:
+             ty = type(default)
+ 

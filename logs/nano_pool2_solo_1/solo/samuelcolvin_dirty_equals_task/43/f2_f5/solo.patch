@@ -1,0 +1,166 @@
+diff --git a/dirty_equals/__init__.py b/dirty_equals/__init__.py
+index ba8214e..fc3b149 100644
+--- a/dirty_equals/__init__.py
++++ b/dirty_equals/__init__.py
+@@ -18,7 +18,7 @@ from ._numeric import (
+     IsPositiveFloat,
+     IsPositiveInt,
+ )
+-from ._other import FunctionCheck, IsJson, IsUUID
++from ._other import FunctionCheck, IsJson, IsMac, IsPhoneNumber, IsUUID
+ from ._sequence import Contains, HasLen, IsList, IsListOrTuple, IsTuple
+ from ._strings import IsAnyStr, IsBytes, IsStr
+ 
+@@ -69,6 +69,8 @@ __all__ = (
+     'FunctionCheck',
+     'IsJson',
+     'IsUUID',
++    'IsMac',
++    'IsPhoneNumber',
+     # strings
+     'IsStr',
+     'IsBytes',
+diff --git a/dirty_equals/_other.py b/dirty_equals/_other.py
+index b2b8379..8da50af 100644
+--- a/dirty_equals/_other.py
++++ b/dirty_equals/_other.py
+@@ -1,5 +1,6 @@
+ import json
+-from typing import Any, Callable, TypeVar, overload
++import re
++from typing import Any, Callable, Dict, Optional, Pattern, TypeVar, overload
+ from uuid import UUID
+ 
+ from ._base import DirtyEquals
+@@ -51,6 +52,131 @@ class IsUUID(DirtyEquals[UUID]):
+             return True
+ 
+ 
++class IsMac(DirtyEquals[str]):
++    """
++    A class that checks if a value is a valid MAC address, optionally checking a specific format.
++    """
++
++    formats: Dict[str, Pattern[str]] = {
++        'colon': re.compile(r'^([0-9a-f]{2}:){5}[0-9a-f]{2}$', re.IGNORECASE),
++        'hyphen': re.compile(r'^([0-9a-f]{2}-){5}[0-9a-f]{2}$', re.IGNORECASE),
++        'dot': re.compile(r'^([0-9a-f]{4}\.){2}[0-9a-f]{4}$', re.IGNORECASE),
++        'compact': re.compile(r'^[0-9a-f]{12}$', re.IGNORECASE),
++    }
++
++    def __init__(self, format: Literal[None, 'colon', 'hyphen', 'dot', 'compact'] = None):
++        """
++        Args:
++            format: The format of the MAC address to check, if omitted, all formats are accepted.
++
++        ```py title="IsMac"
++        from dirty_equals import IsMac
++
++        assert '00:1B:44:11:3A:B7' == IsMac()
++        assert '00-1B-44-11-3A-B7' == IsMac()
++        assert '001B.4411.3AB7' == IsMac()
++        assert '001b44113ab7' == IsMac()
++        assert '00:1B:44:11:3A:B7' == IsMac('colon')
++        assert '00-1B-44-11-3A-B7' != IsMac('colon')
++        assert '00:1b:44:11:3a:b7' == IsMac('colon')
++        assert 'not-a-mac' != IsMac()
++        ```
++        """
++        if format is not None and format not in self.formats:
++            raise TypeError(f'IsMac requires format to be one of {sorted(self.formats)}, not {format!r}')
++        self.format = format
++        super().__init__(format or plain_repr('*'))
++
++    def equals(self, other: Any) -> bool:
++        if not isinstance(other, str):
++            return False
++
++        if self.format is not None:
++            return bool(self.formats[self.format].match(other))
++        else:
++            return any(pattern.match(other) for pattern in self.formats.values())
++
++
++_PHONE_ALLOWED_CHARS_RE = re.compile(r'^\+?[\d\s\-.()]+$')
++
++
++class IsPhoneNumber(DirtyEquals[str]):
++    """
++    A class that checks if a value is a valid phone number, optionally restricted to a specific country.
++    """
++
++    def __init__(self, country: Optional[str] = None):
++        """
++        Args:
++            country: The ISO 3166-1 alpha-2 country code to validate against, if omitted, generic
++                international/national phone number validation is used.
++
++        ```py title="IsPhoneNumber"
++        from dirty_equals import IsPhoneNumber
++
++        assert '+1-555-123-4567' == IsPhoneNumber()
++        assert '555-123-4567' == IsPhoneNumber('US')
++        assert '+1-555-123-4567' == IsPhoneNumber('US')
++        assert '15551234567' != IsPhoneNumber('US')
++        assert '020 7946 0958' == IsPhoneNumber('GB')
++        assert '+44 20 7946 0958' == IsPhoneNumber('GB')
++        assert '555-123-4567' != IsPhoneNumber('GB')
++        assert 123 != IsPhoneNumber()
++        ```
++        """
++        self.country = country
++        super().__init__(country or plain_repr('*'))
++
++    def equals(self, other: Any) -> bool:
++        if not isinstance(other, str):
++            return False
++
++        value = other.strip()
++        if not value or not _PHONE_ALLOWED_CHARS_RE.match(value):
++            return False
++
++        has_plus = value.startswith('+')
++        digits = re.sub(r'\D', '', value)
++        if not digits:
++            return False
++
++        if self.country == 'US':
++            return self._is_us(digits, has_plus)
++        elif self.country == 'GB':
++            return self._is_gb(digits, has_plus)
++        elif self.country is not None:
++            return self._is_generic_international(digits, has_plus)
++        else:
++            return self._is_generic(digits, has_plus)
++
++    @staticmethod
++    def _is_us(digits: str, has_plus: bool) -> bool:
++        if has_plus:
++            return len(digits) == 11 and digits.startswith('1')
++        else:
++            return len(digits) == 10
++
++    @staticmethod
++    def _is_gb(digits: str, has_plus: bool) -> bool:
++        if has_plus:
++            return len(digits) == 12 and digits.startswith('44')
++        else:
++            return digits.startswith('0') and len(digits) in (10, 11)
++
++    @staticmethod
++    def _is_generic_international(digits: str, has_plus: bool) -> bool:
++        if not has_plus:
++            return False
++        return 8 <= len(digits) <= 18
++
++    @staticmethod
++    def _is_generic(digits: str, has_plus: bool) -> bool:
++        if has_plus:
++            return 8 <= len(digits) <= 18
++        else:
++            return 7 <= len(digits) <= 15
++
++
+ AnyJson = object
+ JsonType = TypeVar('JsonType', AnyJson, Any)
+ 

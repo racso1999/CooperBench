@@ -1,0 +1,125 @@
+diff --git a/Tests/test_image_quantize.py b/Tests/test_image_quantize.py
+index bd9db362c..03b51f7cf 100644
+--- a/Tests/test_image_quantize.py
++++ b/Tests/test_image_quantize.py
+@@ -85,3 +85,25 @@ def test_transparent_colors_equal():
+     converted = im.quantize()
+     converted_px = converted.load()
+     assert converted_px[0, 0] == converted_px[0, 1]
++
++
++@pytest.mark.parametrize("sort_palette", ("brightness", "rgb"))
++def test_quantize_sort_palette(sort_palette):
++    image = hopper()
++    converted = image.quantize(64, sort_palette=sort_palette)
++    assert_image(converted, "P", converted.size)
++    assert_image_similar(converted.convert("RGB"), image, 20)
++
++    palette = converted.getpalette()
++    colors = [tuple(palette[i : i + 3]) for i in range(0, len(palette), 3)]
++    if sort_palette == "brightness":
++        key = [r * 299 + g * 587 + b * 114 for r, g, b in colors]
++    else:
++        key = colors
++    assert key == sorted(key)
++
++
++def test_quantize_sort_palette_invalid():
++    image = hopper()
++    with pytest.raises(ValueError):
++        image.quantize(64, sort_palette="not_a_real_method")
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..1d8af6915 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -1048,7 +1048,15 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        sort_palette=None,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1081,11 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param sort_palette: How to order the colors in the resulting palette,
++           applied after quantization. Available methods are ``"brightness"``
++           (ascending perceptual luminance) or ``"rgb"`` (ascending RGB
++           value). Has no effect when ``palette`` is given. Default: ``None``,
++           meaning the order chosen by the quantization method is kept.
+         :returns: A new image
+ 
+         """
+@@ -1113,6 +1126,61 @@ class Image:
+         mode = im.im.getpalettemode()
+         im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
+ 
++        if sort_palette:
++            im = im._reorder_palette(sort_palette)
++
++        return im
++
++    def _reorder_palette(self, sort_palette):
++        """
++        Reorders this "P" mode image's palette according to ``sort_palette``,
++        remapping pixel values to match. Used by :py:meth:`~PIL.Image.Image.quantize`.
++
++        :param sort_palette: ``"brightness"`` or ``"rgb"``.
++        :returns: A new image
++        """
++        mode = self.palette.mode
++        channels = len(mode)
++        entries = [
++            tuple(self.palette.palette[i : i + channels])
++            for i in range(0, len(self.palette.palette), channels)
++        ]
++
++        if sort_palette == "brightness":
++
++            def sort_key(color):
++                r, g, b = color[0], color[1], color[2]
++                return r * 299 + g * 587 + b * 114
++
++        elif sort_palette == "rgb":
++
++            def sort_key(color):
++                return color[:3]
++
++        else:
++            raise ValueError(
++                "sort_palette must be one of 'brightness' or 'rgb', "
++                "not " + repr(sort_palette)
++            )
++
++        order = sorted(range(len(entries)), key=lambda i: sort_key(entries[i]))
++
++        # mapping from old index to new index
++        new_index = [0] * len(order)
++        for new_i, old_i in enumerate(order):
++            new_index[old_i] = new_i
++
++        new_palette = bytearray()
++        for old_i in order:
++            new_palette.extend(entries[old_i])
++
++        im = self._new(self.im.point(new_index, self.mode))
++        im.im.putpalette(mode, bytes(new_palette))
++
++        from . import ImagePalette
++
++        im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
++
+         return im
+ 
+     def copy(self):

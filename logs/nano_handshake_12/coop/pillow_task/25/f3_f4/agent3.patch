@@ -1,0 +1,90 @@
+diff --git a/Tests/test_image.py b/Tests/test_image.py
+index c2e850c36..2b4b1ee0e 100644
+--- a/Tests/test_image.py
++++ b/Tests/test_image.py
+@@ -1129,6 +1129,32 @@ class TestImage:
+         with pytest.warns(DeprecationWarning):
+             assert not Image.isImageType(None)
+ 
++    def test_dry_run(self, tmp_path: Path) -> None:
++        temp_file = tmp_path / "temp.png"
++
++        im = hopper()
++        im.save(temp_file, dry_run=True)
++
++        assert not temp_file.exists()
++
++    def test_dry_run_existing_file_untouched(self, tmp_path: Path) -> None:
++        temp_file = tmp_path / "temp.png"
++        hopper().save(temp_file)
++        original_bytes = temp_file.read_bytes()
++
++        hopper("L").save(temp_file, dry_run=True)
++
++        assert temp_file.read_bytes() == original_bytes
++
++    def test_dry_run_raises_for_unsupported_mode(self, tmp_path: Path) -> None:
++        temp_file = tmp_path / "temp.eps"
++
++        im = hopper("RGBA")
++        with pytest.raises(ValueError):
++            im.save(temp_file, dry_run=True)
++
++        assert not temp_file.exists()
++
+ 
+ class TestImageBytes:
+     @pytest.mark.parametrize("mode", Image.MODES + ["BGR;15", "BGR;16", "BGR;24"])
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 233df592c..0e4d0e411 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -2490,6 +2490,11 @@ class Image:
+            format to use is determined from the filename extension.
+            If a file object was used instead of a filename, this
+            parameter should always be used.
++        :param dry_run: If true, the image is processed as though it were
++           being saved, including format conversion and encoding, but the
++           result is discarded and nothing is written to disk. This is
++           useful for validating that an image can be saved in a given
++           format without the overhead of disk I/O. Defaults to false.
+         :param params: Extra parameters to the image writer. These can also be
+            set on the image itself through ``encoderinfo``. This is useful when
+            saving multiple images::
+@@ -2543,6 +2548,7 @@ class Image:
+         # may mutate self!
+         self._ensure_mutable()
+ 
++        dry_run = params.pop("dry_run", False)
+         save_all = params.pop("save_all", None)
+         self.encoderinfo = {**getattr(self, "encoderinfo", {}), **params}
+         self.encoderconfig: tuple[Any, ...] = ()
+@@ -2559,7 +2565,9 @@ class Image:
+             save_handler = SAVE[format.upper()]
+ 
+         created = False
+-        if open_fp:
++        if open_fp and dry_run:
++            fp = io.BytesIO()
++        elif open_fp:
+             created = not os.path.exists(filename)
+             if params.get("append", False):
+                 # Open also for reading ("+"), because TIFF save_all
+@@ -2573,7 +2581,7 @@ class Image:
+         try:
+             save_handler(self, fp, filename)
+         except Exception:
+-            if open_fp:
++            if open_fp and not dry_run:
+                 fp.close()
+             if created:
+                 try:
+@@ -2586,7 +2594,7 @@ class Image:
+                 del self.encoderinfo
+             except AttributeError:
+                 pass
+-        if open_fp:
++        if open_fp and not dry_run:
+             fp.close()
+ 
+     def seek(self, frame: int) -> None:

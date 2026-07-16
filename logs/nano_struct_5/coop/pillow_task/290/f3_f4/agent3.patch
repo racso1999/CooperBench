@@ -1,0 +1,105 @@
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..a27e03c00 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -1048,7 +1048,15 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        sort_palette=None,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1081,12 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param sort_palette: Sort the palette colors after quantization.
++           Accepted values are ``"brightness"``, which orders colors by
++           perceived luminance, and ``"rgb"``, which orders colors by their
++           raw channel values. The pixel data is remapped so the image
++           itself is unaffected. Default: None (the palette order chosen
++           by the quantization algorithm is left as-is).
+         :returns: A new image
+ 
+         """
+@@ -1113,8 +1127,70 @@ class Image:
+         mode = im.im.getpalettemode()
+         im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
+ 
++        if sort_palette:
++            im = im._sort_palette_colors(sort_palette)
++
+         return im
+ 
++    def _sort_palette_colors(self, sort_palette):
++        """
++        Reorders this "P"-mode image's palette using ``sort_palette``,
++        remapping pixel indexes so the rendered image is unchanged.
++
++        :param sort_palette: ``"brightness"`` or ``"rgb"``. See
++           :py:meth:`~PIL.Image.Image.quantize`.
++        :returns: A new :py:class:`~PIL.Image.Image` object.
++        """
++        from . import ImagePalette
++
++        mode = self.palette.mode
++        mode_len = len(mode)
++        palette_data = self.palette.palette
++        num_colors = len(palette_data) // mode_len
++        colors = [
++            tuple(palette_data[i * mode_len : (i + 1) * mode_len])
++            for i in range(num_colors)
++        ]
++
++        if sort_palette == "brightness":
++
++            def sort_key(i):
++                r, g, b = colors[i][:3]
++                return 0.299 * r + 0.587 * g + 0.114 * b
++
++        elif sort_palette == "rgb":
++
++            def sort_key(i):
++                return colors[i]
++
++        else:
++            msg = f"Unknown sort_palette method: {sort_palette}"
++            raise ValueError(msg)
++
++        dest_map = sorted(range(num_colors), key=sort_key)
++
++        new_positions = [0] * num_colors
++        new_palette = bytearray()
++        for new_index, old_index in enumerate(dest_map):
++            new_positions[old_index] = new_index
++            new_palette += bytes(colors[old_index])
++
++        # Leverage the convert mechanism to remap pixel values: encode the
++        # old->new index mapping as a grayscale palette, convert through
++        # "L" mode so the C code rewrites the pixel bytes, then attach the
++        # reordered color palette.
++        mapping_palette = bytearray(new_positions)
++
++        m_im = self.copy()
++        m_im.mode = "P"
++        m_im.palette = ImagePalette.ImagePalette("RGB", palette=mapping_palette * 3)
++        m_im.im.putpalette("RGB;L", m_im.palette.tobytes())
++
++        m_im = m_im.convert("L")
++        m_im.putpalette(new_palette, mode)
++
++        return m_im
++
+     def copy(self):
+         """
+         Copies this image. Use this method if you wish to paste things

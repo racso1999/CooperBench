@@ -1,0 +1,257 @@
+diff --git a/Tests/test_imageops.py b/Tests/test_imageops.py
+index 3621aa50f..0fdb84d00 100644
+--- a/Tests/test_imageops.py
++++ b/Tests/test_imageops.py
+@@ -458,6 +458,58 @@ def test_exif_transpose_xml_without_xmp() -> None:
+         assert 0x0112 not in transposed_im.getexif()
+ 
+ 
++def test_exif_transpose_transform_callback() -> None:
++    with Image.open("Tests/images/orientation_rectangle.jpg") as im:
++        assert im.size == (2, 1)
++        assert im.getexif()[0x0112] == 8
++        expected = im.rotate(90, expand=True)
++
++        def transform_callback(orientation: int) -> Image.Transpose:
++            assert orientation == 8
++            return Image.Transpose.ROTATE_90
++
++        transposed_im = ImageOps.exif_transpose(
++            im, transform_callback=transform_callback
++        )
++        assert transposed_im.size == (1, 2)
++        assert 0x0112 not in transposed_im.getexif()
++        assert_image_equal(transposed_im, expected)
++
++    # A sequence of methods can be returned, applied in order
++    with Image.open("Tests/images/orientation_rectangle.jpg") as im:
++        expected = im.transpose(Image.Transpose.FLIP_LEFT_RIGHT).transpose(
++            Image.Transpose.ROTATE_90
++        )
++
++        transposed_im = ImageOps.exif_transpose(
++            im,
++            transform_callback=lambda orientation: (
++                Image.Transpose.FLIP_LEFT_RIGHT,
++                Image.Transpose.ROTATE_90,
++            ),
++        )
++        assert_image_equal(transposed_im, expected)
++
++    # Returning None means no transposition is applied
++    with Image.open("Tests/images/orientation_rectangle.jpg") as im:
++        transposed_im = ImageOps.exif_transpose(
++            im, transform_callback=lambda orientation: None
++        )
++        assert transposed_im.size == im.size
++
++    # in_place is respected when using a callback
++    with Image.open("Tests/images/orientation_rectangle.jpg") as im:
++        expected = im.rotate(90, expand=True)
++        ImageOps.exif_transpose(
++            im,
++            in_place=True,
++            transform_callback=lambda orientation: Image.Transpose.ROTATE_90,
++        )
++        assert im.size == (1, 2)
++        assert 0x0112 not in im.getexif()
++        assert_image_equal(im, expected)
++
++
+ def test_exif_transpose_in_place() -> None:
+     with Image.open("Tests/images/orientation_rectangle.jpg") as im:
+         assert im.size == (2, 1)
+@@ -470,6 +522,49 @@ def test_exif_transpose_in_place() -> None:
+         assert_image_equal(im, expected)
+ 
+ 
++def test_exif_transpose_strip_metadata() -> None:
++    with Image.open("Tests/images/hopper_orientation_6.jpg") as im:
++        assert "exif" in im.info
++        assert 0x0112 in im.getexif()
++
++        transposed_im = ImageOps.exif_transpose(im, strip_metadata=True)
++        assert "exif" not in transposed_im.info
++        assert not dict(transposed_im.getexif())
++
++    # No orientation to correct, metadata should still be stripped
++    with Image.open("Tests/images/hopper_orientation_6.jpg") as im:
++        im.getexif()  # populate the cached exif before removing the orientation
++        del im.getexif()[0x0112]
++
++        transposed_im = ImageOps.exif_transpose(im, strip_metadata=True)
++        assert "exif" not in transposed_im.info
++        assert not dict(transposed_im.getexif())
++
++    # Without strip_metadata, non-orientation metadata is preserved
++    with Image.open("Tests/images/hopper_orientation_6.jpg") as im:
++        transposed_im = ImageOps.exif_transpose(im)
++        assert "exif" in transposed_im.info
++
++
++def test_exif_transpose_strip_metadata_in_place() -> None:
++    with Image.open("Tests/images/orientation_rectangle.jpg") as im:
++        assert "exif" in im.info
++        assert 0x0112 in im.getexif()
++
++        ImageOps.exif_transpose(im, in_place=True, strip_metadata=True)
++        assert "exif" not in im.info
++        assert not dict(im.getexif())
++
++    # No orientation to correct, in-place metadata should still be stripped
++    with Image.open("Tests/images/hopper_orientation_6.jpg") as im:
++        im.getexif()
++        del im.getexif()[0x0112]
++
++        ImageOps.exif_transpose(im, in_place=True, strip_metadata=True)
++        assert "exif" not in im.info
++        assert not dict(im.getexif())
++
++
+ def test_autocontrast_unsupported_mode() -> None:
+     im = Image.new("RGBA", (1, 1))
+     with pytest.raises(OSError):
+diff --git a/src/PIL/ImageOps.py b/src/PIL/ImageOps.py
+index fef1d7328..b1be42411 100644
+--- a/src/PIL/ImageOps.py
++++ b/src/PIL/ImageOps.py
+@@ -21,7 +21,7 @@ from __future__ import annotations
+ import functools
+ import operator
+ import re
+-from collections.abc import Sequence
++from collections.abc import Callable, Sequence
+ from typing import Literal, Protocol, cast, overload
+ 
+ from . import ExifTags, Image, ImagePalette
+@@ -674,16 +674,38 @@ def solarize(image: Image.Image, threshold: int = 128) -> Image.Image:
+ 
+ 
+ @overload
+-def exif_transpose(image: Image.Image, *, in_place: Literal[True]) -> None: ...
++def exif_transpose(
++    image: Image.Image,
++    *,
++    in_place: Literal[True],
++    strip_metadata: bool = False,
++    transform_callback: (
++        Callable[[int], Image.Transpose | Sequence[Image.Transpose] | None] | None
++    ) = None,
++) -> None: ...
+ 
+ 
+ @overload
+ def exif_transpose(
+-    image: Image.Image, *, in_place: Literal[False] = False
++    image: Image.Image,
++    *,
++    in_place: Literal[False] = False,
++    strip_metadata: bool = False,
++    transform_callback: (
++        Callable[[int], Image.Transpose | Sequence[Image.Transpose] | None] | None
++    ) = None,
+ ) -> Image.Image: ...
+ 
+ 
+-def exif_transpose(image: Image.Image, *, in_place: bool = False) -> Image.Image | None:
++def exif_transpose(
++    image: Image.Image,
++    *,
++    in_place: bool = False,
++    strip_metadata: bool = False,
++    transform_callback: (
++        Callable[[int], Image.Transpose | Sequence[Image.Transpose] | None] | None
++    ) = None,
++) -> Image.Image | None:
+     """
+     If an image has an EXIF Orientation tag, other than 1, transpose the image
+     accordingly, and remove the orientation data.
+@@ -694,25 +716,43 @@ def exif_transpose(image: Image.Image, *, in_place: bool = False) -> Image.Image
+         If ``False`` (default), a new :py:class:`~PIL.Image.Image` object is returned
+         with the transposition applied. If there is no transposition, a copy of the
+         image will be returned.
++    :param strip_metadata: Boolean. Keyword-only argument.
++        If ``True``, all metadata (EXIF, ICC profile, XMP, etc.) is removed from the
++        resulting image, in addition to correcting the orientation. If ``False``
++        (default), only the EXIF orientation tag is removed, and other metadata is
++        preserved.
++    :param transform_callback: A callable, keyword-only argument. If provided, it is
++        called with the EXIF orientation value and must return the
++        :py:class:`~PIL.Image.Transpose` method (or a sequence of methods, applied in
++        order) to apply, or ``None`` to apply no transposition. This overrides the
++        default orientation-to-method mapping, allowing custom transformations to be
++        used instead of, or in addition to, the standard EXIF orientation corrections.
+     """
+     image.load()
+     image_exif = image.getexif()
+     orientation = image_exif.get(ExifTags.Base.Orientation, 1)
+-    method = {
+-        2: Image.Transpose.FLIP_LEFT_RIGHT,
+-        3: Image.Transpose.ROTATE_180,
+-        4: Image.Transpose.FLIP_TOP_BOTTOM,
+-        5: Image.Transpose.TRANSPOSE,
+-        6: Image.Transpose.ROTATE_270,
+-        7: Image.Transpose.TRANSVERSE,
+-        8: Image.Transpose.ROTATE_90,
+-    }.get(orientation)
++    if transform_callback is not None:
++        method = transform_callback(orientation)
++    else:
++        method = {
++            2: Image.Transpose.FLIP_LEFT_RIGHT,
++            3: Image.Transpose.ROTATE_180,
++            4: Image.Transpose.FLIP_TOP_BOTTOM,
++            5: Image.Transpose.TRANSPOSE,
++            6: Image.Transpose.ROTATE_270,
++            7: Image.Transpose.TRANSVERSE,
++            8: Image.Transpose.ROTATE_90,
++        }.get(orientation)
+     if method is not None:
++        methods = method if isinstance(method, Sequence) else (method,)
+         if in_place:
+-            image.im = image.im.transpose(method)
++            for transpose_method in methods:
++                image.im = image.im.transpose(transpose_method)
+             image._size = image.im.size
+         else:
+-            transposed_image = image.transpose(method)
++            transposed_image = image
++            for transpose_method in methods:
++                transposed_image = transposed_image.transpose(transpose_method)
+         exif_image = image if in_place else transposed_image
+ 
+         exif = exif_image.getexif()
+@@ -734,8 +774,32 @@ def exif_transpose(image: Image.Image, *, in_place: bool = False) -> Image.Image
+                             if isinstance(value, str)
+                             else re.sub(pattern.encode(), b"", value)
+                         )
++        if strip_metadata:
++            _strip_all_metadata(exif_image)
+         if not in_place:
+             return transposed_image
+     elif not in_place:
+-        return image.copy()
++        copied_image = image.copy()
++        if strip_metadata:
++            _strip_all_metadata(copied_image)
++        return copied_image
++    elif strip_metadata:
++        _strip_all_metadata(image)
+     return None
++
++
++def _strip_all_metadata(image: Image.Image) -> None:
++    image.getexif().clear()
++    for key in (
++        "exif",
++        "icc_profile",
++        "comment",
++        "Raw profile type exif",
++        "Raw profile type iptc",
++        "Raw profile type icc",
++        "Raw profile type icm",
++        "Raw profile type xmp",
++        "XML:com.adobe.xmp",
++        "xmp",
++    ):
++        image.info.pop(key, None)

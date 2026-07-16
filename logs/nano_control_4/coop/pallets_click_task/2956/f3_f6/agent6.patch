@@ -1,0 +1,113 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..40cdf52 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -1209,6 +1209,46 @@ class Command:
+         ctx._opt_prefixes.update(parser._opt_prefixes)
+         return args
+ 
++    def _resolve_dynamic_defaults(self, ctx: Context) -> None:
++        """Second-pass resolution for options whose ``default`` is a
++        mapping of other option declarations to value lookup tables (see
++        :class:`Option`). This runs after all command-line arguments,
++        environment variables, and configuration files have been
++        processed by :meth:`parse_args`, so the referenced options'
++        final values are available.
++        """
++        params_by_decl: dict[str, Parameter] = {}
++
++        for param in self.get_params(ctx):
++            for decl in (*param.opts, *param.secondary_opts):
++                params_by_decl[decl] = param
++
++        for param in self.get_params(ctx):
++            dynamic_default = getattr(param, "_dynamic_default", None)
++
++            if not dynamic_default:
++                continue
++
++            if ctx.get_parameter_source(param.name) != ParameterSource.DEFAULT:
++                continue
++
++            value = None
++
++            for source_decl, mapping in dynamic_default.items():
++                source_param = params_by_decl.get(source_decl)
++
++                if source_param is None:
++                    continue
++
++                source_value = ctx.params.get(source_param.name)
++                key = str(source_value)
++
++                if key in mapping:
++                    value = mapping[key]
++
++            if value is not None:
++                ctx.params[param.name] = value
++
+     def invoke(self, ctx: Context) -> t.Any:
+         """Given a context, this invokes the attached callback (if it exists)
+         in the right way.
+@@ -1360,6 +1400,7 @@ class Command:
+         try:
+             try:
+                 with self.make_context(prog_name, args, **extra) as ctx:
++                    self._resolve_dynamic_defaults(ctx)
+                     rv = self.invoke(ctx)
+                     if not standalone_mode:
+                         return rv
+@@ -2468,6 +2509,16 @@ class Option(Parameter):
+ 
+     All other parameters are passed onwards to the parameter constructor.
+ 
++    :param default: In addition to a static value or callable, ``default``
++        can be a dictionary mapping other option declarations (including
++        the leading ``--``) to a mapping of that option's string value to
++        the default that should be used here, e.g.
++        ``default={"--protocol": {"http": 80, "https": 443}}``. Such
++        "dynamic defaults" are resolved once every other option has been
++        parsed, and only take effect if this option's value would
++        otherwise come from its (static) default. If several source
++        options are given, later entries take precedence. If nothing
++        matches, the value is ``None``.
+     :param show_default: Show the default value for this option in its
+         help text. Values are not shown by default, unless
+         :attr:`Context.show_default` is ``True``. If this value is a
+@@ -2559,6 +2610,20 @@ class Option(Parameter):
+             param_decls, type=type, multiple=multiple, deprecated=deprecated, **attrs
+         )
+ 
++        self._dynamic_default: dict[str, dict[str, t.Any]] | None = None
++
++        if isinstance(self.default, dict):
++            for key, mapping in self.default.items():
++                if not isinstance(key, str):
++                    raise TypeError("Dynamic default keys must be strings")
++
++                if not isinstance(mapping, dict):
++                    raise TypeError("Dynamic default values must be dictionaries")
++
++            self._dynamic_default = self.default
++            self.default = None
++            default_is_missing = True
++
+         if prompt is True:
+             if self.name is None:
+                 raise TypeError("'name' is required with 'prompt=True'.")
+@@ -2861,9 +2926,14 @@ class Option(Parameter):
+         elif ctx.show_default is not None:
+             show_default = ctx.show_default
+ 
+-        if show_default_is_str or (show_default and (default_value is not None)):
++        if show_default_is_str or (
++            show_default
++            and (default_value is not None or self._dynamic_default is not None)
++        ):
+             if show_default_is_str:
+                 default_string = f"({self.show_default})"
++            elif self._dynamic_default is not None:
++                default_string = _("(dynamic)")
+             elif isinstance(default_value, (list, tuple)):
+                 default_string = ", ".join(str(d) for d in default_value)
+             elif inspect.isfunction(default_value):

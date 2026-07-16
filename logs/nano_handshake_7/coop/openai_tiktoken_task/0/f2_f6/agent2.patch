@@ -1,0 +1,71 @@
+diff --git a/tiktoken/core.py b/tiktoken/core.py
+index 6bc9736..a208be3 100644
+--- a/tiktoken/core.py
++++ b/tiktoken/core.py
+@@ -82,7 +82,8 @@ class Encoding:
+         *,
+         allowed_special: Literal["all"] | AbstractSet[str] = set(),  # noqa: B006
+         disallowed_special: Literal["all"] | Collection[str] = "all",
+-    ) -> list[int]:
++        return_positions: bool = False,
++    ) -> list[int] | tuple[list[int], list[int]]:
+         """Encodes a string into tokens.
+ 
+         Special tokens are artificial tokens used to unlock capabilities from a model,
+@@ -109,6 +110,13 @@ class Encoding:
+         >>> enc.encode("<|endoftext|>", disallowed_special=())
+         [27, 91, 437, 1659, 5239, 91, 29]
+         ```
++
++        If `return_positions` is set, this also returns the starting character position of each
++        token in `text`:
++        ```
++        >>> enc.encode("hello world", return_positions=True)
++        ([31373, 995], [0, 5])
++        ```
+         """
+         if allowed_special == "all":
+             allowed_special = self.special_tokens_set
+@@ -121,7 +129,7 @@ class Encoding:
+                 raise_disallowed_special_token(match.group())
+ 
+         try:
+-            return self._core_bpe.encode(text, allowed_special)
++            tokens = self._core_bpe.encode(text, allowed_special)
+         except UnicodeEncodeError:
+             # BPE operates on bytes, but the regex operates on unicode. If we pass a str that is
+             # invalid UTF-8 to Rust, it will rightfully complain. Here we do a quick and dirty
+@@ -130,7 +138,11 @@ class Encoding:
+             # string, but given that this is input we want to support, maybe that's okay.
+             # Also we use errors="replace" to handle weird things like lone surrogates.
+             text = text.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+-            return self._core_bpe.encode(text, allowed_special)
++            tokens = self._core_bpe.encode(text, allowed_special)
++
++        if return_positions:
++            return tokens, self._token_start_positions(tokens)
++        return tokens
+ 
+     def encode_to_numpy(
+         self,
+@@ -400,6 +412,20 @@ class Encoding:
+     def _encode_bytes(self, text: bytes) -> list[int]:
+         return self._core_bpe._encode_bytes(text)
+ 
++    def _token_start_positions(self, tokens: Sequence[int]) -> list[int]:
++        """Computes the starting character position of each token in the original text.
++
++        This assumes `tokens` were produced by encoding a string, so that concatenating the
++        decoded bytes of each token and decoding as UTF-8 reconstructs that string.
++        """
++        text_len = 0
++        positions = []
++        for token in tokens:
++            token_bytes = self.decode_single_token_bytes(token)
++            positions.append(max(0, text_len - (0x80 <= token_bytes[0] < 0xC0)))
++            text_len += sum(1 for c in token_bytes if not 0x80 <= c < 0xC0)
++        return positions
++
+     def __getstate__(self) -> object:
+         import tiktoken.registry
+ 

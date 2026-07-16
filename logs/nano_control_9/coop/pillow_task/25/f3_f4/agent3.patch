@@ -1,0 +1,81 @@
+diff --git a/Tests/test_image.py b/Tests/test_image.py
+index c2e850c36..1408c9f14 100644
+--- a/Tests/test_image.py
++++ b/Tests/test_image.py
+@@ -235,6 +235,23 @@ class TestImage:
+             with pytest.raises(ValueError):
+                 im.save(temp_file)
+ 
++    def test_dry_run(self, tmp_path: Path) -> None:
++        temp_file = tmp_path / "temp.png"
++        with hopper() as im:
++            im.save(temp_file, dry_run=True)
++        assert not temp_file.exists()
++
++        # A dry run should still validate that the image can be saved
++        with Image.new("RGBA", (1, 1)) as im:
++            with pytest.raises(OSError):
++                im.save(temp_file, format="JPEG", dry_run=True)
++
++        # dry_run should also work when passed a file object
++        with hopper() as im, temp_file.open("wb"):
++            with temp_file.open("r+b") as fp:
++                im.save(fp, format="PNG", dry_run=True)
++            assert temp_file.stat().st_size == 0
++
+     def test_internals(self) -> None:
+         im = Image.new("L", (100, 100))
+         im.readonly = 1
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 233df592c..1c6ef013f 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -2490,6 +2490,11 @@ class Image:
+            format to use is determined from the filename extension.
+            If a file object was used instead of a filename, this
+            parameter should always be used.
++        :param dry_run: If true, the image is processed as if it were being
++           saved, including format conversion and encoding, but no data is
++           actually written to ``fp`` or to disk. This can be used to check
++           whether an image can be saved in a given format without the
++           overhead of disk I/O.
+         :param params: Extra parameters to the image writer. These can also be
+            set on the image itself through ``encoderinfo``. This is useful when
+            saving multiple images::
+@@ -2544,6 +2549,7 @@ class Image:
+         self._ensure_mutable()
+ 
+         save_all = params.pop("save_all", None)
++        dry_run = params.pop("dry_run", False)
+         self.encoderinfo = {**getattr(self, "encoderinfo", {}), **params}
+         self.encoderconfig: tuple[Any, ...] = ()
+ 
+@@ -2559,7 +2565,9 @@ class Image:
+             save_handler = SAVE[format.upper()]
+ 
+         created = False
+-        if open_fp:
++        if dry_run:
++            fp = io.BytesIO()
++        elif open_fp:
+             created = not os.path.exists(filename)
+             if params.get("append", False):
+                 # Open also for reading ("+"), because TIFF save_all
+@@ -2573,7 +2581,7 @@ class Image:
+         try:
+             save_handler(self, fp, filename)
+         except Exception:
+-            if open_fp:
++            if open_fp and not dry_run:
+                 fp.close()
+             if created:
+                 try:
+@@ -2586,7 +2594,7 @@ class Image:
+                 del self.encoderinfo
+             except AttributeError:
+                 pass
+-        if open_fp:
++        if open_fp and not dry_run:
+             fp.close()
+ 
+     def seek(self, frame: int) -> None:

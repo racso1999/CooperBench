@@ -1,0 +1,91 @@
+diff --git a/Tests/test_image.py b/Tests/test_image.py
+index c2e850c36..50b42e7ce 100644
+--- a/Tests/test_image.py
++++ b/Tests/test_image.py
+@@ -182,6 +182,36 @@ class TestImage:
+         with Image.open(out) as reloaded:
+             assert_image_equal(im, reloaded)
+ 
++    def test_save_backup(self, tmp_path: Path) -> None:
++        out = tmp_path / "temp.png"
++        im = hopper()
++        im.save(out)
++
++        # No backup is created unless requested
++        im.save(out)
++        assert not (tmp_path / "temp.png.bak").exists()
++
++        # backup=True copies the existing file before overwriting it
++        red = Image.new("RGB", im.size, "#f00")
++        red.save(out, backup=True)
++        assert (tmp_path / "temp.png.bak").exists()
++        with Image.open(tmp_path / "temp.png.bak") as backup_im:
++            assert_image_equal(im, backup_im)
++        with Image.open(out) as reloaded:
++            assert_image_equal(red, reloaded)
++
++        # A custom backup_suffix changes the backup filename
++        blue = Image.new("RGB", im.size, "#00f")
++        blue.save(out, backup=True, backup_suffix=".backup")
++        assert (tmp_path / "temp.png.backup").exists()
++        with Image.open(tmp_path / "temp.png.backup") as backup_im:
++            assert_image_equal(red, backup_im)
++
++        # No backup is made when the file does not already exist
++        new_out = tmp_path / "new.png"
++        im.save(new_out, backup=True)
++        assert not (tmp_path / "new.png.bak").exists()
++
+     def test_pathlib(self, tmp_path: Path) -> None:
+         with Image.open(Path("Tests/images/multipage-mmap.tiff")) as im:
+             assert im.mode == "P"
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 233df592c..3471be614 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -34,6 +34,7 @@ import logging
+ import math
+ import os
+ import re
++import shutil
+ import struct
+ import sys
+ import tempfile
+@@ -2505,6 +2506,13 @@ class Image:
+              red = Image.new("RGB", (1, 1), "#f00")
+              red.encoderinfo = {"xmp": b"test"}
+              black.save("out.mpo", save_all=True, append_images=[red])
++        :keyword bool backup: If true, and the target filename already exists,
++           a copy of the existing file is made before it is overwritten. The
++           backup is written alongside the original, with ``backup_suffix``
++           appended to its name. Defaults to false. Has no effect when ``fp``
++           is a file object rather than a filename.
++        :keyword str backup_suffix: The suffix appended to the filename to
++           create the backup file. Defaults to ``.bak``.
+         :returns: None
+         :exception ValueError: If the output format could not be determined
+            from the file name.  Use the format option to solve this.
+@@ -2512,6 +2520,9 @@ class Image:
+            may have been created, and may contain partial data.
+         """
+ 
++        backup = params.pop("backup", False)
++        backup_suffix = params.pop("backup_suffix", ".bak")
++
+         filename: str | bytes = ""
+         open_fp = False
+         if is_path(fp):
+@@ -2561,6 +2572,13 @@ class Image:
+         created = False
+         if open_fp:
+             created = not os.path.exists(filename)
++            if backup and not created:
++                suffix = (
++                    backup_suffix.encode()
++                    if isinstance(filename, bytes)
++                    else backup_suffix
++                )
++                shutil.copy2(filename, filename + suffix)
+             if params.get("append", False):
+                 # Open also for reading ("+"), because TIFF save_all
+                 # writer needs to go back and edit the written data.

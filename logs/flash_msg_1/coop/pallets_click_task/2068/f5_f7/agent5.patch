@@ -1,0 +1,126 @@
+diff --git a/src/click/_termui_impl.py b/src/click/_termui_impl.py
+index 7b97bfb..88dfb93 100644
+--- a/src/click/_termui_impl.py
++++ b/src/click/_termui_impl.py
+@@ -485,11 +485,13 @@ class Editor:
+         env: cabc.Mapping[str, str] | None = None,
+         require_save: bool = True,
+         extension: str = ".txt",
++        lock_files: bool = False,
+     ) -> None:
+         self.editor = editor
+         self.env = env
+         self.require_save = require_save
+         self.extension = extension
++        self.lock_files = lock_files
+ 
+     def get_editor(self) -> str:
+         if self.editor is not None:
+@@ -505,6 +507,34 @@ class Editor:
+                 return editor
+         return "vi"
+ 
++    def _get_lock_filename(self, filename: str) -> str:
++        directory, basename = os.path.split(filename)
++        return os.path.join(directory, f".{basename}.lock")
++
++    def _create_lock_file(self, filename: str) -> str:
++        import datetime
++
++        lock_filename = self._get_lock_filename(filename)
++
++        try:
++            fd = os.open(lock_filename, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
++        except FileExistsError:
++            raise ClickException(
++                _(
++                    "Could not acquire lock for {filename!r}: "
++                    "lock file {lock_filename!r} already exists."
++                ).format(filename=filename, lock_filename=lock_filename)
++            ) from None
++
++        with os.fdopen(fd, "w") as f:
++            f.write(f"PID: {os.getpid()}\nTime: {datetime.datetime.now().isoformat()}\n")
++
++        return lock_filename
++
++    def _remove_lock_file(self, lock_filename: str) -> None:
++        with contextlib.suppress(OSError):
++            os.unlink(lock_filename)
++
+     def edit_file(self, filename: str) -> None:
+         import subprocess
+ 
+@@ -515,17 +545,26 @@ class Editor:
+             environ = os.environ.copy()
+             environ.update(self.env)
+ 
++        lock_filename: str | None = None
++
++        if self.lock_files:
++            lock_filename = self._create_lock_file(filename)
++
+         try:
+-            c = subprocess.Popen(f'{editor} "{filename}"', env=environ, shell=True)
+-            exit_code = c.wait()
+-            if exit_code != 0:
++            try:
++                c = subprocess.Popen(f'{editor} "{filename}"', env=environ, shell=True)
++                exit_code = c.wait()
++                if exit_code != 0:
++                    raise ClickException(
++                        _("{editor}: Editing failed").format(editor=editor)
++                    )
++            except OSError as e:
+                 raise ClickException(
+-                    _("{editor}: Editing failed").format(editor=editor)
+-                )
+-        except OSError as e:
+-            raise ClickException(
+-                _("{editor}: Editing failed: {e}").format(editor=editor, e=e)
+-            ) from e
++                    _("{editor}: Editing failed: {e}").format(editor=editor, e=e)
++                ) from e
++        finally:
++            if lock_filename is not None:
++                self._remove_lock_file(lock_filename)
+ 
+     def edit(self, text: t.AnyStr | None) -> t.AnyStr | None:
+         import tempfile
+diff --git a/src/click/termui.py b/src/click/termui.py
+index e14e670..5d38050 100644
+--- a/src/click/termui.py
++++ b/src/click/termui.py
+@@ -650,6 +650,7 @@ def edit(
+     require_save: bool = True,
+     extension: str = ".txt",
+     filename: str | None = None,
++    lock_files: bool = False,
+ ) -> t.AnyStr | None:
+     r"""Edits the given text in the defined editor.  If an editor is given
+     (should be the full path to the executable but the regular operating
+@@ -677,10 +678,23 @@ def edit(
+     :param filename: if provided it will edit this file instead of the
+                      provided text contents.  It will not use a temporary
+                      file as an indirection in that case.
++    :param lock_files: if this is true, a temporary lock file is created
++                       next to the edited file (or filename) while the
++                       editor is open, preventing other calls to
++                       :func:`edit` from editing the same file at the
++                       same time. The lock file is removed once editing
++                       completes, even if the editor fails or is
++                       interrupted.
+     """
+     from ._termui_impl import Editor
+ 
+-    ed = Editor(editor=editor, env=env, require_save=require_save, extension=extension)
++    ed = Editor(
++        editor=editor,
++        env=env,
++        require_save=require_save,
++        extension=extension,
++        lock_files=lock_files,
++    )
+ 
+     if filename is None:
+         return ed.edit(text)

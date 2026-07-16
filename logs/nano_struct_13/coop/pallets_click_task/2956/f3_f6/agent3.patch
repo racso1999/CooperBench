@@ -1,0 +1,80 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..c1851e0 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -15,6 +15,7 @@ from contextlib import ExitStack
+ from functools import update_wrapper
+ from gettext import gettext as _
+ from gettext import ngettext
++from itertools import islice
+ from itertools import repeat
+ from types import TracebackType
+ 
+@@ -2506,6 +2507,10 @@ class Option(Parameter):
+                                context.
+     :param help: the help string.
+     :param hidden: hide this option from help outputs.
++    :param batch_size: if ``multiple`` is set, group the collected values
++                        into tuples of at most this many items instead of
++                        a single flat tuple. Only valid together with
++                        ``multiple=True``. Must not be negative.
+     :param attrs: Other command arguments described in :class:`Parameter`.
+ 
+     .. versionchanged:: 8.2
+@@ -2549,6 +2554,7 @@ class Option(Parameter):
+         show_choices: bool = True,
+         show_envvar: bool = False,
+         deprecated: bool | str = False,
++        batch_size: int | None = None,
+         **attrs: t.Any,
+     ) -> None:
+         if help:
+@@ -2637,6 +2643,11 @@ class Option(Parameter):
+         self.show_choices = show_choices
+         self.show_envvar = show_envvar
+ 
++        if batch_size is not None and batch_size < 0:
++            raise ValueError("'batch_size' cannot be negative.")
++
++        self.batch_size = batch_size
++
+         if __debug__:
+             if deprecated and prompt:
+                 raise ValueError("`deprecated` options cannot use `prompt`.")
+@@ -2662,6 +2673,9 @@ class Option(Parameter):
+                 if self.is_flag:
+                     raise TypeError("'count' is not valid with 'is_flag'.")
+ 
++            if self.batch_size is not None and not self.multiple:
++                raise TypeError("'batch_size' is not valid without 'multiple'.")
++
+     def to_info_dict(self) -> dict[str, t.Any]:
+         info_dict = super().to_info_dict()
+         info_dict.update(
+@@ -2671,9 +2685,26 @@ class Option(Parameter):
+             flag_value=self.flag_value,
+             count=self.count,
+             hidden=self.hidden,
++            batch_size=self.batch_size,
+         )
+         return info_dict
+ 
++    def type_cast_value(self, ctx: Context, value: t.Any) -> t.Any:
++        rv = super().type_cast_value(ctx, value)
++
++        if self.multiple and self.batch_size is not None and rv:
++
++            def batched(
++                values: tuple[t.Any, ...], size: int
++            ) -> cabc.Iterator[tuple[t.Any, ...]]:
++                it = iter(values)
++                while batch := tuple(islice(it, size)):
++                    yield batch
++
++            rv = batched(rv, self.batch_size)
++
++        return rv
++
+     def get_error_hint(self, ctx: Context) -> str:
+         result = super().get_error_hint(ctx)
+         if self.show_envvar:

@@ -1,0 +1,77 @@
+diff --git a/dspy/propose/grounded_proposer.py b/dspy/propose/grounded_proposer.py
+index 13722b4b..0c72d735 100644
+--- a/dspy/propose/grounded_proposer.py
++++ b/dspy/propose/grounded_proposer.py
+@@ -284,7 +284,8 @@ class GroundedProposer(Proposer):
+         set_tip_randomly=True,
+         set_history_randomly=True,
+         verbose=False,
+-        rng=None
++        rng=None,
++        tip_weights: dict[str, float] | None = None,
+     ):
+         super().__init__()
+         self.program_aware = program_aware
+@@ -297,6 +298,7 @@ class GroundedProposer(Proposer):
+         self.set_history_randomly=set_history_randomly
+         self.verbose = verbose
+         self.rng = rng or random
++        self.tip_weights = tip_weights
+ 
+         self.prompt_model = get_prompt_model(prompt_model)
+ 
+@@ -323,6 +325,42 @@ class GroundedProposer(Proposer):
+                 self.use_dataset_summary = False
+                 print("")
+ 
++    def _select_tip_with_weights(self):
++        """Select a tip key/text pair, optionally biased by self.tip_weights.
++
++        Falls back to a uniform draw via self.rng.choice() when tip_weights is
++        None, or when every weight is nonpositive/invalid.
++        """
++        keys = list(TIPS.keys())
++
++        if self.tip_weights is None:
++            selected_tip_key = self.rng.choice(keys)
++            return selected_tip_key, TIPS[selected_tip_key]
++
++        weights = []
++        for key in keys:
++            weight = self.tip_weights.get(key, 1.0)
++            if not isinstance(weight, (int, float)) or weight <= 0:
++                weight = 0.0
++            weights.append(weight)
++
++        total_weight = sum(weights)
++        if total_weight <= 0:
++            selected_tip_key = self.rng.choice(keys)
++            return selected_tip_key, TIPS[selected_tip_key]
++
++        probabilities = [weight / total_weight for weight in weights]
++        threshold = self.rng.random()
++        cumulative = 0.0
++        selected_tip_key = keys[-1]
++        for key, probability in zip(keys, probabilities):
++            cumulative += probability
++            if threshold < cumulative:
++                selected_tip_key = key
++                break
++
++        return selected_tip_key, TIPS[selected_tip_key]
++
+     def propose_instructions_for_program(
+         self,
+         trainset,
+@@ -361,9 +399,8 @@ class GroundedProposer(Proposer):
+                 if self.set_tip_randomly:
+                     if self.verbose:
+                         print("Using a randomly generated configuration for our grounded proposer.")
+-                    # Randomly select the tip
+-                    selected_tip_key = self.rng.choice(list(TIPS.keys()))
+-                    selected_tip = TIPS[selected_tip_key]
++                    # Randomly select the tip, optionally biased by tip_weights
++                    selected_tip_key, selected_tip = self._select_tip_with_weights()
+                     self.use_tip = bool(
+                         selected_tip,
+                     )

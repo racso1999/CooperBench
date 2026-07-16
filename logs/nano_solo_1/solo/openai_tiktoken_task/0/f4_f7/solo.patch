@@ -1,0 +1,89 @@
+diff --git a/tiktoken/core.py b/tiktoken/core.py
+index 6bc9736..924433a 100644
+--- a/tiktoken/core.py
++++ b/tiktoken/core.py
+@@ -2,7 +2,15 @@ from __future__ import annotations
+ 
+ import functools
+ from concurrent.futures import ThreadPoolExecutor
+-from typing import TYPE_CHECKING, AbstractSet, Collection, Literal, NoReturn, Sequence
++from typing import (
++    TYPE_CHECKING,
++    AbstractSet,
++    Callable,
++    Collection,
++    Literal,
++    NoReturn,
++    Sequence,
++)
+ 
+ import regex
+ 
+@@ -82,7 +90,9 @@ class Encoding:
+         *,
+         allowed_special: Literal["all"] | AbstractSet[str] = set(),  # noqa: B006
+         disallowed_special: Literal["all"] | Collection[str] = "all",
+-    ) -> list[int]:
++        chunk_size: int | None = None,
++        validators: list[Callable[[list[int]], None]] | None = None,
++    ) -> list[int] | list[list[int]]:
+         """Encodes a string into tokens.
+ 
+         Special tokens are artificial tokens used to unlock capabilities from a model,
+@@ -97,6 +107,17 @@ class Encoding:
+         - Setting `allowed_special` to "all" will cause this function to treat all text
+           corresponding to special tokens to be encoded as special tokens.
+ 
++        If `chunk_size` is set, `text` is split into consecutive segments of at most
++        `chunk_size` characters, each segment is encoded independently, and a list of
++        token lists is returned (one per segment) instead of a single token list. This
++        is useful for processing long documents that would otherwise exceed a downstream
++        context limit.
++
++        If `validators` is provided, each validator is called with the resulting token
++        sequence (or, when `chunk_size` is set, with each segment's token sequence in
++        turn). A validator should raise a `ValueError` if the tokens do not meet its
++        criteria.
++
+         ```
+         >>> enc.encode("hello world")
+         [31373, 995]
+@@ -120,8 +141,22 @@ class Encoding:
+             if match := _special_token_regex(disallowed_special).search(text):
+                 raise_disallowed_special_token(match.group())
+ 
++        if chunk_size is not None:
++            chunks = [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)] or [""]
++            return [
++                self._encode_and_validate(chunk, allowed_special, validators) for chunk in chunks
++            ]
++
++        return self._encode_and_validate(text, allowed_special, validators)
++
++    def _encode_and_validate(
++        self,
++        text: str,
++        allowed_special: AbstractSet[str],
++        validators: list[Callable[[list[int]], None]] | None,
++    ) -> list[int]:
+         try:
+-            return self._core_bpe.encode(text, allowed_special)
++            tokens = self._core_bpe.encode(text, allowed_special)
+         except UnicodeEncodeError:
+             # BPE operates on bytes, but the regex operates on unicode. If we pass a str that is
+             # invalid UTF-8 to Rust, it will rightfully complain. Here we do a quick and dirty
+@@ -130,7 +165,13 @@ class Encoding:
+             # string, but given that this is input we want to support, maybe that's okay.
+             # Also we use errors="replace" to handle weird things like lone surrogates.
+             text = text.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+-            return self._core_bpe.encode(text, allowed_special)
++            tokens = self._core_bpe.encode(text, allowed_special)
++
++        if validators:
++            for validator in validators:
++                validator(tokens)
++
++        return tokens
+ 
+     def encode_to_numpy(
+         self,

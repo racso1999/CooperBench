@@ -1,0 +1,171 @@
+diff --git a/dirty_equals/__init__.py b/dirty_equals/__init__.py
+index ba8214e..88c1e76 100644
+--- a/dirty_equals/__init__.py
++++ b/dirty_equals/__init__.py
+@@ -18,7 +18,7 @@ from ._numeric import (
+     IsPositiveFloat,
+     IsPositiveInt,
+ )
+-from ._other import FunctionCheck, IsJson, IsUUID
++from ._other import FunctionCheck, IsHash, IsJson, IsPhoneNumber, IsUUID
+ from ._sequence import Contains, HasLen, IsList, IsListOrTuple, IsTuple
+ from ._strings import IsAnyStr, IsBytes, IsStr
+ 
+@@ -69,6 +69,8 @@ __all__ = (
+     'FunctionCheck',
+     'IsJson',
+     'IsUUID',
++    'IsPhoneNumber',
++    'IsHash',
+     # strings
+     'IsStr',
+     'IsBytes',
+diff --git a/dirty_equals/_other.py b/dirty_equals/_other.py
+index b2b8379..5c7217a 100644
+--- a/dirty_equals/_other.py
++++ b/dirty_equals/_other.py
+@@ -1,5 +1,6 @@
+ import json
+-from typing import Any, Callable, TypeVar, overload
++import re
++from typing import Any, Callable, Optional, TypeVar, overload
+ from uuid import UUID
+ 
+ from ._base import DirtyEquals
+@@ -120,6 +121,86 @@ class IsJson(DirtyEquals[JsonType]):
+             return False
+ 
+ 
++class IsPhoneNumber(DirtyEquals[str]):
++    """
++    A class that checks if a value is a plausible phone number, optionally restricted to a specific
++    country's format.
++
++    This is a pragmatic check suitable for typical application input validation, not a full
++    implementation of the international numbering plan (E.164).
++    """
++
++    # digits (excluding country code) following the leading `0`/`+<code>`
++    _national_lengths = {
++        'US': (10,),
++        'GB': (9, 10),
++    }
++    _country_codes = {
++        'US': '1',
++        'GB': '44',
++    }
++    _generic_re = re.compile(r'\d{7,15}')
++
++    def __init__(self, country: Optional[str] = None):
++        """
++        Args:
++            country: ISO 3166-1 alpha-2 country code (e.g. `'US'`, `'GB'`) to restrict validation
++                to that country's phone number format. If omitted, any plausible national or
++                international phone number is accepted.
++
++        ```py title="IsPhoneNumber"
++        from dirty_equals import IsPhoneNumber
++
++        assert '+1-555-123-4567' == IsPhoneNumber
++        assert '555-123-4567' == IsPhoneNumber
++        assert 'not a phone number' != IsPhoneNumber
++
++        assert '555-123-4567' == IsPhoneNumber('US')
++        assert '+1-555-123-4567' == IsPhoneNumber('US')
++        assert '555-123-4567' != IsPhoneNumber('GB')
++
++        assert '020 7946 0958' == IsPhoneNumber('GB')
++        assert '+44 20 7946 0958' == IsPhoneNumber('GB')
++        assert '020 7946 0958' != IsPhoneNumber('US')
++
++        assert '+33 1 23 45 67 89' == IsPhoneNumber('FR')
++        ```
++        """
++        self.country = country.upper() if country else None
++        super().__init__(self.country if self.country else plain_repr('*'))
++
++    def equals(self, other: Any) -> bool:
++        if not isinstance(other, str):
++            return False
++
++        cleaned = re.sub(r'[\s\-.()]', '', other)
++        if not re.fullmatch(r'\+?\d+', cleaned) or cleaned in ('', '+'):
++            return False
++
++        has_plus = cleaned.startswith('+')
++        digits = cleaned[1:] if has_plus else cleaned
++        if not digits:
++            return False
++
++        if self.country in self._national_lengths:
++            code = self._country_codes[self.country]
++            national_lengths = self._national_lengths[self.country]
++            if has_plus:
++                if not digits.startswith(code):
++                    return False
++                return len(digits) - len(code) in national_lengths
++            else:
++                if self.country == 'GB':
++                    return digits.startswith('0') and (len(digits) - 1) in national_lengths
++                else:
++                    return len(digits) in national_lengths
++        elif self.country is not None:
++            # unknown/unsupported country code, fall back to generic international validation
++            return has_plus and bool(self._generic_re.fullmatch(digits))
++        else:
++            return bool(self._generic_re.fullmatch(digits))
++
++
+ class FunctionCheck(DirtyEquals[Any]):
+     """
+     Use a function to check if a value "equals" whatever you want to check
+@@ -145,3 +226,49 @@ class FunctionCheck(DirtyEquals[Any]):
+ 
+     def equals(self, other: Any) -> bool:
+         return self.func(other)
++
++
++class IsHash(DirtyEquals[str]):
++    """
++    A class that checks if a value is a valid hash, supporting `'md5'`, `'sha1'`, `'sha224'`, `'sha256'`,
++    `'sha384'` and `'sha512'`.
++    """
++
++    # length in hex characters of the digest produced by each supported algorithm
++    hash_lengths = {
++        'md5': 32,
++        'sha1': 40,
++        'sha224': 56,
++        'sha256': 64,
++        'sha384': 96,
++        'sha512': 128,
++    }
++
++    def __init__(self, algorithm: Literal['md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512']):
++        """
++        Args:
++            algorithm: The algorithm which was used for the hash, must be one of `'md5'`, `'sha1'`, `'sha224'`,
++                `'sha256'`, `'sha384'` or `'sha512'`.
++
++        ```py title="IsHash"
++        import hashlib
++        from dirty_equals import IsHash
++
++        assert hashlib.md5(b'foo').hexdigest() == IsHash('md5')
++        assert hashlib.sha1(b'foo').hexdigest() == IsHash('sha1')
++        assert hashlib.sha256(b'foo').hexdigest() == IsHash('sha256')
++
++        assert 'not-a-hash' != IsHash('md5')
++        ```
++        """
++        self.algorithm = algorithm
++        try:
++            self.length = self.hash_lengths[algorithm.lower()]
++        except KeyError:
++            raise ValueError(f'Unknown algorithm {algorithm!r}')
++        super().__init__(self.algorithm)
++
++    def equals(self, other: Any) -> bool:
++        if not isinstance(other, str):
++            return False
++        return len(other) == self.length and re.fullmatch('[0-9a-fA-F]+', other) is not None

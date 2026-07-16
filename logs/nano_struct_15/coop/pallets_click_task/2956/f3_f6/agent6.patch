@@ -1,0 +1,123 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..fe6ea5f 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -139,6 +139,57 @@ def iter_params_for_processing(
+     return sorted(declaration_order, key=sort_key)
+ 
+ 
++def _find_option_value(ctx: Context, opt: str) -> t.Any | None:
++    """Look up the current value of another option on the same command
++    by one of its declared option strings (e.g. ``"--protocol"``).
++    """
++    for param in ctx.command.get_params(ctx):
++        if opt in param.opts or opt in param.secondary_opts:
++            return ctx.params.get(param.name)  # type: ignore[arg-type]
++
++    return None
++
++
++def _resolve_dynamic_defaults(ctx: Context) -> None:
++    """Second-pass resolution of dynamic (dict-based) option defaults.
++
++    Runs after all command-line arguments, environment variables, and
++    default maps have been processed, so that dynamic defaults can react
++    to the fully resolved values of the options they depend on.
++    """
++    for param in ctx.command.get_params(ctx):
++        if not isinstance(param, Option) or not param._dynamic_default:
++            continue
++
++        if ctx.get_parameter_source(param.name) != ParameterSource.DEFAULT:  # type: ignore[arg-type]
++            continue
++
++        resolved = None
++
++        for opt, mapping in param._dynamic_default.items():
++            source_value = _find_option_value(ctx, opt)
++
++            if source_value is None:
++                continue
++
++            key = str(source_value)
++
++            if key in mapping:
++                resolved = mapping[key]
++
++        if resolved is None:
++            continue
++
++        with augment_usage_errors(ctx, param=param):
++            value = param.type_cast_value(ctx, resolved)
++
++            if param.callback is not None:
++                value = param.callback(ctx, param, value)
++
++        if param.expose_value:
++            ctx.params[param.name] = value  # type: ignore[index]
++
++
+ class ParameterSource(enum.Enum):
+     """This is an :class:`~enum.Enum` that indicates the source of a
+     parameter's value.
+@@ -1360,6 +1411,7 @@ class Command:
+         try:
+             try:
+                 with self.make_context(prog_name, args, **extra) as ctx:
++                    _resolve_dynamic_defaults(ctx)
+                     rv = self.invoke(ctx)
+                     if not standalone_mode:
+                         return rv
+@@ -2637,6 +2689,19 @@ class Option(Parameter):
+         self.show_choices = show_choices
+         self.show_envvar = show_envvar
+ 
++        self._dynamic_default: dict[str, dict[str, t.Any]] | None = None
++
++        if isinstance(self.default, dict):
++            for key, mapping in self.default.items():
++                if not isinstance(key, str):
++                    raise TypeError("Dynamic default keys must be strings")
++
++                if not isinstance(mapping, dict):
++                    raise TypeError("Dynamic default values must be dictionaries")
++
++            self._dynamic_default = self.default
++            self.default = None
++
+         if __debug__:
+             if deprecated and prompt:
+                 raise ValueError("`deprecated` options cannot use `prompt`.")
+@@ -2861,9 +2926,13 @@ class Option(Parameter):
+         elif ctx.show_default is not None:
+             show_default = ctx.show_default
+ 
+-        if show_default_is_str or (show_default and (default_value is not None)):
++        if show_default_is_str or (
++            show_default and (default_value is not None or self._dynamic_default)
++        ):
+             if show_default_is_str:
+                 default_string = f"({self.show_default})"
++            elif self._dynamic_default:
++                default_string = _("(dynamic)")
+             elif isinstance(default_value, (list, tuple)):
+                 default_string = ", ".join(str(d) for d in default_value)
+             elif inspect.isfunction(default_value):
+diff --git a/src/click/types.py b/src/click/types.py
+index 684cb3b..f416c0f 100644
+--- a/src/click/types.py
++++ b/src/click/types.py
+@@ -1086,6 +1086,13 @@ def convert_type(ty: t.Any | None, default: t.Any | None = None) -> ParamType:
+                     ty = tuple(map(type, item))
+                 else:
+                     ty = type(item)
++        elif isinstance(default, dict):
++            # A dynamic default maps other option values to the actual
++            # default value. Guess the type from one of the mapped values.
++            for mapping in default.values():
++                if isinstance(mapping, dict) and mapping:
++                    ty = type(next(iter(mapping.values())))
++                    break
+         else:
+             ty = type(default)
+ 

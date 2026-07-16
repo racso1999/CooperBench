@@ -1,0 +1,97 @@
+diff --git a/src/datasets/features/features.py b/src/datasets/features/features.py
+index 6a0da6401..6a70fa31e 100644
+--- a/src/datasets/features/features.py
++++ b/src/datasets/features/features.py
+@@ -20,7 +20,7 @@ import re
+ import sys
+ from collections.abc import Iterable
+ from dataclasses import InitVar, _asdict_inner, dataclass, field, fields
+-from functools import reduce
++from functools import reduce, wraps
+ from operator import mul
+ from typing import Any, ClassVar, Dict, List, Optional
+ from typing import Sequence as Sequence_
+@@ -1198,6 +1198,32 @@ def require_decoding(feature: FeatureType, ignore_decode_attribute: bool = False
+         return hasattr(feature, "decode_example") and (feature.decode if not ignore_decode_attribute else True)
+ 
+ 
++def keep_features_dicts_synced(func):
++    """
++    Wrapper to keep the secondary dictionary, `_column_requires_decoding`, of the `Features` class synced with the
++    main dictionary.
++
++    This is used instead of subclassing `UserDict` (which comes with its own performance and backward-compatibility
++    issues) to automatically update `_column_requires_decoding` whenever the main dictionary is mutated, e.g. when a
++    column is added, removed or updated.
++    """
++
++    @wraps(func)
++    def wrapper(*args, **kwargs):
++        if args:
++            self: "Features" = args[0]
++            args = args[1:]
++        else:
++            self: "Features" = kwargs.pop("self")
++        out = func(self, *args, **kwargs)
++        assert hasattr(self, "_column_requires_decoding")
++        self._column_requires_decoding = {col: require_decoding(feature) for col, feature in self.items()}
++        return out
++
++    wrapper._decorator_name_ = "_keep_dicts_synced"
++    return wrapper
++
++
+ class Features(dict):
+     """A special dictionary that defines the internal structure of a dataset.
+ 
+@@ -1231,29 +1257,40 @@ class Features(dict):
+         - :class:`datasets.Translation` and :class:`datasets.TranslationVariableLanguages`, the two features specific to Machine Translation
+     """
+ 
++    @keep_features_dicts_synced
+     def __init__(self, *args, **kwargs):
+         super().__init__(*args, **kwargs)
+         self._column_requires_decoding: Dict[str, bool] = {
+             col: require_decoding(feature) for col, feature in self.items()
+         }
+ 
++    @keep_features_dicts_synced
+     def __setitem__(self, column_name: str, feature: FeatureType):
+         super().__setitem__(column_name, feature)
+-        self._column_requires_decoding[column_name] = require_decoding(feature)
+ 
++    @keep_features_dicts_synced
+     def __delitem__(self, column_name: str):
+         super().__delitem__(column_name)
+-        del self._column_requires_decoding[column_name]
+ 
++    @keep_features_dicts_synced
+     def update(self, iterable, **kwds):
+-        if hasattr(iterable, "keys"):
+-            for key in iterable.keys():
+-                self[key] = iterable[key]
+-        else:
+-            for key, value in iterable:
+-                self[key] = value
+-        for key in kwds:
+-            self[key] = kwds[key]
++        super().update(iterable, **kwds)
++
++    @keep_features_dicts_synced
++    def setdefault(self, key, default=None):
++        return super().setdefault(key, default)
++
++    @keep_features_dicts_synced
++    def pop(self, key, default=None):
++        return super().pop(key, default)
++
++    @keep_features_dicts_synced
++    def popitem(self):
++        return super().popitem()
++
++    @keep_features_dicts_synced
++    def clear(self):
++        return super().clear()
+ 
+     def __reduce__(self):
+         return Features, (dict(self),)

@@ -1,0 +1,94 @@
+diff --git a/Tests/test_image.py b/Tests/test_image.py
+index c2e850c36..9d3472c05 100644
+--- a/Tests/test_image.py
++++ b/Tests/test_image.py
+@@ -235,6 +235,37 @@ class TestImage:
+             with pytest.raises(ValueError):
+                 im.save(temp_file)
+ 
++    def test_save_backup(self, tmp_path: Path) -> None:
++        temp_file = tmp_path / "temp.png"
++        backup_file = tmp_path / "temp.png.bak"
++
++        red = Image.new("RGB", (1, 1), "#f00")
++        blue = Image.new("RGB", (1, 1), "#00f")
++
++        # No backup should be created when the file does not already exist
++        red.save(temp_file, backup=True)
++        assert not backup_file.exists()
++
++        # A backup of the previous contents should be created
++        blue.save(temp_file, backup=True)
++        assert backup_file.exists()
++        with Image.open(backup_file) as im:
++            assert im.getpixel((0, 0)) == (255, 0, 0)
++        with Image.open(temp_file) as im:
++            assert im.getpixel((0, 0)) == (0, 0, 255)
++
++        # A custom backup_suffix should be respected
++        custom_backup_file = tmp_path / "temp.png.backup"
++        red.save(temp_file, backup=True, backup_suffix=".backup")
++        assert custom_backup_file.exists()
++
++        # No backup should be created when backup is not requested
++        another_backup_file = tmp_path / "temp2.png.bak"
++        temp_file2 = tmp_path / "temp2.png"
++        red.save(temp_file2)
++        blue.save(temp_file2)
++        assert not another_backup_file.exists()
++
+     def test_internals(self) -> None:
+         im = Image.new("L", (100, 100))
+         im.readonly = 1
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 233df592c..da628a642 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -34,6 +34,7 @@ import logging
+ import math
+ import os
+ import re
++import shutil
+ import struct
+ import sys
+ import tempfile
+@@ -2467,7 +2468,12 @@ class Image:
+         )
+ 
+     def save(
+-        self, fp: StrOrBytesPath | IO[bytes], format: str | None = None, **params: Any
++        self,
++        fp: StrOrBytesPath | IO[bytes],
++        format: str | None = None,
++        backup: bool = False,
++        backup_suffix: str = ".bak",
++        **params: Any,
+     ) -> None:
+         """
+         Saves this image under the given filename.  If no format is
+@@ -2490,6 +2496,12 @@ class Image:
+            format to use is determined from the filename extension.
+            If a file object was used instead of a filename, this
+            parameter should always be used.
++        :param backup: If true and the target filename refers to an
++           existing file, a backup copy of that file is made before it
++           is overwritten. Has no effect when saving to a file object.
++        :param backup_suffix: The suffix appended to the filename to
++           produce the backup filename. Defaults to ``".bak"``. Only
++           used when ``backup`` is true.
+         :param params: Extra parameters to the image writer. These can also be
+            set on the image itself through ``encoderinfo``. This is useful when
+            saving multiple images::
+@@ -2561,6 +2573,12 @@ class Image:
+         created = False
+         if open_fp:
+             created = not os.path.exists(filename)
++            if backup and not created:
++                if isinstance(filename, bytes):
++                    backup_filename = filename + backup_suffix.encode()
++                else:
++                    backup_filename = filename + backup_suffix
++                shutil.copy2(filename, backup_filename)
+             if params.get("append", False):
+                 # Open also for reading ("+"), because TIFF save_all
+                 # writer needs to go back and edit the written data.

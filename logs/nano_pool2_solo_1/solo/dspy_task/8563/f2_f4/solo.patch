@@ -1,0 +1,165 @@
+diff --git a/dspy/adapters/types/tool.py b/dspy/adapters/types/tool.py
+index 843eceed..4aab4a8b 100644
+--- a/dspy/adapters/types/tool.py
++++ b/dspy/adapters/types/tool.py
+@@ -1,9 +1,12 @@
++import ast
+ import asyncio
++import hashlib
+ import inspect
++import json
+ from typing import TYPE_CHECKING, Any, Callable, Type, get_origin, get_type_hints
+ 
+ from jsonschema import ValidationError, validate
+-from pydantic import BaseModel, TypeAdapter, create_model
++from pydantic import BaseModel, TypeAdapter, create_model, model_validator
+ 
+ from dspy.adapters.types.base_type import Type
+ from dspy.dsp.utils.settings import settings
+@@ -258,9 +261,38 @@ class ToolCalls(Type):
+     class ToolCall(BaseModel):
+         name: str
+         args: dict[str, Any]
++        fingerprint: str | None = None
++        id: str | None = None
++
++        def __init__(self, **data):
++            super().__init__(**data)
++            if self.fingerprint is None:
++                self._compute_fingerprint()
++
++        def _compute_fingerprint(self) -> None:
++            canonical_args = _canonicalize_value(self.args)
++            canonical = {"name": self.name, "args": canonical_args}
++            serialized = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
++            digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
++            self.fingerprint = digest
++            self.id = digest[:8]
+ 
+     tool_calls: list[ToolCall]
+ 
++    @model_validator(mode="before")
++    @classmethod
++    def validate_input(cls, data: Any):
++        if isinstance(data, cls):
++            return data
++
++        if isinstance(data, str):
++            data = parse_python_calls(data)
++
++        if isinstance(data, list):
++            data = {"tool_calls": data}
++
++        return data
++
+     @classmethod
+     def from_dict_list(cls, tool_calls_dicts: list[dict[str, Any]]) -> "ToolCalls":
+         """Convert a list of dictionaries to a ToolCalls instance.
+@@ -310,6 +342,107 @@ class ToolCalls(Type):
+         ]
+ 
+ 
++def _canonicalize_value(value: Any) -> Any:
++    """Recursively canonicalize a value for stable, deterministic serialization.
++
++    Dict keys are sorted recursively, tuples are converted to lists, and strings are
++    stripped of leading/trailing whitespace. Numeric and boolean types are left untouched.
++    """
++    if isinstance(value, dict):
++        return {k: _canonicalize_value(v) for k, v in sorted(value.items())}
++    if isinstance(value, (list, tuple)):
++        return [_canonicalize_value(v) for v in value]
++    if isinstance(value, str):
++        return value.strip()
++    return value
++
++
++def parse_python_calls(text: str) -> dict[str, Any]:
++    """Parse one or more Python-style function call expressions into the `tool_calls` dict format.
++
++    Only a minimal, safe subset of Python is accepted: top-level call expressions (e.g.
++    `search(q="nlp")`), with keyword-only arguments whose values are literals (strings, numbers,
++    booleans, `None`, and dicts/lists/tuples thereof). No names, attribute values, nested calls,
++    comprehensions, or other dynamic constructs are allowed.
++
++    Args:
++        text: A string containing one or more Python-style function calls, e.g.
++            `search(q="nlp")` or `search(q="nlp"); translate(text="hi", lang="fr")`.
++
++    Returns:
++        A dict of the form `{"tool_calls": [{"name": ..., "args": {...}}, ...]}`, in source order.
++    """
++    try:
++        tree = ast.parse(text.strip(), mode="exec")
++    except SyntaxError as e:
++        raise ValueError(f"Could not parse input as a Python function call: {e}") from e
++
++    if not tree.body:
++        raise ValueError("No function calls found in the input.")
++
++    calls = []
++    for stmt in tree.body:
++        if not isinstance(stmt, ast.Expr) or not isinstance(stmt.value, ast.Call):
++            raise ValueError(
++                "Only function call expressions are supported, e.g. `search(q=\"nlp\")`."
++            )
++        calls.append(_parse_call_node(stmt.value))
++
++    return {"tool_calls": calls}
++
++
++def _parse_call_node(node: ast.Call) -> dict[str, Any]:
++    name = _parse_callee_name(node.func)
++
++    if node.args:
++        raise ValueError(
++            f"Only keyword arguments supported; found positional argument(s) for `{name}`. "
++            f"Please use keyword arguments, e.g. `{name}(arg_name=value)`."
++        )
++
++    args = {}
++    for keyword in node.keywords:
++        if keyword.arg is None:
++            raise ValueError(f"Only keyword arguments supported; found `**kwargs` expansion in `{name}`.")
++        args[keyword.arg] = _parse_literal_node(keyword.value)
++
++    return {"name": name, "args": args}
++
++
++def _parse_callee_name(node: ast.AST) -> str:
++    if isinstance(node, ast.Name):
++        return node.id
++    if isinstance(node, ast.Attribute):
++        return node.attr
++    raise ValueError("Could not determine the tool name; only plain or dotted names are supported.")
++
++
++def _parse_literal_node(node: ast.AST) -> Any:
++    if isinstance(node, ast.Constant):
++        return node.value
++
++    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
++        if isinstance(node.operand, ast.Constant) and isinstance(node.operand.value, (int, float)):
++            return -node.operand.value if isinstance(node.op, ast.USub) else +node.operand.value
++        raise ValueError("Only literal values are allowed.")
++
++    if isinstance(node, ast.Dict):
++        result = {}
++        for key_node, value_node in zip(node.keys, node.values):
++            if key_node is None:
++                raise ValueError("Only literal values are allowed; dict unpacking is not supported.")
++            result[_parse_literal_node(key_node)] = _parse_literal_node(value_node)
++        return result
++
++    if isinstance(node, ast.List):
++        return [_parse_literal_node(elt) for elt in node.elts]
++
++    if isinstance(node, ast.Tuple):
++        return [_parse_literal_node(elt) for elt in node.elts]
++
++    raise ValueError("Only literal values are allowed.")
++
++
+ def _resolve_json_schema_reference(schema: dict) -> dict:
+     """Recursively resolve json model schema, expanding all references."""
+ 

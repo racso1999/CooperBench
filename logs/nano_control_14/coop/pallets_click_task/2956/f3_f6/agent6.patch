@@ -1,0 +1,153 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..e5a32d5 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -1196,6 +1196,8 @@ class Command:
+         for param in iter_params_for_processing(param_order, self.get_params(ctx)):
+             value, args = param.handle_parse_result(ctx, opts, args)
+ 
++        self._resolve_dynamic_defaults(ctx)
++
+         if args and not ctx.allow_extra_args and not ctx.resilient_parsing:
+             ctx.fail(
+                 ngettext(
+@@ -1209,6 +1211,57 @@ class Command:
+         ctx._opt_prefixes.update(parser._opt_prefixes)
+         return args
+ 
++    def _resolve_dynamic_defaults(self, ctx: Context) -> None:
++        """Second pass over the parsed parameters to resolve dynamic
++        defaults, i.e. :class:`Option` defaults that depend on the
++        values of other options. This runs after every parameter has
++        been parsed so that the values it depends on are final.
++        """
++        opt_lookup: dict[str, Option] = {}
++
++        for param in self.get_params(ctx):
++            if isinstance(param, Option):
++                for opt in (*param.opts, *param.secondary_opts):
++                    opt_lookup[opt] = param
++
++        for param in self.get_params(ctx):
++            if (
++                not isinstance(param, Option)
++                or not param.is_dynamic_default
++                or param.name is None
++                or ctx.get_parameter_source(param.name) is not ParameterSource.DEFAULT
++            ):
++                continue
++
++            resolved = None
++            assert param._dynamic_default is not None
++
++            for opt_name, mapping in param._dynamic_default.items():
++                source_param = opt_lookup.get(opt_name)
++
++                if source_param is None or source_param.name is None:
++                    continue
++
++                key = str(ctx.params.get(source_param.name))
++
++                if key in mapping:
++                    resolved = mapping[key]
++
++            if resolved is None:
++                continue
++
++            with augment_usage_errors(ctx, param=param):
++                try:
++                    value = param.process_value(ctx, resolved)
++                except Exception:
++                    if not ctx.resilient_parsing:
++                        raise
++
++                    value = None
++
++            if param.expose_value:
++                ctx.params[param.name] = value
++
+     def invoke(self, ctx: Context) -> t.Any:
+         """Given a context, this invokes the attached callback (if it exists)
+         in the right way.
+@@ -2555,10 +2608,30 @@ class Option(Parameter):
+             help = inspect.cleandoc(help)
+ 
+         default_is_missing = "default" not in attrs
++
++        dynamic_default: dict[str, dict[str, t.Any]] | None = None
++        raw_default = attrs.get("default")
++
++        if isinstance(raw_default, dict):
++            for key, mapping in raw_default.items():
++                if not isinstance(key, str):
++                    raise TypeError("Dynamic default keys must be strings")
++
++                if not isinstance(mapping, dict):
++                    raise TypeError("Dynamic default values must be dictionaries")
++
++            dynamic_default = raw_default
++            attrs["default"] = None
++
+         super().__init__(
+             param_decls, type=type, multiple=multiple, deprecated=deprecated, **attrs
+         )
+ 
++        self._dynamic_default = dynamic_default
++
++        if dynamic_default is not None:
++            self.default = dynamic_default
++
+         if prompt is True:
+             if self.name is None:
+                 raise TypeError("'name' is required with 'prompt=True'.")
+@@ -2674,6 +2747,15 @@ class Option(Parameter):
+         )
+         return info_dict
+ 
++    @property
++    def is_dynamic_default(self) -> bool:
++        """Whether this option's default is a dynamic default spec, i.e. a
++        mapping of other option names to value-based default lookups.
++
++        .. versionadded:: 8.3
++        """
++        return self._dynamic_default is not None
++
+     def get_error_hint(self, ctx: Context) -> str:
+         result = super().get_error_hint(ctx)
+         if self.show_envvar:
+@@ -2861,13 +2943,17 @@ class Option(Parameter):
+         elif ctx.show_default is not None:
+             show_default = ctx.show_default
+ 
+-        if show_default_is_str or (show_default and (default_value is not None)):
++        if (
++            show_default_is_str
++            or (show_default and self.is_dynamic_default)
++            or (show_default and (default_value is not None))
++        ):
+             if show_default_is_str:
+                 default_string = f"({self.show_default})"
++            elif self.is_dynamic_default or inspect.isfunction(default_value):
++                default_string = _("(dynamic)")
+             elif isinstance(default_value, (list, tuple)):
+                 default_string = ", ".join(str(d) for d in default_value)
+-            elif inspect.isfunction(default_value):
+-                default_string = _("(dynamic)")
+             elif self.is_bool_flag and self.secondary_opts:
+                 # For boolean flags that have distinct True/False opts,
+                 # use the opt without prefix instead of the value.
+@@ -2912,6 +2998,13 @@ class Option(Parameter):
+     def get_default(
+         self, ctx: Context, call: bool = True
+     ) -> t.Any | t.Callable[[], t.Any] | None:
++        # A dynamic default is resolved in a second pass over all
++        # parameters once every other value has been parsed, since it
++        # may depend on the value of other options. Until then it has
++        # no value.
++        if self._dynamic_default is not None:
++            return None
++
+         # If we're a non boolean flag our default is more complex because
+         # we need to look at all flags in the same group to figure out
+         # if we're the default one in which case we return the flag

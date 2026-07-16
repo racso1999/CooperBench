@@ -1,0 +1,172 @@
+diff --git a/outlines/prompts.py b/outlines/prompts.py
+index 86519ada..d925584a 100644
+--- a/outlines/prompts.py
++++ b/outlines/prompts.py
+@@ -12,6 +12,75 @@ import jinja2
+ import pydantic
+ 
+ 
++_FILTERS: Dict[str, Callable] = {}
++
++
++def register_filter(name: str, func: Callable) -> None:
++    """Register a filter to make it available to all prompt templates.
++
++    Parameters
++    ----------
++    name
++        The name under which the filter will be available in templates.
++    func
++        The callable implementing the filter.
++
++    """
++    _FILTERS[name] = func
++
++
++def unregister_filter(name: str) -> None:
++    """Remove a filter from the global filter registry.
++
++    Parameters
++    ----------
++    name
++        The name of the filter to remove.
++
++    """
++    _FILTERS.pop(name, None)
++
++
++def create_jinja_env(
++    loader: Optional[jinja2.BaseLoader] = None,
++    filters: Optional[Dict[str, Callable]] = None,
++) -> jinja2.Environment:
++    """Create the Jinja2 environment used to render prompt templates.
++
++    Parameters
++    ----------
++    loader
++        The Jinja2 loader to use, if any.
++    filters
++        Filters local to a single template. These take precedence over
++        globally registered filters (see `register_filter`), which in turn
++        take precedence over the built-in filters.
++
++    Returns
++    -------
++    The configured Jinja2 environment.
++
++    """
++    env = jinja2.Environment(
++        loader=loader,
++        trim_blocks=True,
++        lstrip_blocks=True,
++        keep_trailing_newline=True,
++        undefined=jinja2.StrictUndefined,
++    )
++    env.filters["name"] = get_fn_name
++    env.filters["description"] = get_fn_description
++    env.filters["source"] = get_fn_source
++    env.filters["signature"] = get_fn_signature
++    env.filters["schema"] = get_schema
++    env.filters["args"] = get_fn_args
++    env.filters.update(_FILTERS)
++    if filters:
++        env.filters.update(filters)
++
++    return env
++
++
+ @dataclass
+ class Prompt:
+     """Represents a prompt function.
+@@ -40,7 +109,7 @@ class Prompt:
+             return self.template.render(**kwargs)
+ 
+     @classmethod
+-    def from_str(cls, content: str):
++    def from_str(cls, content: str, filters: Optional[Dict[str, Callable]] = None):
+         """
+         Create an instance of the class from a string.
+ 
+@@ -48,15 +117,18 @@ class Prompt:
+         ----------
+         content : str
+             The string content to be converted into a template.
++        filters : Optional[Dict[str, Callable]]
++            A dictionary mapping custom filter names to callables to register
++            on the Jinja2 environment used to render this template.
+ 
+         Returns
+         -------
+         An instance of the class with the provided content as a template.
+         """
+-        return cls(cls._template_from_str(content), None)
++        return cls(cls._template_from_str(content, filters), None)
+ 
+     @classmethod
+-    def from_file(cls, path: Path):
++    def from_file(cls, path: Path, filters: Optional[Dict[str, Callable]] = None):
+         """
+         Create a Prompt instance from a file containing a Jinja template.
+ 
+@@ -67,6 +139,9 @@ class Prompt:
+         ----------
+         path : Path
+             The path to the file containing the Jinja template.
++        filters : Optional[Dict[str, Callable]]
++            A dictionary mapping custom filter names to callables to register
++            on the Jinja2 environment used to render this template.
+ 
+         Returns
+         -------
+@@ -75,10 +150,12 @@ class Prompt:
+         """
+         # We don't use a `Signature` here because it seems not feasible to infer one from a Jinja2 environment that is
+         # split across multiple files (since e.g. we support features like Jinja2 includes and template inheritance)
+-        return cls(cls._template_from_file(path), None)
++        return cls(cls._template_from_file(path, filters), None)
+ 
+     @classmethod
+-    def _template_from_str(_, content: str) -> jinja2.Template:
++    def _template_from_str(
++        _, content: str, filters: Optional[Dict[str, Callable]] = None
++    ) -> jinja2.Template:
+         # Dedent, and remove extra linebreak
+         cleaned_template = inspect.cleandoc(content)
+ 
+@@ -93,30 +170,17 @@ class Prompt:
+         # used to continue to the next line without linebreak.
+         cleaned_template = re.sub(r"(?![\r\n])(\b\s+)", " ", cleaned_template)
+ 
+-        env = jinja2.Environment(
+-            trim_blocks=True,
+-            lstrip_blocks=True,
+-            keep_trailing_newline=True,
+-            undefined=jinja2.StrictUndefined,
+-        )
+-        env.filters["name"] = get_fn_name
+-        env.filters["description"] = get_fn_description
+-        env.filters["source"] = get_fn_source
+-        env.filters["signature"] = get_fn_signature
+-        env.filters["schema"] = get_schema
+-        env.filters["args"] = get_fn_args
++        env = create_jinja_env(filters=filters)
+ 
+         return env.from_string(cleaned_template)
+ 
+     @classmethod
+-    def _template_from_file(_, path: Path) -> jinja2.Template:
++    def _template_from_file(
++        _, path: Path, filters: Optional[Dict[str, Callable]] = None
++    ) -> jinja2.Template:
+         file_directory = os.path.dirname(os.path.abspath(path))
+-        env = jinja2.Environment(
+-            loader=jinja2.FileSystemLoader(file_directory),
+-            trim_blocks=True,
+-            lstrip_blocks=True,
+-            keep_trailing_newline=True,
+-            undefined=jinja2.StrictUndefined,
++        env = create_jinja_env(
++            loader=jinja2.FileSystemLoader(file_directory), filters=filters
+         )
+         return env.get_template(os.path.basename(path))
+ 

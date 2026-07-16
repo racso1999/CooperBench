@@ -1,0 +1,103 @@
+diff --git a/tiktoken/core.py b/tiktoken/core.py
+index 6bc9736..c69926e 100644
+--- a/tiktoken/core.py
++++ b/tiktoken/core.py
+@@ -82,7 +82,8 @@ class Encoding:
+         *,
+         allowed_special: Literal["all"] | AbstractSet[str] = set(),  # noqa: B006
+         disallowed_special: Literal["all"] | Collection[str] = "all",
+-    ) -> list[int]:
++        return_positions: bool = False,
++    ) -> list[int] | tuple[list[int], list[int]]:
+         """Encodes a string into tokens.
+ 
+         Special tokens are artificial tokens used to unlock capabilities from a model,
+@@ -97,6 +98,11 @@ class Encoding:
+         - Setting `allowed_special` to "all" will cause this function to treat all text
+           corresponding to special tokens to be encoded as special tokens.
+ 
++        If `return_positions` is True, this also returns the starting character position of each
++        token in `text`, alongside the tokens themselves. When a token's bytes don't line up with a
++        UTF-8 character boundary, the position is that of the first character containing bytes from
++        the token (matching the convention used by `decode_with_offsets`).
++
+         ```
+         >>> enc.encode("hello world")
+         [31373, 995]
+@@ -108,6 +114,8 @@ class Encoding:
+         # Raises ValueError
+         >>> enc.encode("<|endoftext|>", disallowed_special=())
+         [27, 91, 437, 1659, 5239, 91, 29]
++        >>> enc.encode("hello world", return_positions=True)
++        ([31373, 995], [0, 5])
+         ```
+         """
+         if allowed_special == "all":
+@@ -120,6 +128,9 @@ class Encoding:
+             if match := _special_token_regex(disallowed_special).search(text):
+                 raise_disallowed_special_token(match.group())
+ 
++        if return_positions:
++            return self._encode_with_positions(text, allowed_special)
++
+         try:
+             return self._core_bpe.encode(text, allowed_special)
+         except UnicodeEncodeError:
+@@ -389,6 +400,57 @@ class Encoding:
+             text_or_bytes = text_or_bytes.encode("utf-8")
+         return self._core_bpe.encode_single_piece(text_or_bytes)
+ 
++    def _encode_with_positions(
++        self, text: str, allowed_special: AbstractSet[str]
++    ) -> tuple[list[int], list[int]]:
++        """Encodes text into tokens, tracking the starting character position of each token.
++
++        Special tokens are matched as whole units (position = start of the special token text);
++        ordinary text is split using `pat_str` and BPE-encoded piece by piece, with each
++        resulting token's position derived from its byte offset within the piece.
++        """
++        tokens: list[int] = []
++        positions: list[int] = []
++
++        if allowed_special:
++            special_regex = _special_token_regex(frozenset(allowed_special))
++            search_start = 0
++            for match in special_regex.finditer(text):
++                self._encode_ordinary_with_positions(
++                    text, search_start, match.start(), tokens, positions
++                )
++                tokens.append(self._special_tokens[match.group()])
++                positions.append(match.start())
++                search_start = match.end()
++            self._encode_ordinary_with_positions(text, search_start, len(text), tokens, positions)
++        else:
++            self._encode_ordinary_with_positions(text, 0, len(text), tokens, positions)
++
++        return tokens, positions
++
++    def _encode_ordinary_with_positions(
++        self, text: str, start: int, end: int, tokens: list[int], positions: list[int]
++    ) -> None:
++        if start >= end:
++            return
++
++        pat = regex.compile(self._pat_str)
++        for match in pat.finditer(text[start:end]):
++            piece = match.group()
++            piece_tokens = self._core_bpe.encode_single_piece(piece.encode("utf-8"))
++            if not piece_tokens:
++                continue
++
++            piece_start = start + match.start()
++            token_bytes = [self._core_bpe.decode_single_token_bytes(t) for t in piece_tokens]
++
++            piece_len = 0
++            for token, tb in zip(piece_tokens, token_bytes):
++                offset = max(0, piece_len - (0x80 <= tb[0] < 0xC0))
++                tokens.append(token)
++                positions.append(piece_start + offset)
++                piece_len += sum(1 for c in tb if not 0x80 <= c < 0xC0)
++
+     def _encode_only_native_bpe(self, text: str) -> list[int]:
+         """Encodes a string into tokens, but do regex splitting in Python."""
+         _unused_pat = regex.compile(self._pat_str)

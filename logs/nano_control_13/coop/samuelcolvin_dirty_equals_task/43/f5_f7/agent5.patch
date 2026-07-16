@@ -1,0 +1,102 @@
+diff --git a/dirty_equals/__init__.py b/dirty_equals/__init__.py
+index ba8214e..cea2b25 100644
+--- a/dirty_equals/__init__.py
++++ b/dirty_equals/__init__.py
+@@ -18,7 +18,7 @@ from ._numeric import (
+     IsPositiveFloat,
+     IsPositiveInt,
+ )
+-from ._other import FunctionCheck, IsJson, IsUUID
++from ._other import FunctionCheck, IsJson, IsPhoneNumber, IsUUID
+ from ._sequence import Contains, HasLen, IsList, IsListOrTuple, IsTuple
+ from ._strings import IsAnyStr, IsBytes, IsStr
+ 
+@@ -69,6 +69,7 @@ __all__ = (
+     'FunctionCheck',
+     'IsJson',
+     'IsUUID',
++    'IsPhoneNumber',
+     # strings
+     'IsStr',
+     'IsBytes',
+diff --git a/dirty_equals/_other.py b/dirty_equals/_other.py
+index b2b8379..5446ee6 100644
+--- a/dirty_equals/_other.py
++++ b/dirty_equals/_other.py
+@@ -1,5 +1,6 @@
+ import json
+-from typing import Any, Callable, TypeVar, overload
++import re
++from typing import Any, Callable, Dict, Optional, Tuple, TypeVar, overload
+ from uuid import UUID
+ 
+ from ._base import DirtyEquals
+@@ -145,3 +146,68 @@ class FunctionCheck(DirtyEquals[Any]):
+ 
+     def equals(self, other: Any) -> bool:
+         return self.func(other)
++
++
++class IsPhoneNumber(DirtyEquals[str]):
++    """
++    A class that checks if a value is a valid phone number, optionally restricted to a specific country.
++
++    Validation is intentionally pragmatic rather than exhaustive - it's designed to catch obviously invalid
++    values while accepting the wide range of formats (delimiters, optional country codes, etc.) real users
++    and placeholder/example numbers commonly use.
++    """
++
++    # (national format pattern, international format pattern) - numbers are checked with whitespace,
++    # dashes, dots and parentheses removed
++    _country_patterns: Dict[str, Tuple['re.Pattern[str]', 're.Pattern[str]']] = {
++        'US': (re.compile(r'^\d{10}$'), re.compile(r'^\+1\d{10}$')),
++        'GB': (re.compile(r'^0\d{10}$'), re.compile(r'^\+44\d{10}$')),
++    }
++    _generic_international_pattern = re.compile(r'^\+\d{7,15}$')
++    _generic_national_pattern = re.compile(r'^\d{7,15}$')
++    _strip_pattern = re.compile(r'[\s\-.()]')
++
++    def __init__(self, country: Optional[str] = None):
++        """
++        Args:
++            country: ISO 3166-1 alpha-2 country code to restrict validation to, if omitted, generic
++                international/national validation is performed. Currently `'US'` and `'GB'` have dedicated
++                validation rules, other countries fall back to generic international format checks.
++
++        ```py title="IsPhoneNumber"
++        from dirty_equals import IsPhoneNumber
++
++        assert '+1-555-123-4567' == IsPhoneNumber
++        assert '555-123-4567' == IsPhoneNumber
++        assert '555-123-4567' == IsPhoneNumber('US')
++        assert '+44 20 7946 0958' == IsPhoneNumber('GB')
++        assert '555-123-4567' != IsPhoneNumber('GB')
++        assert 'not a phone number' != IsPhoneNumber
++        ```
++        """
++        self.country = country.upper() if country else None
++        super().__init__(self.country if self.country else plain_repr('*'))
++
++    def equals(self, other: Any) -> bool:
++        if not isinstance(other, str):
++            return False
++
++        cleaned = self._strip_pattern.sub('', other)
++        if not cleaned:
++            return False
++
++        if self.country is None:
++            return self._equals_generic(cleaned)
++
++        patterns = self._country_patterns.get(self.country)
++        if patterns is None:
++            return bool(self._generic_international_pattern.fullmatch(cleaned))
++
++        national_pattern, international_pattern = patterns
++        return bool(national_pattern.fullmatch(cleaned) or international_pattern.fullmatch(cleaned))
++
++    def _equals_generic(self, cleaned: str) -> bool:
++        if cleaned.startswith('+'):
++            return bool(self._generic_international_pattern.fullmatch(cleaned))
++        else:
++            return bool(self._generic_national_pattern.fullmatch(cleaned))

@@ -1,0 +1,109 @@
+diff --git a/dspy/streaming/messages.py b/dspy/streaming/messages.py
+index 9a73f19b..7b7c4d7f 100644
+--- a/dspy/streaming/messages.py
++++ b/dspy/streaming/messages.py
+@@ -14,6 +14,7 @@ class StreamResponse:
+     predict_name: str
+     signature_field_name: str
+     chunk: str
++    is_last_chunk: bool = False
+ 
+ 
+ @dataclass
+diff --git a/dspy/streaming/streaming_listener.py b/dspy/streaming/streaming_listener.py
+index 98fd4aca..fb55adaf 100644
+--- a/dspy/streaming/streaming_listener.py
++++ b/dspy/streaming/streaming_listener.py
+@@ -1,4 +1,5 @@
+ import re
++import time
+ from collections import defaultdict
+ from queue import Queue
+ from typing import TYPE_CHECKING, Any
+@@ -48,6 +49,11 @@ class StreamListener:
+         self.cache_hit = False
+         self.allow_reuse = allow_reuse
+ 
++        self._chunk_count = 0
++        self._char_count = 0
++        self._first_chunk_ts = None
++        self._last_chunk_ts = None
++
+         self.adapter_identifiers = {
+             "ChatAdapter": {
+                 "start_identifier": f"[[ ## {self.signature_field_name} ## ]]",
+@@ -72,6 +78,42 @@ class StreamListener:
+                 return True
+         return False
+ 
++    def _record_chunk(self, token: str):
++        now = time.time()
++        self._chunk_count += 1
++        self._char_count += len(token)
++        if self._first_chunk_ts is None:
++            self._first_chunk_ts = now
++        self._last_chunk_ts = now
++
++    def _reset_stats(self):
++        self._chunk_count = 0
++        self._char_count = 0
++        self._first_chunk_ts = None
++        self._last_chunk_ts = None
++
++    def _push_stats_to_usage_tracker(self):
++        tracker = getattr(settings, "usage_tracker", None)
++        if tracker is not None and hasattr(tracker, "add_usage"):
++            tracker.add_usage("streaming", self.stats())
++
++    def stats(self) -> dict[str, Any]:
++        """Return chunk count/size metrics for the field currently (or most recently) being streamed."""
++        duration = None
++        if self._first_chunk_ts is not None and self._last_chunk_ts is not None:
++            duration = self._last_chunk_ts - self._first_chunk_ts
++        avg_chunk_chars = (self._char_count / self._chunk_count) if self._chunk_count > 0 else 0
++        return {
++            "predict_name": self.predict_name,
++            "field": self.signature_field_name,
++            "chunk_count": self._chunk_count,
++            "char_count": self._char_count,
++            "first_ts": self._first_chunk_ts,
++            "last_ts": self._last_chunk_ts,
++            "duration_s": duration,
++            "avg_chunk_chars": avg_chunk_chars,
++        }
++
+     def receive(self, chunk: ModelResponseStream):
+         adapter_name = settings.adapter.__class__.__name__ if settings.adapter else "ChatAdapter"
+         if adapter_name not in self.adapter_identifiers:
+@@ -91,6 +133,7 @@ class StreamListener:
+                 self.field_start_queue = []
+                 self.field_end_queue = Queue()
+                 self.stream_start = False
++                self._reset_stats()
+             else:
+                 return
+ 
+@@ -112,6 +155,7 @@ class StreamListener:
+                 self.cache_hit = True
+                 self.stream_start = True
+                 self.stream_end = True
++                self._reset_stats()
+                 return
+ 
+         if len(self.field_start_queue) == 0 and not self.stream_start and start_indicator in chunk_message:
+@@ -166,7 +210,14 @@ class StreamListener:
+                 token = token.rstrip()  # Remove the trailing \n\n
+ 
+             if token:
+-                return StreamResponse(self.predict_name, self.signature_field_name, token)
++                self._record_chunk(token)
++                response = StreamResponse(
++                    self.predict_name, self.signature_field_name, token, is_last_chunk=self.stream_end
++                )
++                if self.stream_end:
++                    self._push_stats_to_usage_tracker()
++                    self._reset_stats()
++                return response
+ 
+     def flush(self) -> str:
+         """Flush all tokens in the field end queue.

@@ -1,0 +1,159 @@
+diff --git a/Tests/test_image_quantize.py b/Tests/test_image_quantize.py
+index bd9db362c..5df85a662 100644
+--- a/Tests/test_image_quantize.py
++++ b/Tests/test_image_quantize.py
+@@ -85,3 +85,56 @@ def test_transparent_colors_equal():
+     converted = im.quantize()
+     converted_px = converted.load()
+     assert converted_px[0, 0] == converted_px[0, 1]
++
++
++def test_sort_palette_none():
++    image = hopper()
++    default = image.quantize(colors=100, method=Image.FASTOCTREE)
++    explicit_none = image.quantize(
++        colors=100, method=Image.FASTOCTREE, sort_palette=None
++    )
++
++    assert default.getpalette() == explicit_none.getpalette()
++    assert default.tobytes() == explicit_none.tobytes()
++
++
++def test_sort_palette_rgb():
++    image = hopper()
++    converted = image.quantize(
++        colors=100, method=Image.FASTOCTREE, sort_palette="rgb"
++    )
++    assert_image(converted, "P", converted.size)
++    assert_image_similar(converted.convert("RGB"), image, 20)
++
++    palette = converted.getpalette()
++    colors = [tuple(palette[i : i + 3]) for i in range(0, len(palette), 3)]
++    assert colors == sorted(colors)
++
++
++def test_sort_palette_brightness():
++    image = hopper()
++    converted = image.quantize(
++        colors=100, method=Image.FASTOCTREE, sort_palette="brightness"
++    )
++    assert_image(converted, "P", converted.size)
++    assert_image_similar(converted.convert("RGB"), image, 20)
++
++    palette = converted.getpalette()
++    colors = [tuple(palette[i : i + 3]) for i in range(0, len(palette), 3)]
++    brightness = [0.299 * r + 0.587 * g + 0.114 * b for r, g, b in colors]
++    assert brightness == sorted(brightness)
++
++
++def test_sort_palette_invalid_value():
++    image = hopper()
++    with pytest.raises(ValueError):
++        image.quantize(colors=100, sort_palette="invalid")
++
++
++def test_sort_palette_with_reference_palette_raises():
++    image = hopper()
++    with Image.open("Tests/images/caption_6_33_22.png") as palette:
++        palette = palette.convert("P")
++
++    with pytest.raises(ValueError):
++        image.quantize(palette=palette, sort_palette="rgb")
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..8609e39c6 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -1048,7 +1048,15 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        sort_palette=None,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1081,12 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param sort_palette: Sort the generated palette after quantization.
++           Accepts ``"rgb"`` to sort colors ascending by their (R, G, B)
++           value, or ``"brightness"`` to sort colors ascending by perceived
++           brightness. Only applies when a new palette is generated (not
++           when quantizing to a reference ``palette``). Default: ``None``
++           (palette order is left as produced by the quantization method).
+         :returns: A new image
+ 
+         """
+@@ -1092,7 +1106,15 @@ class Image:
+                 "are the only valid methods for quantizing RGBA images"
+             )
+ 
++        if sort_palette is not None and sort_palette not in ("rgb", "brightness"):
++            raise ValueError(f"Unsupported sort_palette: {sort_palette!r}")
++
+         if palette:
++            if sort_palette:
++                raise ValueError(
++                    "sort_palette is not supported when quantizing to a "
++                    "reference palette"
++                )
+             # use palette from reference image
+             palette.load()
+             if palette.mode != "P":
+@@ -1113,6 +1135,47 @@ class Image:
+         mode = im.im.getpalettemode()
+         im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
+ 
++        if sort_palette:
++            im = im._sort_palette(sort_palette)
++
++        return im
++
++    def _sort_palette(self, sort_palette):
++        """
++        Reorders this image's palette colors (ascending, by ``"rgb"`` value
++        or perceived ``"brightness"``) and remaps pixel indices to match.
++        """
++        mode = self.palette.mode
++        channels = len(mode)
++        palette_bytes = self.palette.palette
++        num_entries = len(palette_bytes) // channels
++        entries = [
++            tuple(palette_bytes[i * channels : (i + 1) * channels])
++            for i in range(num_entries)
++        ]
++
++        if sort_palette == "brightness":
++            def sort_key(index):
++                r, g, b = entries[index][:3]
++                return 0.299 * r + 0.587 * g + 0.114 * b
++
++        else:
++            def sort_key(index):
++                return entries[index][:3]
++
++        order = sorted(range(num_entries), key=sort_key)
++
++        lut = [0] * 256
++        for new_index, old_index in enumerate(order):
++            lut[old_index] = new_index
++
++        from . import ImagePalette
++
++        im = self.point(lut)
++        im.palette = ImagePalette.ImagePalette(
++            mode, b"".join(bytes(entries[old_index]) for old_index in order)
++        )
++        im.palette.dirty = 1
+         return im
+ 
+     def copy(self):

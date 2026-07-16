@@ -1,0 +1,99 @@
+diff --git a/src/datasets/features/features.py b/src/datasets/features/features.py
+index 6a0da6401..4d23b3e51 100644
+--- a/src/datasets/features/features.py
++++ b/src/datasets/features/features.py
+@@ -22,7 +22,7 @@ from collections.abc import Iterable
+ from dataclasses import InitVar, _asdict_inner, dataclass, field, fields
+ from functools import reduce
+ from operator import mul
+-from typing import Any, ClassVar, Dict, List, Optional
++from typing import Any, Callable, ClassVar, Dict, List, Optional
+ from typing import Sequence as Sequence_
+ from typing import Tuple, Union
+ 
+@@ -1178,22 +1178,36 @@ def list_of_np_array_to_pyarrow_listarray(l_arr: List[np.ndarray], type: pa.Data
+         return pa.array([], type=type)
+ 
+ 
+-def require_decoding(feature: FeatureType, ignore_decode_attribute: bool = False) -> bool:
++def require_decoding(
++    feature: FeatureType,
++    ignore_decode_attribute: bool = False,
++    custom_decode_condition: Optional[Callable[[FeatureType], Optional[bool]]] = None,
++) -> bool:
+     """Check if a (possibly nested) feature requires decoding.
+ 
+     Args:
+         feature (FeatureType): the feature type to be checked
+         ignore_decode_attribute (:obj:`bool`, default ``False``): Whether to ignore the current value
+             of the `decode` attribute of the decodable feature types.
++        custom_decode_condition (:obj:`Callable`, *optional*): An optional callable that is evaluated on
++            `feature` before the default criteria. It can inspect metadata or feature-specific attributes
++            and return `True` or `False` to override whether decoding is required, or `None` to fall back
++            to the default criteria.
+     Returns:
+         :obj:`bool`
+     """
++    if custom_decode_condition is not None:
++        result = custom_decode_condition(feature)
++        if result is not None:
++            return result
+     if isinstance(feature, dict):
+-        return any(require_decoding(f) for f in feature.values())
++        return any(
++            require_decoding(f, ignore_decode_attribute, custom_decode_condition) for f in feature.values()
++        )
+     elif isinstance(feature, (list, tuple)):
+-        return require_decoding(feature[0])
++        return require_decoding(feature[0], ignore_decode_attribute, custom_decode_condition)
+     elif isinstance(feature, Sequence):
+-        return require_decoding(feature.feature)
++        return require_decoding(feature.feature, ignore_decode_attribute, custom_decode_condition)
+     else:
+         return hasattr(feature, "decode_example") and (feature.decode if not ignore_decode_attribute else True)
+ 
+@@ -1245,15 +1259,40 @@ class Features(dict):
+         super().__delitem__(column_name)
+         del self._column_requires_decoding[column_name]
+ 
+-    def update(self, iterable, **kwds):
++    def update(self, iterable=(), **kwds):
+         if hasattr(iterable, "keys"):
+             for key in iterable.keys():
+-                self[key] = iterable[key]
++                self._update_value(key, iterable[key])
+         else:
+             for key, value in iterable:
+-                self[key] = value
++                self._update_value(key, value)
+         for key in kwds:
+-            self[key] = kwds[key]
++            self._update_value(key, kwds[key])
++
++    def _update_value(self, key, value) -> None:
++        """Set `self[key]` to `value`, deep-merging into the existing value when both are dict-like
++        (a `dict`, or a `Sequence` whose `feature` is a `dict`) instead of overwriting it.
++        """
++        if key in self:
++            current = self[key]
++            current_dict = current.feature if isinstance(current, Sequence) else current
++            value_dict = value.feature if isinstance(value, Sequence) else value
++            if isinstance(current_dict, dict) and isinstance(value_dict, dict):
++                self._deep_merge_dicts(current_dict, value_dict)
++                self[key] = current
++                return
++        self[key] = value
++
++    @staticmethod
++    def _deep_merge_dicts(current: dict, new: dict) -> None:
++        for k, v in new.items():
++            current_value = current.get(k)
++            current_inner = current_value.feature if isinstance(current_value, Sequence) else current_value
++            value_inner = v.feature if isinstance(v, Sequence) else v
++            if isinstance(current_inner, dict) and isinstance(value_inner, dict):
++                Features._deep_merge_dicts(current_inner, value_inner)
++            else:
++                current[k] = v
+ 
+     def __reduce__(self):
+         return Features, (dict(self),)

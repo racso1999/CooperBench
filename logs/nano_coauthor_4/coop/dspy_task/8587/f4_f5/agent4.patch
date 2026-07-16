@@ -1,0 +1,161 @@
+diff --git a/dspy/streaming/streaming_listener.py b/dspy/streaming/streaming_listener.py
+index 98fd4aca..2459ca79 100644
+--- a/dspy/streaming/streaming_listener.py
++++ b/dspy/streaming/streaming_listener.py
+@@ -1,4 +1,6 @@
++import logging
+ import re
++import time
+ from collections import defaultdict
+ from queue import Queue
+ from typing import TYPE_CHECKING, Any
+@@ -26,6 +28,9 @@ class StreamListener:
+         predict: Any = None,
+         predict_name: str | None = None,
+         allow_reuse: bool = False,
++        idle_timeout_s: float | None = None,
++        debug: bool = False,
++        debug_logger: logging.Logger | None = None,
+     ):
+         """
+         Args:
+@@ -36,6 +41,12 @@ class StreamListener:
+                 automatically look for the predictor that has the `signature_field_name` in its signature.
+             allow_reuse: If True, the stream listener can be reused for multiple streams. Please note that this could
+                 hurt the performance because the same stream chunk is sent to multiple listeners.
++            idle_timeout_s: If set, the number of seconds of inactivity after which `tick()` will emit an idle
++                heartbeat chunk and reset the listener state.
++            debug: If True, emit structured DEBUG-level trace logs for key state transitions (start detection, end
++                detection, flush, and state reset) to help diagnose streaming boundary issues.
++            debug_logger: Optional logger to use for debug trace logs. If None, defaults to
++                `logging.getLogger("dspy.streaming.listener")`.
+         """
+         self.signature_field_name = signature_field_name
+         self.predict = predict
+@@ -48,6 +59,12 @@ class StreamListener:
+         self.cache_hit = False
+         self.allow_reuse = allow_reuse
+ 
++        self.idle_timeout_s = idle_timeout_s
++        self._last_chunk_ts = None
++
++        self.debug = debug
++        self._logger = debug_logger or logging.getLogger("dspy.streaming.listener")
++
+         self.adapter_identifiers = {
+             "ChatAdapter": {
+                 "start_identifier": f"[[ ## {self.signature_field_name} ## ]]",
+@@ -91,6 +108,10 @@ class StreamListener:
+                 self.field_start_queue = []
+                 self.field_end_queue = Queue()
+                 self.stream_start = False
++                if self.debug and self._logger.isEnabledFor(logging.DEBUG):
++                    self._logger.debug(
++                        "State reset for field '%s' (allow_reuse=True)", self.signature_field_name
++                    )
+             else:
+                 return
+ 
+@@ -101,6 +122,9 @@ class StreamListener:
+         except Exception:
+             return
+ 
++        if chunk_message:
++            self._last_chunk_ts = time.time()
++
+         if chunk_message and start_identifier in chunk_message:
+             # If the cache is hit, the chunk_message could be the full response. When it happens we can
+             # directly end the stream listening. In some models like gemini, each stream chunk can be multiple
+@@ -133,11 +157,19 @@ class StreamListener:
+                 self.field_start_queue = []
+                 # Keep the part after the start_identifier from the concat_message, we need to write it to the buffer.
+                 value_start_index = concat_message.find(start_identifier) + len(start_identifier)
+-                chunk_message = concat_message[value_start_index:].lstrip()
++                post_identifier_buffer = concat_message[value_start_index:]
++                chunk_message = post_identifier_buffer.lstrip()
+                 if isinstance(settings.adapter, JSONAdapter) and chunk_message.startswith('"'):
+                     # For JSONAdapter, we need to remove the leading ". We cannot do this with the start_identifier
+                     # because there could be a few splitters between ':' and '"', e.g., '"name": "value"'.
+                     chunk_message = chunk_message[1:]
++                if self.debug and self._logger.isEnabledFor(logging.DEBUG):
++                    self._logger.debug(
++                        "Start detection: adapter=%s, field='%s', stream_start=True, buffer_preview=%s",
++                        adapter_name,
++                        self.signature_field_name,
++                        _debug_preview(post_identifier_buffer),
++                    )
+ 
+             elif self._buffered_message_end_with_start_identifier(concat_message.strip(), start_identifier):
+                 # If the buffered message ends with part of the start_identifier, we keep looking for the
+@@ -160,12 +192,26 @@ class StreamListener:
+             concat_message = "".join(self.field_end_queue.queue).strip()
+             if re.search(end_identifier, concat_message):
+                 # The next field is identified, we can end the stream and flush out all tokens in the buffer.
++                if self.debug and self._logger.isEnabledFor(logging.DEBUG):
++                    self._logger.debug(
++                        "Rolling end check: adapter=%s, field='%s', reason='regex_match', buffered_size=%d",
++                        adapter_name,
++                        self.signature_field_name,
++                        len(concat_message),
++                    )
+                 self.stream_end = True
+                 last_token = self.flush()
+                 token = token + last_token if token else last_token
+                 token = token.rstrip()  # Remove the trailing \n\n
+ 
+             if token:
++                if self.debug and self._logger.isEnabledFor(logging.DEBUG):
++                    self._logger.debug(
++                        "Emit chunk: len(token)=%d, queue_size=%d, is_last_chunk=%s",
++                        len(token),
++                        self.field_end_queue.qsize(),
++                        self.stream_end,
++                    )
+                 return StreamResponse(self.predict_name, self.signature_field_name, token)
+ 
+     def flush(self) -> str:
+@@ -198,6 +244,44 @@ class StreamListener:
+                 f"{', '.join([a.__name__ for a in ADAPTER_SUPPORT_STREAMING])}"
+             )
+ 
++    def tick(self, now_ts: float | None = None) -> "StreamResponse | None":
++        """Check whether the stream has gone idle and, if so, emit a terminal empty chunk.
++
++        Args:
++            now_ts: The current timestamp to check against. Defaults to `time.time()`.
++
++        Returns:
++            A `StreamResponse` with an empty `chunk` if `idle_timeout_s` has elapsed since the last chunk was
++            received for a stream that has started but not yet ended, otherwise `None`.
++        """
++        if self.idle_timeout_s is None or not self.stream_start or self.stream_end or self._last_chunk_ts is None:
++            return None
++
++        now_ts = now_ts if now_ts is not None else time.time()
++        if now_ts - self._last_chunk_ts < self.idle_timeout_s:
++            return None
++
++        if self.debug and self._logger.isEnabledFor(logging.DEBUG):
++            self._logger.debug(
++                "Idle timeout: field='%s', idle_timeout_s=%s, elapsed=%.3f",
++                self.signature_field_name,
++                self.idle_timeout_s,
++                now_ts - self._last_chunk_ts,
++            )
++
++        response = StreamResponse(self.predict_name, self.signature_field_name, "")
++
++        # Reset the state unconditionally, regardless of `allow_reuse`, so the listener is never left stuck in a
++        # started state after an idle timeout.
++        self.field_start_queue = []
++        self.field_end_queue = Queue()
++        self.stream_start = False
++        self.stream_end = False
++        self.cache_hit = False
++        self._last_chunk_ts = None
++
++        return response
++
+ 
+ def find_predictor_for_stream_listeners(program: "Module", stream_listeners: list[StreamListener]):
+     """Find the predictor for each stream listener.

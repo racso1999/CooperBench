@@ -1,0 +1,77 @@
+diff --git a/llama-index-core/llama_index/core/base/llms/types.py b/llama-index-core/llama_index/core/base/llms/types.py
+index 00e30cf23..bdac8228b 100644
+--- a/llama-index-core/llama_index/core/base/llms/types.py
++++ b/llama-index-core/llama_index/core/base/llms/types.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import base64
++import binascii
+ from enum import Enum
+ from io import BytesIO
+ from typing import (
+@@ -48,6 +49,24 @@ class TextBlock(BaseModel):
+     text: str
+ 
+ 
++def normalize_image_bytes(image: bytes) -> tuple[bytes, bytes]:
++    """Normalize raw or base64-encoded image bytes.
++
++    Detects whether ``image`` is already base64-encoded and returns a tuple of
++    ``(encoded_image, decoded_for_guessing)``, where ``encoded_image`` is
++    guaranteed to be base64-encoded bytes and ``decoded_for_guessing`` is the
++    raw, non-base64 bytes suitable for mimetype guessing.
++    """
++    try:
++        decoded_for_guessing = base64.b64decode(image, validate=True)
++        encoded_image = image
++    except binascii.Error:
++        decoded_for_guessing = image
++        encoded_image = base64.b64encode(image)
++
++    return encoded_image, decoded_for_guessing
++
++
+ class ImageBlock(BaseModel):
+     block_type: Literal["image"] = "image"
+     image: bytes | None = None
+@@ -75,11 +94,11 @@ class ImageBlock(BaseModel):
+         if not self.image:
+             return self
+ 
+-        if not self.image_mimetype:
+-            guess = filetype.guess(self.image)
+-            self.image_mimetype = guess.mime if guess else None
++        encoded_image, _ = normalize_image_bytes(self.image)
++
++        self.get_image_mimetype()
+ 
+-        self.image = base64.b64encode(self.image)
++        self.image = encoded_image
+ 
+         return self
+ 
+@@ -108,6 +127,23 @@ class ImageBlock(BaseModel):
+         else:
+             raise ValueError("No image found in the chat message!")
+ 
++    def get_image_mimetype(self) -> str | None:
++        """Lazily resolve and cache the image's mimetype.
++
++        If `image_mimetype` is already set, it's returned as-is. Otherwise, it's
++        guessed from `image` using the filetype library and cached on the instance
++        for future accesses.
++        """
++        if self.image_mimetype:
++            return self.image_mimetype
++
++        if self.image:
++            _, decoded_for_guessing = normalize_image_bytes(self.image)
++            guess = filetype.guess(decoded_for_guessing)
++            self.image_mimetype = guess.mime if guess else None
++
++        return self.image_mimetype
++
+ 
+ ContentBlock = Annotated[
+     Union[TextBlock, ImageBlock], Field(discriminator="block_type")

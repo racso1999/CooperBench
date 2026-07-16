@@ -1,0 +1,99 @@
+diff --git a/src/datasets/features/features.py b/src/datasets/features/features.py
+index 6a0da6401..959c3de36 100644
+--- a/src/datasets/features/features.py
++++ b/src/datasets/features/features.py
+@@ -19,8 +19,8 @@ import json
+ import re
+ import sys
+ from collections.abc import Iterable
+-from dataclasses import InitVar, _asdict_inner, dataclass, field, fields
+-from functools import reduce
++from dataclasses import InitVar, _asdict_inner, dataclass, field, fields, replace
++from functools import reduce, wraps
+ from operator import mul
+ from typing import Any, ClassVar, Dict, List, Optional
+ from typing import Sequence as Sequence_
+@@ -1198,6 +1198,48 @@ def require_decoding(feature: FeatureType, ignore_decode_attribute: bool = False
+         return hasattr(feature, "decode_example") and (feature.decode if not ignore_decode_attribute else True)
+ 
+ 
++def keep_features_dicts_synced(func):
++    """
++    Wrapper to keep the secondary dictionary, `_column_requires_decoding`, of the `Features` class in sync with the
++    main dictionary.
++
++    This is used instead of subclassing `UserDict`, because it's much faster and doesn't introduce breaking changes.
++    """
++
++    @wraps(func)
++    def wrapper(*args, **kwargs):
++        if args:
++            self: "Features" = args[0]
++            args = args[1:]
++        else:
++            self: "Features" = kwargs.pop("self")
++        out = func(self, *args, **kwargs)
++        assert hasattr(self, "_column_requires_decoding")
++        self._column_requires_decoding = {col: require_decoding(feature) for col, feature in self.items()}
++        return out
++
++    wrapper._decorator_name_ = "_keep_dicts_synced"
++    return wrapper
++
++
++def _deep_merge_feature(old_value: Any, new_value: Any) -> Any:
++    """Recursively merge ``new_value`` into ``old_value`` when both are dictionaries
++    (or :class:`Sequence` objects wrapping dictionaries), otherwise ``new_value`` wins."""
++    if isinstance(old_value, dict) and isinstance(new_value, dict):
++        merged = dict(old_value)
++        for key, value in new_value.items():
++            merged[key] = _deep_merge_feature(merged[key], value) if key in merged else value
++        return merged
++    if (
++        isinstance(old_value, Sequence)
++        and isinstance(new_value, Sequence)
++        and isinstance(old_value.feature, dict)
++        and isinstance(new_value.feature, dict)
++    ):
++        return replace(old_value, feature=_deep_merge_feature(old_value.feature, new_value.feature))
++    return new_value
++
++
+ class Features(dict):
+     """A special dictionary that defines the internal structure of a dataset.
+ 
+@@ -1237,23 +1279,21 @@ class Features(dict):
+             col: require_decoding(feature) for col, feature in self.items()
+         }
+ 
+-    def __setitem__(self, column_name: str, feature: FeatureType):
+-        super().__setitem__(column_name, feature)
+-        self._column_requires_decoding[column_name] = require_decoding(feature)
+-
+-    def __delitem__(self, column_name: str):
+-        super().__delitem__(column_name)
+-        del self._column_requires_decoding[column_name]
++    __setitem__ = keep_features_dicts_synced(dict.__setitem__)
++    __delitem__ = keep_features_dicts_synced(dict.__delitem__)
++    setdefault = keep_features_dicts_synced(dict.setdefault)
++    pop = keep_features_dicts_synced(dict.pop)
++    popitem = keep_features_dicts_synced(dict.popitem)
++    clear = keep_features_dicts_synced(dict.clear)
+ 
+     def update(self, iterable, **kwds):
+         if hasattr(iterable, "keys"):
+-            for key in iterable.keys():
+-                self[key] = iterable[key]
+-        else:
+-            for key, value in iterable:
++            iterable = [(key, iterable[key]) for key in iterable.keys()]
++        for key, value in list(iterable) + list(kwds.items()):
++            if key in self:
++                self[key] = _deep_merge_feature(self[key], value)
++            else:
+                 self[key] = value
+-        for key in kwds:
+-            self[key] = kwds[key]
+ 
+     def __reduce__(self):
+         return Features, (dict(self),)

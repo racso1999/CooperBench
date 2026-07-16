@@ -1,0 +1,74 @@
+diff --git a/llama-index-core/llama_index/core/base/llms/types.py b/llama-index-core/llama_index/core/base/llms/types.py
+index 00e30cf23..b123f1721 100644
+--- a/llama-index-core/llama_index/core/base/llms/types.py
++++ b/llama-index-core/llama_index/core/base/llms/types.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import base64
++import binascii
+ from enum import Enum
+ from io import BytesIO
+ from typing import (
+@@ -43,6 +44,27 @@ class MessageRole(str, Enum):
+     MODEL = "model"
+ 
+ 
++def normalize_image_bytes(image: bytes) -> tuple[bytes, bytes]:
++    """Normalize raw or already base64-encoded image bytes.
++
++    Args:
++        image: the raw image bytes, or the image already encoded as base64.
++
++    Returns:
++        A tuple ``(encoded_image, decoded_for_guessing)`` where ``encoded_image``
++        is the base64-encoded representation of the image, and
++        ``decoded_for_guessing`` is the raw bytes to use for mimetype guessing.
++    """
++    try:
++        decoded_for_guessing = base64.b64decode(image, validate=True)
++        encoded_image = image
++    except (binascii.Error, ValueError):
++        decoded_for_guessing = image
++        encoded_image = base64.b64encode(image)
++
++    return encoded_image, decoded_for_guessing
++
++
+ class TextBlock(BaseModel):
+     block_type: Literal["text"] = "text"
+     text: str
+@@ -75,14 +97,31 @@ class ImageBlock(BaseModel):
+         if not self.image:
+             return self
+ 
++        encoded_image, decoded_for_guessing = normalize_image_bytes(self.image)
++
+         if not self.image_mimetype:
+-            guess = filetype.guess(self.image)
++            guess = filetype.guess(decoded_for_guessing)
+             self.image_mimetype = guess.mime if guess else None
+ 
+-        self.image = base64.b64encode(self.image)
++        self.image = encoded_image
+ 
+         return self
+ 
++    def get_image_mimetype(self) -> str | None:
++        """Lazily resolve and cache the image mimetype.
++
++        If the mimetype hasn't been set yet, guess it from the image bytes
++        (decoding from base64 first if needed) using the filetype library and
++        cache the result on `image_mimetype` so future accesses don't repeat
++        the guess.
++        """
++        if not self.image_mimetype and self.image:
++            _, decoded_for_guessing = normalize_image_bytes(self.image)
++            guess = filetype.guess(decoded_for_guessing)
++            self.image_mimetype = guess.mime if guess else None
++
++        return self.image_mimetype
++
+     def resolve_image(self, as_base64: bool = False) -> BytesIO:
+         """Resolve an image such that PIL can read it.
+ 

@@ -1,0 +1,85 @@
+diff --git a/Tests/test_image.py b/Tests/test_image.py
+index c2e850c36..e992ff651 100644
+--- a/Tests/test_image.py
++++ b/Tests/test_image.py
+@@ -196,6 +196,27 @@ class TestImage:
+                     pytest.skip("jpg_2000 not available")
+                 im.save(tmp_path / ("temp." + ext))
+ 
++    def test_save_backup(self, tmp_path: Path) -> None:
++        out = tmp_path / "temp.png"
++        im = hopper()
++
++        # No existing file, so no backup should be created
++        im.save(out, backup=True)
++        assert not (tmp_path / "temp.png.bak").exists()
++
++        # File exists, so a backup should be created with the original content
++        original_bytes = out.read_bytes()
++        im.rotate(90).save(out, backup=True)
++        backup_file = tmp_path / "temp.png.bak"
++        assert backup_file.exists()
++        assert backup_file.read_bytes() == original_bytes
++        with Image.open(out) as reloaded:
++            assert_image_equal(reloaded, im.rotate(90))
++
++        # Custom backup suffix
++        im.save(out, backup=True, backup_suffix=".backup")
++        assert (tmp_path / "temp.png.backup").exists()
++
+     def test_fp_name(self, tmp_path: Path) -> None:
+         temp_file = tmp_path / "temp.jpg"
+ 
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 233df592c..a4c089de1 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -34,6 +34,7 @@ import logging
+ import math
+ import os
+ import re
++import shutil
+ import struct
+ import sys
+ import tempfile
+@@ -2467,7 +2468,12 @@ class Image:
+         )
+ 
+     def save(
+-        self, fp: StrOrBytesPath | IO[bytes], format: str | None = None, **params: Any
++        self,
++        fp: StrOrBytesPath | IO[bytes],
++        format: str | None = None,
++        backup: bool = False,
++        backup_suffix: str = ".bak",
++        **params: Any,
+     ) -> None:
+         """
+         Saves this image under the given filename.  If no format is
+@@ -2490,6 +2496,11 @@ class Image:
+            format to use is determined from the filename extension.
+            If a file object was used instead of a filename, this
+            parameter should always be used.
++        :param backup: If true and a file already exists at the target
++           filename, a backup copy of the existing file is made before
++           it is overwritten. Has no effect when saving to a file object.
++        :param backup_suffix: The suffix appended to the filename to create
++           the backup copy when ``backup`` is true. Defaults to ``".bak"``.
+         :param params: Extra parameters to the image writer. These can also be
+            set on the image itself through ``encoderinfo``. This is useful when
+            saving multiple images::
+@@ -2561,6 +2572,14 @@ class Image:
+         created = False
+         if open_fp:
+             created = not os.path.exists(filename)
++            if backup and not created:
++                if isinstance(filename, bytes):
++                    backup_filename: str | bytes = filename + os.fsencode(
++                        backup_suffix
++                    )
++                else:
++                    backup_filename = filename + backup_suffix
++                shutil.copy2(filename, backup_filename)
+             if params.get("append", False):
+                 # Open also for reading ("+"), because TIFF save_all
+                 # writer needs to go back and edit the written data.

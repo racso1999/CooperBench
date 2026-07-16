@@ -1,0 +1,99 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..aab6044 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -1186,6 +1186,50 @@ class Command:
+             self.parse_args(ctx, args)
+         return ctx
+ 
++    def _resolve_dynamic_defaults(self, ctx: Context) -> None:
++        """Resolve options whose ``default`` is a dynamic default
++        mapping (``{"--source-option": {"value": default}}``). This
++        runs after every parameter has been processed once, so it can
++        look at the final values of the options it depends on.
++
++        .. versionadded:: 8.3
++        """
++        params = self.get_params(ctx)
++        opts_to_param = {opt: param for param in params for opt in param.opts}
++
++        for param in params:
++            dynamic_default = getattr(param, "_dynamic_default", None)
++
++            if dynamic_default is None:
++                continue
++
++            source = ctx.get_parameter_source(param.name)  # type: ignore[arg-type]
++
++            if source != ParameterSource.DEFAULT:
++                continue
++
++            resolved = None
++
++            for source_opt, mapping in dynamic_default.items():
++                source_param = opts_to_param.get(source_opt)
++
++                if source_param is None:
++                    continue
++
++                source_value = ctx.params.get(source_param.name)
++                match = mapping.get(str(source_value))
++
++                if match is not None:
++                    resolved = match
++
++            if resolved is None:
++                continue
++
++            value = param.process_value(ctx, resolved)
++
++            if param.expose_value:
++                ctx.params[param.name] = value  # type: ignore[index]
++
+     def parse_args(self, ctx: Context, args: list[str]) -> list[str]:
+         if not args and self.no_args_is_help and not ctx.resilient_parsing:
+             raise NoArgsIsHelpError(ctx)
+@@ -1196,6 +1240,8 @@ class Command:
+         for param in iter_params_for_processing(param_order, self.get_params(ctx)):
+             value, args = param.handle_parse_result(ctx, opts, args)
+ 
++        self._resolve_dynamic_defaults(ctx)
++
+         if args and not ctx.allow_extra_args and not ctx.resilient_parsing:
+             ctx.fail(
+                 ngettext(
+@@ -2637,6 +2683,19 @@ class Option(Parameter):
+         self.show_choices = show_choices
+         self.show_envvar = show_envvar
+ 
++        self._dynamic_default: dict[str, dict[str, t.Any]] | None = None
++
++        if isinstance(self.default, dict):
++            for key, mapping in self.default.items():
++                if not isinstance(key, str):
++                    raise TypeError("Dynamic default keys must be strings")
++
++                if not isinstance(mapping, dict):
++                    raise TypeError("Dynamic default values must be dictionaries")
++
++            self._dynamic_default = self.default
++            self.default = None
++
+         if __debug__:
+             if deprecated and prompt:
+                 raise ValueError("`deprecated` options cannot use `prompt`.")
+@@ -2861,9 +2920,13 @@ class Option(Parameter):
+         elif ctx.show_default is not None:
+             show_default = ctx.show_default
+ 
+-        if show_default_is_str or (show_default and (default_value is not None)):
++        has_default = default_value is not None or self._dynamic_default is not None
++
++        if show_default_is_str or (show_default and has_default):
+             if show_default_is_str:
+                 default_string = f"({self.show_default})"
++            elif self._dynamic_default is not None:
++                default_string = _("(dynamic)")
+             elif isinstance(default_value, (list, tuple)):
+                 default_string = ", ".join(str(d) for d in default_value)
+             elif inspect.isfunction(default_value):

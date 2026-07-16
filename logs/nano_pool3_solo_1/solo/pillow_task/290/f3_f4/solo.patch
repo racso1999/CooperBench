@@ -1,0 +1,220 @@
+diff --git a/Tests/test_image_quantize.py b/Tests/test_image_quantize.py
+index bd9db362c..c07e8163f 100644
+--- a/Tests/test_image_quantize.py
++++ b/Tests/test_image_quantize.py
+@@ -85,3 +85,71 @@ def test_transparent_colors_equal():
+     converted = im.quantize()
+     converted_px = converted.load()
+     assert converted_px[0, 0] == converted_px[0, 1]
++
++
++def test_sort_palette_brightness():
++    image = hopper()
++    converted = image.quantize(32, sort_palette="brightness")
++    assert_image(converted, "P", converted.size)
++
++    mode_len = len(converted.palette.mode)
++    palette = converted.palette.palette
++    brightness = [
++        palette[i] * 299 + palette[i + 1] * 587 + palette[i + 2] * 114
++        for i in range(0, len(palette), mode_len)
++    ]
++    assert brightness == sorted(brightness)
++
++    # Sorting the palette should not change the visible image
++    assert_image_similar(
++        converted.convert("RGB"), image.quantize(32).convert("RGB"), 1
++    )
++
++
++def test_sort_palette_rgb():
++    image = hopper()
++    converted = image.quantize(32, sort_palette="rgb")
++    assert_image(converted, "P", converted.size)
++
++    mode_len = len(converted.palette.mode)
++    palette = converted.palette.palette
++    colors = [
++        tuple(palette[i : i + mode_len]) for i in range(0, len(palette), mode_len)
++    ]
++    assert colors == sorted(colors)
++
++
++def test_sort_palette_callable():
++    image = hopper()
++
++    def by_green(color):
++        return color[1]
++
++    converted = image.quantize(32, sort_palette=by_green)
++    assert_image(converted, "P", converted.size)
++
++    mode_len = len(converted.palette.mode)
++    palette = converted.palette.palette
++    greens = [palette[i + 1] for i in range(0, len(palette), mode_len)]
++    assert greens == sorted(greens)
++
++
++def test_sort_palette_invalid():
++    image = hopper()
++    with pytest.raises(ValueError):
++        image.quantize(32, sort_palette="unknown")
++
++
++def test_error_threshold():
++    image = hopper()
++
++    # A high error threshold should be satisfied with very few colors
++    loose = image.quantize(256, error_threshold=10000)
++    assert_image(loose, "P", loose.size)
++    assert len(loose.getcolors()) < 256
++
++    # A very tight error threshold cannot be met, so all requested
++    # colors should be used
++    tight = image.quantize(256, error_threshold=0.0001)
++    assert_image(tight, "P", tight.size)
++    assert len(tight.getcolors()) == 256
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..b1240c351 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -1048,7 +1048,16 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        sort_palette=None,
++        error_threshold=None,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1082,23 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param sort_palette: How to sort the palette colors after
++           quantization. This can be ``"brightness"`` to order colors from
++           darkest to lightest, or ``"rgb"`` to order colors by their
++           ``(r, g, b)`` value. A callable may also be given; it will be
++           called with each ``(r, g, b)`` (or ``(r, g, b, a)``) color tuple
++           and should return a value to sort by. Ignored if ``palette`` is
++           given, since the palette order is then taken from the reference
++           image. Default: ``None`` (palette order is left as produced by
++           the quantization method)
++        :param error_threshold: The maximum acceptable mean square error
++           (MSE) between this image and the quantized image, calculated
++           across the RGB channels. If given, quantization will be
++           attempted with progressively more colors, up to ``colors``,
++           stopping as soon as the error threshold is met, so fewer colors
++           than ``colors`` may be used. If the threshold cannot be met
++           using ``colors`` colors, ``colors`` colors will be used.
++           Default: ``None`` (always use ``colors`` colors)
+         :returns: A new image
+ 
+         """
+@@ -1106,13 +1132,96 @@ class Image:
+             new_im.palette = palette.palette.copy()
+             return new_im
+ 
+-        im = self._new(self.im.quantize(colors, method, kmeans))
++        if error_threshold is not None:
++            im = self._quantize_with_error_threshold(
++                colors, method, kmeans, error_threshold
++            )
++        else:
++            im = self._new(self.im.quantize(colors, method, kmeans))
+ 
+         from . import ImagePalette
+ 
+         mode = im.im.getpalettemode()
+         im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
+ 
++        if sort_palette is not None:
++            im = im._sort_palette(sort_palette)
++
++        return im
++
++    def _quantize_with_error_threshold(self, colors, method, kmeans, error_threshold):
++        reference = self.convert("RGB") if self.mode != "RGB" else self
++        reference_data = list(reference.getdata())
++
++        def mean_square_error(candidate):
++            comparison_data = candidate.convert("RGB").getdata()
++            count = len(reference_data)
++            if not count:
++                return 0.0
++            total = 0
++            for (r1, g1, b1), (r2, g2, b2) in zip(reference_data, comparison_data):
++                total += (r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2
++            return total / (count * 3)
++
++        low, high = 1, colors
++        best_im = None
++        while low <= high:
++            mid = (low + high) // 2
++            candidate = self._new(self.im.quantize(mid, method, kmeans))
++            if mean_square_error(candidate) <= error_threshold:
++                best_im = candidate
++                high = mid - 1
++            else:
++                low = mid + 1
++
++        if best_im is not None:
++            return best_im
++        return self._new(self.im.quantize(colors, method, kmeans))
++
++    def _sort_palette(self, sort_palette):
++        if self.mode != "P":
++            return self
++
++        palette = self.palette
++        mode_len = len(palette.mode)
++        palette_bytes = palette.palette
++        num_colors = len(palette_bytes) // mode_len
++        colors = [
++            tuple(palette_bytes[i * mode_len : (i + 1) * mode_len])
++            for i in range(num_colors)
++        ]
++
++        if sort_palette == "brightness":
++
++            def sort_key(color):
++                r, g, b = color[0], color[1], color[2]
++                return r * 299 + g * 587 + b * 114
++
++        elif sort_palette == "rgb":
++
++            def sort_key(color):
++                return color
++
++        elif callable(sort_palette):
++            sort_key = sort_palette
++        else:
++            raise ValueError(
++                "sort_palette must be 'brightness', 'rgb', or a callable"
++            )
++
++        order = sorted(range(num_colors), key=lambda i: sort_key(colors[i]))
++
++        lut = list(range(256))
++        for new_index, old_index in enumerate(order):
++            lut[old_index] = new_index
++
++        im = self.point(lut)
++
++        new_palette_bytes = bytearray()
++        for old_index in order:
++            new_palette_bytes.extend(colors[old_index])
++
++        im.putpalette(bytes(new_palette_bytes), palette.mode)
+         return im
+ 
+     def copy(self):

@@ -1,0 +1,91 @@
+diff --git a/Tests/test_image.py b/Tests/test_image.py
+index c2e850c36..a73d94e0f 100644
+--- a/Tests/test_image.py
++++ b/Tests/test_image.py
+@@ -752,6 +752,30 @@ class TestImage:
+ 
+         assert not os.path.exists(temp_file)
+ 
++    def test_dry_run(self, tmp_path: Path) -> None:
++        temp_file = tmp_path / "temp.png"
++
++        im = Image.new("RGB", (10, 10))
++        im.save(temp_file, dry_run=True)
++
++        assert not os.path.exists(temp_file)
++
++    def test_dry_run_fp(self) -> None:
++        im = Image.new("RGB", (10, 10))
++        fp = io.BytesIO()
++        im.save(fp, format="PNG", dry_run=True)
++
++        assert fp.tell() == 0
++
++    def test_dry_run_error(self, tmp_path: Path) -> None:
++        temp_file = tmp_path / "temp.jpg"
++
++        im = Image.new("RGBA", (10, 10))
++        with pytest.raises(OSError):
++            im.save(temp_file, dry_run=True)
++
++        assert not os.path.exists(temp_file)
++
+     def test_load_on_nonexclusive_multiframe(self) -> None:
+         with open("Tests/images/frozenpond.mpo", "rb") as fp:
+ 
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 233df592c..a73039f29 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -2505,6 +2505,12 @@ class Image:
+              red = Image.new("RGB", (1, 1), "#f00")
+              red.encoderinfo = {"xmp": b"test"}
+              black.save("out.mpo", save_all=True, append_images=[red])
++
++           A ``dry_run`` parameter can also be passed, to fully process the
++           image for saving (including format conversion, compression, etc.)
++           without actually writing anything to disk::
++
++             im.save("out.webp", dry_run=True)
+         :returns: None
+         :exception ValueError: If the output format could not be determined
+            from the file name.  Use the format option to solve this.
+@@ -2544,6 +2550,7 @@ class Image:
+         self._ensure_mutable()
+ 
+         save_all = params.pop("save_all", None)
++        dry_run = params.pop("dry_run", False)
+         self.encoderinfo = {**getattr(self, "encoderinfo", {}), **params}
+         self.encoderconfig: tuple[Any, ...] = ()
+ 
+@@ -2559,7 +2566,11 @@ class Image:
+             save_handler = SAVE[format.upper()]
+ 
+         created = False
+-        if open_fp:
++        if dry_run:
++            # Process the image as if saving, without writing to disk or
++            # to the given file object.
++            fp = io.BytesIO()
++        elif open_fp:
+             created = not os.path.exists(filename)
+             if params.get("append", False):
+                 # Open also for reading ("+"), because TIFF save_all
+@@ -2573,7 +2584,7 @@ class Image:
+         try:
+             save_handler(self, fp, filename)
+         except Exception:
+-            if open_fp:
++            if open_fp and not dry_run:
+                 fp.close()
+             if created:
+                 try:
+@@ -2586,7 +2597,7 @@ class Image:
+                 del self.encoderinfo
+             except AttributeError:
+                 pass
+-        if open_fp:
++        if open_fp and not dry_run:
+             fp.close()
+ 
+     def seek(self, frame: int) -> None:

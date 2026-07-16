@@ -1,0 +1,85 @@
+diff --git a/Tests/test_image.py b/Tests/test_image.py
+index c2e850c36..c6908bfde 100644
+--- a/Tests/test_image.py
++++ b/Tests/test_image.py
+@@ -219,6 +219,29 @@ class TestImage:
+         im = hopper()
+         im.save(fp)
+ 
++    def test_dry_run(self, tmp_path: Path) -> None:
++        temp_file = tmp_path / "temp.png"
++
++        im = hopper()
++        im.save(temp_file, dry_run=True)
++        assert not temp_file.exists()
++
++    def test_dry_run_existing_file(self, tmp_path: Path) -> None:
++        temp_file = tmp_path / "temp.png"
++        temp_file.write_bytes(b"original content")
++
++        im = hopper()
++        im.save(temp_file, dry_run=True)
++        assert temp_file.read_bytes() == b"original content"
++
++    def test_dry_run_raises(self, tmp_path: Path) -> None:
++        temp_file = tmp_path / "temp.jpg"
++
++        im = hopper("RGBA")
++        with pytest.raises(OSError):
++            im.save(temp_file, dry_run=True)
++        assert not temp_file.exists()
++
+     def test_tempfile(self) -> None:
+         # see #1460, pathlib support breaks tempfile.TemporaryFile on py27
+         # Will error out on save on 3.0.0
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 233df592c..50a87febc 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -2505,6 +2505,9 @@ class Image:
+              red = Image.new("RGB", (1, 1), "#f00")
+              red.encoderinfo = {"xmp": b"test"}
+              black.save("out.mpo", save_all=True, append_images=[red])
++        :param dry_run: If true, the image is processed as though it were being
++           saved, so that errors will still be raised, but the result is
++           discarded and no file is written.
+         :returns: None
+         :exception ValueError: If the output format could not be determined
+            from the file name.  Use the format option to solve this.
+@@ -2544,6 +2547,7 @@ class Image:
+         self._ensure_mutable()
+ 
+         save_all = params.pop("save_all", None)
++        dry_run = params.pop("dry_run", False)
+         self.encoderinfo = {**getattr(self, "encoderinfo", {}), **params}
+         self.encoderconfig: tuple[Any, ...] = ()
+ 
+@@ -2559,7 +2563,9 @@ class Image:
+             save_handler = SAVE[format.upper()]
+ 
+         created = False
+-        if open_fp:
++        if dry_run:
++            fp = io.BytesIO()
++        elif open_fp:
+             created = not os.path.exists(filename)
+             if params.get("append", False):
+                 # Open also for reading ("+"), because TIFF save_all
+@@ -2573,7 +2579,7 @@ class Image:
+         try:
+             save_handler(self, fp, filename)
+         except Exception:
+-            if open_fp:
++            if open_fp and not dry_run:
+                 fp.close()
+             if created:
+                 try:
+@@ -2586,7 +2592,7 @@ class Image:
+                 del self.encoderinfo
+             except AttributeError:
+                 pass
+-        if open_fp:
++        if open_fp and not dry_run:
+             fp.close()
+ 
+     def seek(self, frame: int) -> None:

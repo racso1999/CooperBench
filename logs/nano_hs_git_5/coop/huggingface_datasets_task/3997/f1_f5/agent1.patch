@@ -1,0 +1,159 @@
+diff --git a/src/datasets/features/features.py b/src/datasets/features/features.py
+index 6a0da6401..094957942 100644
+--- a/src/datasets/features/features.py
++++ b/src/datasets/features/features.py
+@@ -20,7 +20,7 @@ import re
+ import sys
+ from collections.abc import Iterable
+ from dataclasses import InitVar, _asdict_inner, dataclass, field, fields
+-from functools import reduce
++from functools import reduce, wraps
+ from operator import mul
+ from typing import Any, ClassVar, Dict, List, Optional
+ from typing import Sequence as Sequence_
+@@ -1198,6 +1198,34 @@ def require_decoding(feature: FeatureType, ignore_decode_attribute: bool = False
+         return hasattr(feature, "decode_example") and (feature.decode if not ignore_decode_attribute else True)
+ 
+ 
++def keep_features_dicts_synced(func):
++    """
++    Wrapper to keep the secondary dictionary, `_column_requires_decoding`, of the `Features` class in sync
++    with the main dictionary.
++
++    A `Features` object also holds a `_column_requires_decoding` dictionary, which maps each column name to
++    whether decoding its feature type is required. This decorator re-derives `_column_requires_decoding` from
++    the (possibly mutated) `Features` object right after `func` runs, so that any dictionary-mutating method
++    (`__setitem__`, `__delitem__`, `update`, etc.) keeps the two dictionaries consistent without having to
++    manually update `_column_requires_decoding` in every method.
++    """
++
++    @wraps(func)
++    def wrapper(*args, **kwargs):
++        if args:
++            self: "Features" = args[0]
++            args = args[1:]
++        else:
++            self: "Features" = kwargs.pop("self")
++        out = func(self, *args, **kwargs)
++        assert hasattr(self, "_column_requires_decoding")
++        self._column_requires_decoding = {col: require_decoding(feature) for col, feature in self.items()}
++        return out
++
++    wrapper._decorator_name_ = "keep_features_dicts_synced"
++    return wrapper
++
++
+ class Features(dict):
+     """A special dictionary that defines the internal structure of a dataset.
+ 
+@@ -1237,23 +1265,63 @@ class Features(dict):
+             col: require_decoding(feature) for col, feature in self.items()
+         }
+ 
++    @keep_features_dicts_synced
+     def __setitem__(self, column_name: str, feature: FeatureType):
+         super().__setitem__(column_name, feature)
+-        self._column_requires_decoding[column_name] = require_decoding(feature)
+ 
++    @keep_features_dicts_synced
+     def __delitem__(self, column_name: str):
+         super().__delitem__(column_name)
+-        del self._column_requires_decoding[column_name]
+ 
++    @keep_features_dicts_synced
+     def update(self, iterable, **kwds):
+         if hasattr(iterable, "keys"):
+             for key in iterable.keys():
+-                self[key] = iterable[key]
++                self[key] = self._merge_feature_value(self.get(key), iterable[key])
+         else:
+             for key, value in iterable:
+-                self[key] = value
++                self[key] = self._merge_feature_value(self.get(key), value)
+         for key in kwds:
+-            self[key] = kwds[key]
++            self[key] = self._merge_feature_value(self.get(key), kwds[key])
++
++    @staticmethod
++    def _merge_feature_value(current_value, new_value):
++        """Deep-merge ``new_value`` into ``current_value`` when both are dictionaries
++        (or :class:`Sequence` objects wrapping dictionaries), otherwise return ``new_value`` as-is.
++        """
++        if isinstance(current_value, dict) and isinstance(new_value, dict):
++            merged_value = dict(current_value)
++            for sub_key, sub_value in new_value.items():
++                merged_value[sub_key] = Features._merge_feature_value(merged_value.get(sub_key), sub_value)
++            return merged_value
++        elif (
++            isinstance(current_value, Sequence)
++            and isinstance(new_value, Sequence)
++            and isinstance(current_value.feature, dict)
++            and isinstance(new_value.feature, dict)
++        ):
++            return Sequence(
++                feature=Features._merge_feature_value(current_value.feature, new_value.feature),
++                length=new_value.length,
++                id=new_value.id,
++            )
++        return new_value
++
++    @keep_features_dicts_synced
++    def setdefault(self, key, default=None):
++        return super().setdefault(key, default)
++
++    @keep_features_dicts_synced
++    def pop(self, *args, **kwargs):
++        return super().pop(*args, **kwargs)
++
++    @keep_features_dicts_synced
++    def popitem(self):
++        return super().popitem()
++
++    @keep_features_dicts_synced
++    def clear(self):
++        return super().clear()
+ 
+     def __reduce__(self):
+         return Features, (dict(self),)
+diff --git a/tests/features/test_features.py b/tests/features/test_features.py
+index 9a563f96d..784f8b389 100644
+--- a/tests/features/test_features.py
++++ b/tests/features/test_features.py
+@@ -92,6 +92,37 @@ class FeaturesTest(TestCase):
+             with self.assertRaises(ValueError):
+                 string_to_arrow(sdt)
+ 
++    def test_update_deep_merges_nested_dicts(self):
++        features = Features({"a": {"x": Value("int32"), "y": Value("string")}, "b": Value("int64")})
++        features.update({"a": {"z": Value("bool")}, "c": Value("float32")})
++        self.assertDictEqual(
++            dict(features["a"]), {"x": Value("int32"), "y": Value("string"), "z": Value("bool")}
++        )
++        self.assertEqual(features["b"], Value("int64"))
++        self.assertEqual(features["c"], Value("float32"))
++
++    def test_update_deep_merges_nested_sequences(self):
++        features = Features({"a": Sequence({"x": Value("int32")})})
++        features.update({"a": Sequence({"y": Value("string")})})
++        self.assertIsInstance(features["a"], Sequence)
++        self.assertDictEqual(dict(features["a"].feature), {"x": Value("int32"), "y": Value("string")})
++
++    def test_update_overwrites_non_dict_values(self):
++        features = Features({"a": Value("int32")})
++        features.update({"a": Value("string")})
++        self.assertEqual(features["a"], Value("string"))
++
++    def test_update_kwds_deep_merges_nested_dicts(self):
++        features = Features({"a": {"x": Value("int32")}})
++        features.update({}, a={"y": Value("string")})
++        self.assertDictEqual(dict(features["a"]), {"x": Value("int32"), "y": Value("string")})
++
++    def test_update_adds_unrelated_keys_intact(self):
++        features = Features({"a": Value("int32")})
++        features.update({"b": Value("string")})
++        self.assertEqual(features["a"], Value("int32"))
++        self.assertEqual(features["b"], Value("string"))
++
+     def test_feature_named_type(self):
+         """reference: issue #1110"""
+         features = Features({"_type": Value("string")})
