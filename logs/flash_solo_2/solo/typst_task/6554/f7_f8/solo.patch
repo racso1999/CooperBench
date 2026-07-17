@@ -1,0 +1,184 @@
+diff --git a/crates/typst/src/foundations/str.rs b/crates/typst/src/foundations/str.rs
+index d90b6f206..bb4246164 100644
+--- a/crates/typst/src/foundations/str.rs
++++ b/crates/typst/src/foundations/str.rs
+@@ -179,23 +179,50 @@ impl Str {
+     /// Extracts the first grapheme cluster of the string.
+     /// Fails with an error if the string is empty.
+     #[func]
+-    pub fn first(&self) -> StrResult<Str> {
+-        self.0
+-            .graphemes(true)
+-            .next()
+-            .map(Into::into)
+-            .ok_or_else(string_is_empty)
++    pub fn first(
++        &self,
++        /// If given, the first grapheme cluster whose leading character
++        /// belongs to this class is returned instead of the very first one.
++        #[named]
++        pattern: Option<CharPattern>,
++        /// If given, transforms the case of the returned grapheme cluster.
++        #[named]
++        case: Option<Case>,
++    ) -> StrResult<Str> {
++        let grapheme = match pattern {
++            None => self.0.graphemes(true).next().ok_or_else(string_is_empty)?,
++            Some(pattern) => self
++                .0
++                .graphemes(true)
++                .find(|g| pattern.matches(g))
++                .ok_or_else(|| no_match_for_pattern(pattern))?,
++        };
++        Ok(apply_case(grapheme, case))
+     }
+ 
+     /// Extracts the last grapheme cluster of the string.
+     /// Fails with an error if the string is empty.
+     #[func]
+-    pub fn last(&self) -> StrResult<Str> {
+-        self.0
+-            .graphemes(true)
+-            .next_back()
+-            .map(Into::into)
+-            .ok_or_else(string_is_empty)
++    pub fn last(
++        &self,
++        /// If given, the last grapheme cluster whose leading character
++        /// belongs to this class is returned instead of the very last one.
++        #[named]
++        pattern: Option<CharPattern>,
++        /// If given, transforms the case of the returned grapheme cluster.
++        #[named]
++        case: Option<Case>,
++    ) -> StrResult<Str> {
++        let grapheme = match pattern {
++            None => self.0.graphemes(true).next_back().ok_or_else(string_is_empty)?,
++            Some(pattern) => self
++                .0
++                .graphemes(true)
++                .rev()
++                .find(|g| pattern.matches(g))
++                .ok_or_else(|| no_match_for_pattern(pattern))?,
++        };
++        Ok(apply_case(grapheme, case))
+     }
+ 
+     /// Extracts the first grapheme cluster after the specified index. Returns
+@@ -930,6 +957,116 @@ cast! {
+     v: Regex => Self::Regex(v),
+ }
+ 
++/// A built-in character class usable as a pattern for `str.first` and
++/// `str.last`.
++#[derive(Debug, Copy, Clone, Eq, PartialEq)]
++pub enum CharPattern {
++    /// An alphabetic character.
++    Alpha,
++    /// A numeric character.
++    Numeric,
++    /// An alphabetic or numeric character.
++    Alphanumeric,
++    /// An uppercase character.
++    Uppercase,
++    /// A lowercase character.
++    Lowercase,
++    /// A whitespace character.
++    Whitespace,
++}
++
++impl CharPattern {
++    /// The name of the pattern, as accepted and returned by Typst.
++    fn name(self) -> &'static str {
++        match self {
++            Self::Alpha => "alpha",
++            Self::Numeric => "numeric",
++            Self::Alphanumeric => "alphanumeric",
++            Self::Uppercase => "uppercase",
++            Self::Lowercase => "lowercase",
++            Self::Whitespace => "whitespace",
++        }
++    }
++
++    /// Whether the grapheme cluster's leading character belongs to this
++    /// class.
++    fn matches(self, grapheme: &str) -> bool {
++        let Some(c) = grapheme.chars().next() else { return false };
++        match self {
++            Self::Alpha => c.is_alphabetic(),
++            Self::Numeric => c.is_numeric(),
++            Self::Alphanumeric => c.is_alphanumeric(),
++            Self::Uppercase => c.is_uppercase(),
++            Self::Lowercase => c.is_lowercase(),
++            Self::Whitespace => c.is_whitespace(),
++        }
++    }
++}
++
++cast! {
++    CharPattern,
++    self => self.name().into_value(),
++    "alpha" => Self::Alpha,
++    "numeric" => Self::Numeric,
++    "alphanumeric" => Self::Alphanumeric,
++    "uppercase" => Self::Uppercase,
++    "lowercase" => Self::Lowercase,
++    "whitespace" => Self::Whitespace,
++}
++
++/// The error message when no grapheme cluster matches a `CharPattern`.
++#[cold]
++fn no_match_for_pattern(pattern: CharPattern) -> EcoString {
++    eco_format!(
++        "no grapheme cluster matching pattern {:?} was found",
++        pattern.name()
++    )
++}
++
++/// A case to transform a grapheme cluster into.
++#[derive(Debug, Copy, Clone, Eq, PartialEq)]
++pub enum Case {
++    /// Everything uppercase.
++    Upper,
++    /// Everything lowercase.
++    Lower,
++    /// The first letter uppercase, the rest lowercase.
++    Title,
++}
++
++cast! {
++    Case,
++    self => match self {
++        Self::Upper => "upper".into_value(),
++        Self::Lower => "lower".into_value(),
++        Self::Title => "title".into_value(),
++    },
++    "upper" => Self::Upper,
++    "lower" => Self::Lower,
++    "title" => Self::Title,
++}
++
++/// Transforms a grapheme cluster into the requested case, if any.
++fn apply_case(grapheme: &str, case: Option<Case>) -> Str {
++    match case {
++        None => grapheme.into(),
++        Some(Case::Upper) => grapheme.to_uppercase().into(),
++        Some(Case::Lower) => grapheme.to_lowercase().into(),
++        Some(Case::Title) => {
++            let mut chars = grapheme.chars();
++            match chars.next() {
++                Some(first) => {
++                    let mut out: EcoString =
++                        first.to_uppercase().collect::<String>().into();
++                    out.push_str(&chars.as_str().to_lowercase());
++                    out.into()
++                }
++                None => grapheme.into(),
++            }
++        }
++    }
++}
++
+ /// A side of a string.
+ #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+ pub enum StrSide {

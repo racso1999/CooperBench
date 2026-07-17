@@ -1,0 +1,116 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index 666ad68..6d31adc 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -228,6 +228,16 @@ class Context:
+         value is not set, it defaults to the value from the parent
+         context. ``Command.show_default`` overrides this default for the
+         specific command.
++    :param on_exit: An optional callback that is invoked with the
++        context as its only argument when the context is closed (see
++        :meth:`close`). Useful for logging, metrics collection, or
++        other cleanup that needs access to the context. Exceptions
++        raised by the callback are ignored so they don't interfere
++        with normal context cleanup. If not set, this is inherited
++        from the parent context.
++
++    .. versionchanged:: 8.2
++        Added the ``on_exit`` parameter.
+ 
+     .. versionchanged:: 8.2
+         The ``protected_args`` attribute is deprecated and will be removed in
+@@ -280,6 +290,7 @@ class Context:
+         token_normalize_func: t.Callable[[str], str] | None = None,
+         color: bool | None = None,
+         show_default: bool | None = None,
++        on_exit: t.Callable[[Context], t.Any] | None = None,
+     ) -> None:
+         #: the parent context or `None` if none exists.
+         self.parent = parent
+@@ -427,6 +438,16 @@ class Context:
+         #: Show option default values when formatting help text.
+         self.show_default: bool | None = show_default
+ 
++        if on_exit is None and parent is not None:
++            on_exit = parent.on_exit
++
++        #: An optional callback invoked with the context when it is
++        #: closed. Exceptions raised by the callback are ignored. If
++        #: not set, this is inherited from the parent context.
++        #:
++        #: .. versionadded:: 8.2
++        self.on_exit = on_exit
++
+         self._close_callbacks: list[t.Callable[[], t.Any]] = []
+         self._depth = 0
+         self._parameter_source: dict[str, ParameterSource] = {}
+@@ -605,12 +626,21 @@ class Context:
+     def close(self) -> None:
+         """Invoke all close callbacks registered with
+         :meth:`call_on_close`, and exit all context managers entered
+-        with :meth:`with_resource`.
++        with :meth:`with_resource`. Then, if set, invoke the
++        ``on_exit`` callback with this context. Exceptions raised by
++        the ``on_exit`` callback are ignored so they don't interfere
++        with normal context cleanup.
+         """
+         self._exit_stack.close()
+         # In case the context is reused, create a new exit stack.
+         self._exit_stack = ExitStack()
+ 
++        if self.on_exit is not None:
++            try:
++                self.on_exit(self)
++            except Exception:
++                pass
++
+     @property
+     def command_path(self) -> str:
+         """The computed command path.  This is used for the ``usage``
+@@ -1123,6 +1153,7 @@ class Command:
+         info_name: str | None,
+         args: list[str],
+         parent: Context | None = None,
++        on_exit: t.Callable[[Context], t.Any] | None = None,
+         **extra: t.Any,
+     ) -> Context:
+         """This function when given an info name and arguments will kick
+@@ -1139,9 +1170,15 @@ class Command:
+                           the name of the command.
+         :param args: the arguments to parse as list of strings.
+         :param parent: the parent context if available.
++        :param on_exit: an optional callback invoked with the created
++                        context when it is closed. See
++                        :attr:`Context.on_exit`.
+         :param extra: extra keyword arguments forwarded to the context
+                       constructor.
+ 
++        .. versionchanged:: 8.2
++            Added the ``on_exit`` parameter.
++
+         .. versionchanged:: 8.0
+             Added the :attr:`context_class` attribute.
+         """
+@@ -1149,6 +1186,9 @@ class Command:
+             if key not in extra:
+                 extra[key] = value
+ 
++        if on_exit is not None:
++            extra["on_exit"] = on_exit
++
+         ctx = self.context_class(self, info_name=info_name, parent=parent, **extra)
+ 
+         with ctx.scope(cleanup=False):
+diff --git a/src/click/shell_completion.py b/src/click/shell_completion.py
+index 6fd9e54..2f8ee08 100644
+--- a/src/click/shell_completion.py
++++ b/src/click/shell_completion.py
+@@ -27,7 +27,7 @@ def shell_complete(
+ 
+     :param cli: Command being called.
+     :param ctx_args: Extra arguments to pass to
+-        ``cli.make_context``.
++        ``cli.make_context``, such as ``on_exit``.
+     :param prog_name: Name of the executable in the shell.
+     :param complete_var: Name of the environment variable that holds
+         the completion instruction.

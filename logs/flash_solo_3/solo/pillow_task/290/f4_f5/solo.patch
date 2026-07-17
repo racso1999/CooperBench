@@ -1,0 +1,114 @@
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..81e281a71 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -1048,7 +1048,16 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        error_threshold=None,
++        lightness_factor=1.0,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1082,18 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param error_threshold: An optional maximum mean square error (MSE),
++           between the original image and the quantized result, that the
++           caller is willing to accept. When given, quantization starts from
++           a small number of colors and doubles until either the MSE drops
++           to or below ``error_threshold`` or ``colors`` is reached, so fewer
++           colors than ``colors`` may be used if that is enough to satisfy
++           the threshold. If the threshold can't be met, ``colors`` is used.
++        :param lightness_factor: A brightness multiplier applied to the
++           palette after quantization, before the image is returned. Values
++           greater than 1.0 make the image brighter, values less than 1.0
++           make it darker. Resulting channel values are clamped to 0-255.
++           Default: 1.0 (no change)
+         :returns: A new image
+ 
+         """
+@@ -1104,17 +1125,71 @@ class Image:
+             im = self.im.convert("P", dither, palette.im)
+             new_im = self._new(im)
+             new_im.palette = palette.palette.copy()
++            if lightness_factor != 1.0:
++                new_im._adjust_palette_lightness(lightness_factor)
+             return new_im
+ 
+-        im = self._new(self.im.quantize(colors, method, kmeans))
++        if error_threshold is not None:
++            im = None
++            candidate_colors = 2
++            while True:
++                candidate_colors = min(candidate_colors, colors)
++                candidate = self._new(
++                    self.im.quantize(candidate_colors, method, kmeans)
++                )
++                mse = self._quantize_mse(candidate)
++                if mse <= error_threshold or candidate_colors >= colors:
++                    im = candidate
++                    break
++                candidate_colors *= 2
++        else:
++            im = self._new(self.im.quantize(colors, method, kmeans))
+ 
+         from . import ImagePalette
+ 
+         mode = im.im.getpalettemode()
+         im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
+ 
++        if lightness_factor != 1.0:
++            im._adjust_palette_lightness(lightness_factor)
++
+         return im
+ 
++    def _quantize_mse(self, quantized_im):
++        """
++        Computes the mean square error, across all channels, between this
++        image and a quantized version of it. Used by :py:meth:`~PIL.Image.
++        Image.quantize` to evaluate ``error_threshold``.
++        """
++        from . import ImageChops, ImageStat
++
++        original_rgb = self.convert("RGB")
++        quantized_rgb = quantized_im.convert("RGB")
++        diff = ImageChops.difference(original_rgb, quantized_rgb)
++        stat = ImageStat.Stat(diff)
++
++        total_sum2 = sum(stat.sum2)
++        total_count = sum(stat.count)
++        return total_sum2 / total_count if total_count else 0
++
++    def _adjust_palette_lightness(self, lightness_factor):
++        """
++        Multiplies each color channel of this image's palette by
++        ``lightness_factor``, clamping results to 0-255, and installs the
++        adjusted palette. Used by :py:meth:`~PIL.Image.Image.quantize`.
++        """
++        self.load()
++
++        mode = self.im.getpalettemode()
++        channels = len(mode)
++        data = bytearray(self.im.getpalette(mode, mode))
++        for i in range(0, len(data), channels):
++            # Only adjust color channels, leaving any alpha channel alone.
++            for c in range(min(channels, 3)):
++                value = round(data[i + c] * lightness_factor)
++                data[i + c] = max(0, min(255, value))
++        self.putpalette(bytes(data), mode)
++
+     def copy(self):
+         """
+         Copies this image. Use this method if you wish to paste things

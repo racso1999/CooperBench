@@ -1,0 +1,122 @@
+diff --git a/Tests/test_image_quantize.py b/Tests/test_image_quantize.py
+index bd9db362c..7493b7e95 100644
+--- a/Tests/test_image_quantize.py
++++ b/Tests/test_image_quantize.py
+@@ -85,3 +85,42 @@ def test_transparent_colors_equal():
+     converted = im.quantize()
+     converted_px = converted.load()
+     assert converted_px[0, 0] == converted_px[0, 1]
++
++
++def test_sort_palette_invalid():
++    image = hopper()
++    with pytest.raises(ValueError):
++        image.quantize(8, sort_palette="unknown")
++
++
++@pytest.mark.parametrize("sort_palette", ("rgb", "luminance"))
++def test_sort_palette(sort_palette):
++    image = hopper()
++    unsorted_im = image.quantize(8)
++    sorted_im = image.quantize(8, sort_palette=sort_palette)
++
++    assert_image(sorted_im, "P", sorted_im.size)
++
++    # Pixel colors are unaffected by sorting the palette
++    assert_image_similar(sorted_im.convert("RGB"), unsorted_im.convert("RGB"), 1)
++
++    palette = sorted_im.im.getpalette("RGB")
++    used_indices = [index for _, index in sorted_im.getcolors()]
++    colors = [tuple(palette[i * 3 : i * 3 + 3]) for i in sorted(used_indices)]
++
++    def luminance(rgb):
++        return rgb[0] * 299 + rgb[1] * 587 + rgb[2] * 114
++
++    if sort_palette == "rgb":
++        expected = sorted(colors)
++    else:
++        expected = sorted(colors, key=luminance)
++    assert colors == expected
++
++
++def test_sort_palette_rgba():
++    image = hopper("RGBA")
++    unsorted_im = image.quantize(8, Image.FASTOCTREE)
++    sorted_im = image.quantize(8, Image.FASTOCTREE, sort_palette="luminance")
++
++    assert sorted_im.convert("RGBA").tobytes() == unsorted_im.convert("RGBA").tobytes()
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..04a59e51e 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -1048,7 +1048,15 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        sort_palette=None,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1081,12 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param sort_palette: How to sort the palette after quantization. This does
++           not change which colors are used, only the order they appear in the
++           palette, which can help with e.g. compression or palette cycling.
++           Available options are ``None`` (no sorting, the order chosen by the
++           quantization method is kept, this is the default), ``"rgb"`` (sorted by
++           RGB value) or ``"luminance"`` (sorted from darkest to lightest).
+         :returns: A new image
+ 
+         """
+@@ -1113,6 +1127,40 @@ class Image:
+         mode = im.im.getpalettemode()
+         im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
+ 
++        if sort_palette:
++            im = im._sort_palette(sort_palette)
++
++        return im
++
++    def _sort_palette(self, sort_palette):
++        if sort_palette not in ("rgb", "luminance"):
++            msg = "sort_palette must be 'rgb', 'luminance' or None"
++            raise ValueError(msg)
++
++        palette_mode = self.im.getpalettemode()
++        palette = self.im.getpalette(palette_mode, palette_mode)
++        bands = len(palette_mode)
++
++        def rgb(index):
++            return tuple(palette[index * bands : index * bands + 3])
++
++        if sort_palette == "rgb":
++            key = rgb
++        else:
++
++            def key(index):
++                r, g, b = rgb(index)
++                return r * 299 + g * 587 + b * 114
++
++        indices = sorted((index for _, index in self.getcolors(256)), key=key)
++
++        im = self.remap_palette(indices)
++        if palette_mode == "RGBA":
++            # remap_palette() only preserves RGB, so alpha is reapplied here
++            alphas = [palette[index * bands + 3] for index in indices]
++            im.im.putpalettealphas(bytes(alphas))
++            im.palette.mode = "RGBA"
++
+         return im
+ 
+     def copy(self):

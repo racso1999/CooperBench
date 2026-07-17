@@ -1,0 +1,88 @@
+diff --git a/CHANGES.rst b/CHANGES.rst
+index 540bbe2..b783e5e 100644
+--- a/CHANGES.rst
++++ b/CHANGES.rst
+@@ -59,6 +59,8 @@ Unreleased
+ -   If help is shown because ``no_args_is_help`` is enabled (defaults to ``True``
+     for groups, ``False`` for commands), the exit code is 2 instead of 0.
+     :issue:`1489` :pr:`1489`
++-   Add an ``on_exit`` parameter to ``Context`` and ``BaseCommand.make_context``
++    to register a callback invoked with the context when it is closed.
+ 
+ 
+ Version 8.1.8
+diff --git a/src/click/core.py b/src/click/core.py
+index 666ad68..b71631a 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -280,6 +280,7 @@ class Context:
+         token_normalize_func: t.Callable[[str], str] | None = None,
+         color: bool | None = None,
+         show_default: bool | None = None,
++        on_exit: t.Callable[[Context], t.Any] | None = None,
+     ) -> None:
+         #: the parent context or `None` if none exists.
+         self.parent = parent
+@@ -432,6 +433,14 @@ class Context:
+         self._parameter_source: dict[str, ParameterSource] = {}
+         self._exit_stack = ExitStack()
+ 
++        #: An optional callback invoked with this context when it is
++        #: torn down by :meth:`close`. Useful for logging, metrics
++        #: collection, or other cleanup that needs access to the
++        #: context state.
++        #:
++        #: .. versionadded:: 8.2
++        self.on_exit = on_exit
++
+     @property
+     def protected_args(self) -> list[str]:
+         import warnings
+@@ -611,6 +620,12 @@ class Context:
+         # In case the context is reused, create a new exit stack.
+         self._exit_stack = ExitStack()
+ 
++        if self.on_exit is not None:
++            try:
++                self.on_exit(self)
++            except Exception:
++                pass
++
+     @property
+     def command_path(self) -> str:
+         """The computed command path.  This is used for the ``usage``
+@@ -1123,6 +1138,7 @@ class Command:
+         info_name: str | None,
+         args: list[str],
+         parent: Context | None = None,
++        on_exit: t.Callable[[Context], t.Any] | None = None,
+         **extra: t.Any,
+     ) -> Context:
+         """This function when given an info name and arguments will kick
+@@ -1139,17 +1155,25 @@ class Command:
+                           the name of the command.
+         :param args: the arguments to parse as list of strings.
+         :param parent: the parent context if available.
++        :param on_exit: an optional callback invoked with the created
++                        context when it is closed. Useful for logging,
++                        metrics collection, or other cleanup.
+         :param extra: extra keyword arguments forwarded to the context
+                       constructor.
+ 
+         .. versionchanged:: 8.0
+             Added the :attr:`context_class` attribute.
++
++        .. versionadded:: 8.2
++            Added the ``on_exit`` parameter.
+         """
+         for key, value in self.context_settings.items():
+             if key not in extra:
+                 extra[key] = value
+ 
+-        ctx = self.context_class(self, info_name=info_name, parent=parent, **extra)
++        ctx = self.context_class(
++            self, info_name=info_name, parent=parent, on_exit=on_exit, **extra
++        )
+ 
+         with ctx.scope(cleanup=False):
+             self.parse_args(ctx, args)

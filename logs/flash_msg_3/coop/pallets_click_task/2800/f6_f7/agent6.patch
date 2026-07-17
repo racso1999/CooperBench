@@ -1,0 +1,83 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index 666ad68..3d1308c 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import collections.abc as cabc
++import copy
+ import enum
+ import errno
+ import inspect
+@@ -465,6 +466,51 @@ class Context:
+             "auto_envvar_prefix": self.auto_envvar_prefix,
+         }
+ 
++    def save_state(self) -> dict[str, t.Any]:
++        """Capture a snapshot of the current context's mutable state.
++
++        The returned dictionary can later be passed to
++        :meth:`restore_state` to revert the context back to this
++        state. Attributes that could hold nested, mutable data
++        (:attr:`params`, :attr:`obj`, :attr:`meta`, :attr:`default_map`,
++        and the internal parameter source mapping) are deep copied so
++        that later modifications to those objects do not affect the
++        saved snapshot.
++
++        .. versionadded:: 8.3
++        """
++        return {
++            "params": copy.deepcopy(self.params),
++            "args": self.args.copy(),
++            "protected_args": self._protected_args.copy(),
++            "opt_prefixes": set(self._opt_prefixes),
++            "obj": copy.deepcopy(self.obj),
++            "meta": copy.deepcopy(self._meta),
++            "default_map": copy.deepcopy(self.default_map),
++            "parameter_source": copy.deepcopy(self._parameter_source),
++            "invoked_subcommand": self.invoked_subcommand,
++            "resilient_parsing": self.resilient_parsing,
++        }
++
++    def restore_state(self, snapshot: dict[str, t.Any]) -> None:
++        """Restore context state previously captured with
++        :meth:`save_state`.
++
++        :param snapshot: The dictionary returned by :meth:`save_state`.
++
++        .. versionadded:: 8.3
++        """
++        self.params = snapshot["params"]
++        self.args = snapshot["args"]
++        self._protected_args = snapshot["protected_args"]
++        self._opt_prefixes = snapshot["opt_prefixes"]
++        self.obj = snapshot["obj"]
++        self._meta = snapshot["meta"]
++        self.default_map = snapshot["default_map"]
++        self._parameter_source = snapshot["parameter_source"]
++        self.invoked_subcommand = snapshot["invoked_subcommand"]
++        self.resilient_parsing = snapshot["resilient_parsing"]
++
+     def __enter__(self) -> Context:
+         self._depth += 1
+         push_context(self)
+diff --git a/src/click/shell_completion.py b/src/click/shell_completion.py
+index 6fd9e54..93ad581 100644
+--- a/src/click/shell_completion.py
++++ b/src/click/shell_completion.py
+@@ -271,8 +271,12 @@ class ShellComplete:
+         :param incomplete: Value being completed. May be empty.
+         """
+         ctx = _resolve_context(self.cli, self.ctx_args, self.prog_name, args)
+-        obj, incomplete = _resolve_incomplete(ctx, args, incomplete)
+-        return obj.shell_complete(ctx, incomplete)
++        state = ctx.save_state()
++        try:
++            obj, incomplete = _resolve_incomplete(ctx, args, incomplete)
++            return obj.shell_complete(ctx, incomplete)
++        finally:
++            ctx.restore_state(state)
+ 
+     def format_completion(self, item: CompletionItem) -> str:
+         """Format a completion item into the form recognized by the

@@ -1,0 +1,121 @@
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..7f019cb31 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -1048,7 +1048,16 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        error_threshold=None,
++        lightness_factor=1.0,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1082,15 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param error_threshold: The maximum acceptable mean square error (MSE)
++           between the original image and the quantized image. When given, the
++           smallest number of colors (up to ``colors``) that satisfies this
++           threshold is used. If the threshold cannot be reached within the
++           ``colors`` limit, ``colors`` is used instead. Ignored when
++           ``palette`` is given.
++        :param lightness_factor: A brightness adjustment applied to the palette
++           after quantization. Values greater than 1.0 brighten the image,
++           values less than 1.0 darken it. Default: 1.0 (no change).
+         :returns: A new image
+ 
+         """
+@@ -1104,17 +1122,81 @@ class Image:
+             im = self.im.convert("P", dither, palette.im)
+             new_im = self._new(im)
+             new_im.palette = palette.palette.copy()
++            if lightness_factor != 1.0:
++                new_im._adjust_palette_lightness(lightness_factor)
+             return new_im
+ 
+-        im = self._new(self.im.quantize(colors, method, kmeans))
++        if error_threshold is not None:
++            im = self._quantize_to_error_threshold(
++                colors, method, kmeans, error_threshold
++            )
++        else:
++            im = self._new(self.im.quantize(colors, method, kmeans))
+ 
+         from . import ImagePalette
+ 
+         mode = im.im.getpalettemode()
+         im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
+ 
++        if lightness_factor != 1.0:
++            im._adjust_palette_lightness(lightness_factor)
++
+         return im
+ 
++    def _quantize_to_error_threshold(self, colors, method, kmeans, error_threshold):
++        """
++        Quantizes the image using as few colors as possible (up to ``colors``)
++        while keeping the mean square error against the original image at or
++        below ``error_threshold``. Falls back to ``colors`` if the threshold
++        cannot be met.
++        """
++        from . import ImageChops, ImagePalette, ImageStat
++
++        original = self.convert("RGB") if self.mode != "RGB" else self
++
++        def mse(candidate):
++            candidate_mode = candidate.im.getpalettemode()
++            candidate.palette = ImagePalette.ImagePalette(
++                candidate_mode,
++                candidate.im.getpalette(candidate_mode, candidate_mode),
++            )
++            diff = ImageChops.difference(original, candidate.convert("RGB"))
++            stat = ImageStat.Stat(diff)
++            total_count = sum(stat.count)
++            if not total_count:
++                return 0
++            return sum(stat.sum2) / total_count
++
++        low, high = 2, colors
++        best = None
++        while low <= high:
++            mid = (low + high) // 2
++            candidate = self._new(self.im.quantize(mid, method, kmeans))
++            if mse(candidate) <= error_threshold:
++                best = candidate
++                high = mid - 1
++            else:
++                low = mid + 1
++
++        if best is not None:
++            return best
++
++        # Threshold could not be met; use the maximum allowed colors.
++        return self._new(self.im.quantize(colors, method, kmeans))
++
++    def _adjust_palette_lightness(self, lightness_factor):
++        """
++        Adjusts the RGB entries of this image's palette by ``lightness_factor``,
++        clamping the result to the valid 0-255 range.
++        """
++        channels = len(self.palette.mode)
++        palette_bytes = bytearray(self.palette.palette)
++        for i in range(0, len(palette_bytes) - channels + 1, channels):
++            for c in range(min(channels, 3)):
++                value = round(palette_bytes[i + c] * lightness_factor)
++                palette_bytes[i + c] = max(0, min(255, value))
++        self.putpalette(bytes(palette_bytes), self.palette.mode)
++
+     def copy(self):
+         """
+         Copies this image. Use this method if you wish to paste things

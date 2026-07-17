@@ -1,0 +1,85 @@
+diff --git a/src/jinja2/loaders.py b/src/jinja2/loaders.py
+index d7d9bd04..e636fc9c 100644
+--- a/src/jinja2/loaders.py
++++ b/src/jinja2/loaders.py
+@@ -21,10 +21,32 @@ if t.TYPE_CHECKING:
+     from .environment import Template
+ 
+ 
++def validate_template_path(template: str) -> None:
++    """Validate a template path for dangerous sequences or invalid
++    characters, raising a `TemplateNotFound` error if any are found.
++    """
++    if not template:
++        raise TemplateNotFound(template)
++
++    if "\x00" in template:
++        raise TemplateNotFound(template)
++
++    if template[0] in "/\\":
++        raise TemplateNotFound(template)
++
++    if len(template) >= 2 and template[1] == ":" and template[0].isalpha():
++        raise TemplateNotFound(template)
++
++    for ch in template:
++        if ord(ch) < 32 and ch not in "\t\n\r":
++            raise TemplateNotFound(template)
++
++
+ def split_template_path(template: str) -> t.List[str]:
+     """Split a path into segments and perform a sanity check.  If it detects
+     '..' in the path it will raise a `TemplateNotFound` error.
+     """
++    validate_template_path(template)
+     pieces = []
+     for piece in template.split("/"):
+         if (
+@@ -187,10 +209,37 @@ class FileSystemLoader(BaseLoader):
+         self.searchpath = [os.fspath(p) for p in searchpath]
+         self.encoding = encoding
+         self.followlinks = followlinks
++        self._path_cache: t.Dict[str, t.Optional[str]] = {}
+ 
+     def get_source(
+         self, environment: "Environment", template: str
+     ) -> t.Tuple[str, str, t.Callable[[], bool]]:
++        cached = self._path_cache.get(template, False)
++
++        if cached is not False:
++            if cached is None:
++                raise TemplateNotFound(template)
++
++            f = open_if_exists(cached)
++            if f is not None:
++                filename = cached
++                try:
++                    contents = f.read().decode(self.encoding)
++                finally:
++                    f.close()
++
++                mtime = os.path.getmtime(filename)
++
++                def uptodate() -> bool:
++                    try:
++                        return os.path.getmtime(filename) == mtime
++                    except OSError:
++                        return False
++
++                return contents, filename, uptodate
++
++            del self._path_cache[template]
++
+         pieces = split_template_path(template)
+         for searchpath in self.searchpath:
+             filename = os.path.join(searchpath, *pieces)
+@@ -210,7 +259,9 @@ class FileSystemLoader(BaseLoader):
+                 except OSError:
+                     return False
+ 
++            self._path_cache[template] = filename
+             return contents, filename, uptodate
++        self._path_cache[template] = None
+         raise TemplateNotFound(template)
+ 
+     def list_templates(self) -> t.List[str]:

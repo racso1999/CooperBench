@@ -1,0 +1,138 @@
+diff --git a/src/jinja2/ext.py b/src/jinja2/ext.py
+index d21b83aa..018a0e05 100644
+--- a/src/jinja2/ext.py
++++ b/src/jinja2/ext.py
+@@ -1,4 +1,5 @@
+ """Extension API for adding custom tags and behavior."""
++import hashlib
+ import pprint
+ import re
+ import typing as t
+@@ -247,6 +248,10 @@ class InternationalizationExtension(Extension):
+ 
+     tags = {"trans"}
+ 
++    #: names of the ``trans`` tag parameters that are treated as translation
++    #: workflow metadata instead of template variables.
++    metadata_keys = ("note", "created", "modified")
++
+     # TODO: the i18n extension is currently reevaluating values in a few
+     # situations.  Take this example:
+     #   {% trans count=something() %}{{ count }} foo{% pluralize
+@@ -257,6 +262,7 @@ class InternationalizationExtension(Extension):
+     def __init__(self, environment: Environment) -> None:
+         super().__init__(environment)
+         environment.globals["_"] = _gettext_alias
++        self._translation_versions: t.Dict[str, str] = {}
+         environment.extend(
+             install_gettext_translations=self._install,
+             install_null_translations=self._install_null,
+@@ -264,8 +270,39 @@ class InternationalizationExtension(Extension):
+             uninstall_gettext_translations=self._uninstall,
+             extract_translations=self._extract,
+             newstyle_gettext=False,
++            set_translation_version=self.set_translation_version,
++            get_translation_version=self.get_translation_version,
++            compare_translation_versions=self.compare_translation_versions,
++            translation_version_control=True,
+         )
+ 
++    def _hash_message(self, message: str) -> str:
++        return hashlib.md5(message.encode("utf-8")).hexdigest()
++
++    def set_translation_version(self, message: str, version: str) -> None:
++        """Associate a version identifier with a translation string."""
++        self._translation_versions[self._hash_message(message)] = version
++
++    def get_translation_version(self, message: str) -> t.Optional[str]:
++        """Return the version identifier previously set for ``message``,
++        or ``None`` if no version has been recorded.
++        """
++        return self._translation_versions.get(self._hash_message(message))
++
++    def compare_translation_versions(self, message1: str, message2: str) -> bool:
++        """Return ``True`` if both messages have the same recorded version.
++
++        Returns ``False`` if the versions differ or if either message has
++        no version recorded.
++        """
++        version1 = self.get_translation_version(message1)
++        version2 = self.get_translation_version(message2)
++
++        if version1 is None or version2 is None:
++            return False
++
++        return version1 == version2
++
+     def _install(
+         self, translations: "_SupportedTranslations", newstyle: t.Optional[bool] = None
+     ) -> None:
+@@ -363,8 +400,9 @@ class InternationalizationExtension(Extension):
+         plural_expr_assignment: t.Optional[nodes.Assign] = None
+         variables: t.Dict[str, nodes.Expr] = {}
+         trimmed = None
++        metadata: t.Dict[str, str] = {}
+         while parser.stream.current.type != "block_end":
+-            if variables:
++            if variables or metadata:
+                 parser.stream.expect("comma")
+ 
+             # skip colon for python compatibility
+@@ -379,6 +417,29 @@ class InternationalizationExtension(Extension):
+                     exc=TemplateAssertionError,
+                 )
+ 
++            # translation workflow metadata, e.g. note="...".
++            if token.value in self.metadata_keys:
++                if parser.stream.current.type != "assign":
++                    parser.fail(
++                        f"metadata parameter {token.value!r} requires a"
++                        " value assignment.",
++                        token.lineno,
++                        exc=TemplateAssertionError,
++                    )
++                next(parser.stream)
++                value = parser.parse_expression()
++                if not isinstance(value, nodes.Const) or not isinstance(
++                    value.value, str
++                ):
++                    parser.fail(
++                        f"metadata parameter {token.value!r} must be a"
++                        " string literal.",
++                        token.lineno,
++                        exc=TemplateAssertionError,
++                    )
++                metadata[token.value] = value.value
++                continue
++
+             # expressions
+             if parser.stream.current.type == "assign":
+                 next(parser.stream)
+@@ -459,6 +520,7 @@ class InternationalizationExtension(Extension):
+             plural_expr,
+             bool(referenced),
+             num_called_num and have_plural,
++            metadata,
+         )
+         node.set_lineno(lineno)
+         if plural_expr_assignment is not None:
+@@ -514,6 +576,7 @@ class InternationalizationExtension(Extension):
+         plural_expr: t.Optional[nodes.Expr],
+         vars_referenced: bool,
+         num_called_num: bool,
++        metadata: t.Optional[t.Dict[str, str]] = None,
+     ) -> nodes.Output:
+         """Generates a useful node from the data provided."""
+         newstyle = self.environment.newstyle_gettext  # type: ignore
+@@ -568,7 +631,10 @@ class InternationalizationExtension(Extension):
+                         ]
+                     ),
+                 )
+-        return nodes.Output([node])
++        output_node = nodes.Output([node])
++        if metadata:
++            output_node.trans_metadata = metadata
++        return output_node
+ 
+ 
+ class ExprStmtExtension(Extension):

@@ -1,0 +1,162 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index f57ada6..d6e725b 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -2506,6 +2506,11 @@ class Option(Parameter):
+                                context.
+     :param help: the help string.
+     :param hidden: hide this option from help outputs.
++    :param auto_complete: if ``True``, enables smart shell completion.
++                           The option's name is inspected to pick a
++                           completion strategy (e.g. usernames, git
++                           branches, or filesystem paths) when no
++                           explicit ``shell_complete`` callback is given.
+     :param attrs: Other command arguments described in :class:`Parameter`.
+ 
+     .. versionchanged:: 8.2
+@@ -2549,6 +2554,7 @@ class Option(Parameter):
+         show_choices: bool = True,
+         show_envvar: bool = False,
+         deprecated: bool | str = False,
++        auto_complete: bool = False,
+         **attrs: t.Any,
+     ) -> None:
+         if help:
+@@ -2636,6 +2642,7 @@ class Option(Parameter):
+         self.show_default = show_default
+         self.show_choices = show_choices
+         self.show_envvar = show_envvar
++        self.auto_complete = auto_complete
+ 
+         if __debug__:
+             if deprecated and prompt:
+@@ -2671,6 +2678,7 @@ class Option(Parameter):
+             flag_value=self.flag_value,
+             count=self.count,
+             hidden=self.hidden,
++            auto_complete=self.auto_complete,
+         )
+         return info_dict
+ 
+@@ -2680,6 +2688,42 @@ class Option(Parameter):
+             result += f" (env var: '{self.envvar}')"
+         return result
+ 
++    def shell_complete(self, ctx: Context, incomplete: str) -> list[CompletionItem]:
++        """Return a list of completions for the incomplete value.
++
++        If a custom ``shell_complete`` callback was given during init, it
++        takes precedence. Otherwise, if ``auto_complete`` is enabled, a
++        completion strategy is picked based on the option's name. Falls
++        back to the :attr:`type`'s completion otherwise.
++
++        :param ctx: Invocation context for this command.
++        :param incomplete: Value being completed. May be empty.
++        """
++        if self._custom_shell_complete is None and self.auto_complete:
++            results = self._smart_complete(ctx, incomplete)
++
++            if results:
++                return results
++
++        return super().shell_complete(ctx, incomplete)
++
++    def _smart_complete(
++        self, ctx: Context, incomplete: str
++    ) -> list[CompletionItem]:
++        """Guess a completion strategy from the option's name using
++        :data:`types.AUTO_COMPLETE_REGISTRY` and return matching
++        completions for the incomplete value. Returns an empty list if
++        no pattern matches, so callers can fall back to the type's own
++        completion.
++        """
++        names = " ".join([self.name or "", *self.opts, *self.secondary_opts]).lower()
++
++        for pattern, complete_func in types.AUTO_COMPLETE_REGISTRY.items():
++            if pattern in names:
++                return complete_func(ctx, self, incomplete)
++
++        return []
++
+     def _parse_decls(
+         self, decls: cabc.Sequence[str], expose_value: bool
+     ) -> tuple[str | None, list[str], list[str]]:
+diff --git a/src/click/types.py b/src/click/types.py
+index 684cb3b..eca6765 100644
+--- a/src/click/types.py
++++ b/src/click/types.py
+@@ -1163,3 +1163,74 @@ class OptionHelpExtra(t.TypedDict, total=False):
+     default: str
+     range: str
+     required: str
++
++
++def _complete_usernames(
++    ctx: Context, param: Parameter, incomplete: str
++) -> list[CompletionItem]:
++    """Complete system usernames for the incomplete value."""
++    from .shell_completion import CompletionItem
++
++    try:
++        import pwd
++    except ImportError:
++        return []
++
++    return [
++        CompletionItem(entry.pw_name)
++        for entry in pwd.getpwall()
++        if entry.pw_name.startswith(incomplete)
++    ]
++
++
++def _complete_git_branches(
++    ctx: Context, param: Parameter, incomplete: str
++) -> list[CompletionItem]:
++    """Complete local and remote git branch names for the incomplete
++    value, when run inside a git repository.
++    """
++    import subprocess
++
++    from .shell_completion import CompletionItem
++
++    try:
++        output = subprocess.run(
++            ["git", "branch", "-a", "--format=%(refname:short)"],
++            capture_output=True,
++            text=True,
++            timeout=5,
++        )
++    except (OSError, subprocess.SubprocessError):
++        return []
++
++    if output.returncode != 0:
++        return []
++
++    branches = {line.strip() for line in output.stdout.splitlines() if line.strip()}
++    return [
++        CompletionItem(branch) for branch in sorted(branches) if branch.startswith(incomplete)
++    ]
++
++
++def _complete_filepath(
++    ctx: Context, param: Parameter, incomplete: str
++) -> list[CompletionItem]:
++    """Delegate to the shell's own filesystem path completion."""
++    from .shell_completion import CompletionItem
++
++    return [CompletionItem(incomplete, type="file")]
++
++
++#: Maps option name substrings to a completion function used by
++#: :meth:`~click.core.Option._smart_complete` when ``auto_complete=True``
++#: is set on an option and no name pattern-specific match is required.
++#: Each function has the signature ``(ctx, param, incomplete)`` and
++#: returns a list of :class:`~click.shell_completion.CompletionItem`.
++AUTO_COMPLETE_REGISTRY: dict[
++    str, t.Callable[[Context, Parameter, str], list[CompletionItem]]
++] = {
++    "branch": _complete_git_branches,
++    "user": _complete_usernames,
++    "file": _complete_filepath,
++    "path": _complete_filepath,
++}

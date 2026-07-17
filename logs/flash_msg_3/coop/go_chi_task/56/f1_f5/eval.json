@@ -1,0 +1,49 @@
+{
+  "repo": "go_chi_task",
+  "task_id": 56,
+  "features": [
+    1,
+    5
+  ],
+  "setting": "coop",
+  "apply_status": {
+    "agent1": "applied",
+    "agent2": "applied"
+  },
+  "merge": {
+    "status": "clean",
+    "strategy": "naive",
+    "diff": "diff --git a/context.go b/context.go\nindex e78a238..39f5efd 100644\n--- a/context.go\n+++ b/context.go\n@@ -76,6 +76,11 @@ type Context struct {\n \n \t// methodNotAllowed hint\n \tmethodNotAllowed bool\n+\n+\t// methodsAllowed tracks the methods registered for the pattern that\n+\t// matched the request path, when the request's method didn't match\n+\t// any of them. Used to populate the Allow header on 405 responses.\n+\tmethodsAllowed []methodTyp\n }\n \n // Reset a routing context to its initial state.\n@@ -91,6 +96,7 @@ func (x *Context) Reset() {\n \tx.routeParams.Keys = x.routeParams.Keys[:0]\n \tx.routeParams.Values = x.routeParams.Values[:0]\n \tx.methodNotAllowed = false\n+\tx.methodsAllowed = x.methodsAllowed[:0]\n \tx.parentCtx = nil\n }\n \ndiff --git a/cors.go b/cors.go\nnew file mode 100644\nindex 0000000..0362e7f\n--- /dev/null\n+++ b/cors.go\n@@ -0,0 +1,178 @@\n+package chi\n+\n+import (\n+\t\"net/http\"\n+\t\"sort\"\n+\t\"strconv\"\n+\t\"strings\"\n+)\n+\n+// CORSOptions configures the CORS middleware returned by CORS(), and the\n+// Mux.EnableCORS / Mux.EnableCORSWithOptions / Mux.WithCORS helpers.\n+type CORSOptions struct {\n+\t// AllowOrigin is the value written to the Access-Control-Allow-Origin\n+\t// response header. An empty value omits the header.\n+\tAllowOrigin string\n+\n+\t// AllowMethods, if non-empty, is the fixed list of methods advertised\n+\t// via Access-Control-Allow-Methods on preflight responses. When empty,\n+\t// the methods actually registered for the requested route are detected\n+\t// automatically.\n+\tAllowMethods []string\n+\n+\t// AllowHeaders is the list of headers advertised via\n+\t// Access-Control-Allow-Headers on preflight responses.\n+\tAllowHeaders []string\n+\n+\t// ExposeHeaders is the list of headers advertised via\n+\t// Access-Control-Expose-Headers.\n+\tExposeHeaders []string\n+\n+\t// MaxAge is the value (in seconds) advertised via Access-Control-Max-Age\n+\t// on preflight responses. A value <= 0 omits the header.\n+\tMaxAge int\n+\n+\t// AllowCredentials sets Access-Control-Allow-Credentials to \"true\" when enabled.\n+\tAllowCredentials bool\n+}\n+\n+// DefaultCORSOptions returns a CORSOptions with permissive, commonly used\n+// defaults: a wildcard origin, a small set of common request headers, and a\n+// 1 hour preflight cache. Allowed methods are auto-detected per route.\n+func DefaultCORSOptions() CORSOptions {\n+\treturn CORSOptions{\n+\t\tAllowOrigin:  \"*\",\n+\t\tAllowHeaders: []string{\"Accept\", \"Authorization\", \"Content-Type\"},\n+\t\tMaxAge:       3600,\n+\t}\n+}\n+\n+// CORS returns a middleware that applies the given CORS options to every\n+// response. Since this middleware runs ahead of routing, it only\n+// short-circuits OPTIONS requests as preflight itself when options.AllowMethods\n+// is a fixed, explicit list. Otherwise OPTIONS requests are left to fall\n+// through to routing, so that a route registering its own OPTIONS handler is\n+// still reached, and so that unmatched routes (the common case, since chi\n+// routes don't auto-register OPTIONS) are instead answered by the\n+// method-not-allowed handler installed by Mux.EnableCORS /\n+// Mux.EnableCORSWithOptions / Mux.WithCORS, which can detect the methods\n+// available for the requested route.\n+func CORS(options CORSOptions) func(http.Handler) http.Handler {\n+\treturn func(next http.Handler) http.Handler {\n+\t\treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n+\t\t\tsetCORSHeaders(w, options)\n+\n+\t\t\tif r.Method == http.MethodOptions && len(options.AllowMethods) > 0 {\n+\t\t\t\tsetPreflightCORSHeaders(w, options, options.AllowMethods)\n+\t\t\t\tw.WriteHeader(http.StatusNoContent)\n+\t\t\t\treturn\n+\t\t\t}\n+\n+\t\t\tnext.ServeHTTP(w, r)\n+\t\t})\n+\t}\n+}\n+\n+// setCORSHeaders sets the CORS response headers that apply to every request.\n+func setCORSHeaders(w http.ResponseWriter, options CORSOptions) {\n+\theader := w.Header()\n+\tif options.AllowOrigin != \"\" {\n+\t\theader.Set(\"Access-Control-Allow-Origin\", options.AllowOrigin)\n+\t}\n+\tif options.AllowCredentials {\n+\t\theader.Set(\"Access-Control-Allow-Credentials\", \"true\")\n+\t}\n+\tif len(options.ExposeHeaders) > 0 {\n+\t\theader.Set(\"Access-Control-Expose-Headers\", strings.Join(options.ExposeHeaders, \", \"))\n+\t}\n+}\n+\n+// setPreflightCORSHeaders sets the additional CORS response headers that\n+// only apply to preflight OPTIONS responses.\n+func setPreflightCORSHeaders(w http.ResponseWriter, options CORSOptions, allowMethods []string) {\n+\theader := w.Header()\n+\tif len(allowMethods) > 0 {\n+\t\theader.Set(\"Access-Control-Allow-Methods\", strings.Join(allowMethods, \", \"))\n+\t}\n+\tif len(options.AllowHeaders) > 0 {\n+\t\theader.Set(\"Access-Control-Allow-Headers\", strings.Join(options.AllowHeaders, \", \"))\n+\t}\n+\tif options.MaxAge > 0 {\n+\t\theader.Set(\"Access-Control-Max-Age\", strconv.Itoa(options.MaxAge))\n+\t}\n+}\n+\n+// EnableCORS applies CORS() with DefaultCORSOptions() to the Mux. See\n+// EnableCORSWithOptions for details.\n+func (mx *Mux) EnableCORS() {\n+\tmx.EnableCORSWithOptions(DefaultCORSOptions())\n+}\n+\n+// EnableCORSWithOptions applies the CORS middleware built from options to\n+// the Mux, and instal"
+  },
+  "feature1": {
+    "feature_id": 1,
+    "passed": false,
+    "exit_code": 1,
+    "tests_passed": 0,
+    "tests_failed": 4,
+    "test_output": "Note: switching to '7f280968675bcc9f310008fc6b8abff0b923734c'.\n\nYou are in 'detached HEAD' state. You can look around, make experimental\nchanges and commit them, and you can discard any commits you make in this\nstate without impacting any branches by switching back to a branch.\n\nIf you want to create a new branch to retain commits you create, you may\ndo so (now or later) by using -c with the switch command. Example:\n\n  git switch -c <new-branch-name>\n\nOr undo this operation with:\n\n  git switch -\n\nTurn off this advice by setting config variable advice.detachedHead to false\n\nHEAD is now at 7f28096 Spelling and grammar fixes (#820)\nHEAD is now at 7f28096 Spelling and grammar fixes (#820)\nReset to base: 7f280968675bcc9f310008fc6b8abff0b923734c\nEnsuring clean repository state...\nHEAD is now at 7f28096 Spelling and grammar fixes (#820)\nApplying test patch...\nTest patch applied successfully.\nApplying feature patch...\nFeature patch applied successfully.\nAnalyzing test patch for test functions...\nFound test functions to run: TestSetAllowHeader|TestMuxNestedNotFound|TestMethodNotAllowed|TestMuxNestedMethodNotAllowed\nRunning Go tests...\n--- FAIL: TestMethodNotAllowed (0.00s)\n    --- FAIL: TestMethodNotAllowed/Unregistered_Method (0.00s)\n        mux_test.go:426: Allow header should contain 2 headers: GET, HEAD. Received:  [GET, HEAD]\nFAIL\nFAIL\tgithub.com/go-chi/chi/v5\t0.005s\n--- FAIL: TestSetAllowHeader (0.00s)\n    --- FAIL: TestSetAllowHeader/Unregistered_Method (0.00s)\n        allowed_methods_test.go:58: GET, HEAD\nFAIL\nFAIL\tgithub.com/go-chi/chi/v5/middleware\t0.003s\nFAIL\nCleaning up repository...\nResetting to HEAD (HEAD) and cleaning...\nHEAD is now at 7f28096 Spelling and grammar fixes (#820)\nRemoving cors.go\nRemoving middleware/allowed_methods.go\nRemoving middleware/allowed_methods_test.go\nRepository cleaned.\n"
+  },
+  "feature2": {
+    "feature_id": 5,
+    "passed": true,
+    "exit_code": 0,
+    "tests_passed": 2,
+    "tests_failed": 0,
+    "test_output": "HEAD is now at 7f28096 Spelling and grammar fixes (#820)\nHEAD is now at 7f28096 Spelling and grammar fixes (#820)\nReset to base: 7f280968675bcc9f310008fc6b8abff0b923734c\nEnsuring clean repository state...\nHEAD is now at 7f28096 Spelling and grammar fixes (#820)\nApplying test patch...\nTest patch applied successfully.\nApplying feature patch...\nFeature patch applied successfully.\nAnalyzing test patch for test functions...\nFound test functions to run: TestServerBaseContext|TestCORS\nRunning Go tests...\nok  \tgithub.com/go-chi/chi/v5\t0.003s\nok  \tgithub.com/go-chi/chi/v5/middleware\t0.002s [no tests to run]\nTest execution completed!\nCleaning up repository...\nResetting to HEAD (HEAD) and cleaning...\nHEAD is now at 7f28096 Spelling and grammar fixes (#820)\nRemoving cors.go\nRemoving middleware/allowed_methods.go\nRepository cleaned.\n"
+  },
+  "feature1_independent": {
+    "passed": false,
+    "tests_passed": 0,
+    "tests_failed": 4,
+    "reason": null
+  },
+  "feature2_independent": {
+    "passed": true,
+    "tests_passed": 2,
+    "tests_failed": 0,
+    "reason": null
+  },
+  "both_passed": false,
+  "error": null,
+  "evaluated_at": "2026-07-17T00:36:24.038071"
+}

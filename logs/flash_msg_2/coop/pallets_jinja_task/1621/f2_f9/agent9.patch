@@ -1,0 +1,108 @@
+diff --git a/src/jinja2/loaders.py b/src/jinja2/loaders.py
+index d7d9bd04..9133d47e 100644
+--- a/src/jinja2/loaders.py
++++ b/src/jinja2/loaders.py
+@@ -170,6 +170,15 @@ class FileSystemLoader(BaseLoader):
+     :param encoding: Use this encoding to read the text from template
+         files.
+     :param followlinks: Follow symbolic links in the path.
++    :param auto_reload: Automatically invalidate cached templates in
++        environments using this loader when their source files change
++        on disk. Environments are tracked with weak references so
++        that they can still be garbage collected normally. Defaults
++        to ``True``.
++
++    .. versionchanged:: 3.1
++        Added the ``auto_reload`` parameter and automatic cache
++        invalidation via :meth:`_on_template_changed`.
+ 
+     .. versionchanged:: 2.8
+         Added the ``followlinks`` parameter.
+@@ -180,6 +189,7 @@ class FileSystemLoader(BaseLoader):
+         searchpath: t.Union[str, os.PathLike, t.Sequence[t.Union[str, os.PathLike]]],
+         encoding: str = "utf-8",
+         followlinks: bool = False,
++        auto_reload: bool = True,
+     ) -> None:
+         if not isinstance(searchpath, abc.Iterable) or isinstance(searchpath, str):
+             searchpath = [searchpath]
+@@ -187,10 +197,21 @@ class FileSystemLoader(BaseLoader):
+         self.searchpath = [os.fspath(p) for p in searchpath]
+         self.encoding = encoding
+         self.followlinks = followlinks
++        self.auto_reload = auto_reload
++
++        # Weakly track environments that load templates through this
++        # loader so that changed source files can be invalidated in
++        # their caches. Only populated when ``auto_reload`` is enabled,
++        # and uses weak references so tracked environments can still be
++        # garbage collected normally.
++        self._environments: "weakref.WeakSet[Environment]" = weakref.WeakSet()
+ 
+     def get_source(
+         self, environment: "Environment", template: str
+     ) -> t.Tuple[str, str, t.Callable[[], bool]]:
++        if self.auto_reload:
++            self._environments.add(environment)
++
+         pieces = split_template_path(template)
+         for searchpath in self.searchpath:
+             filename = os.path.join(searchpath, *pieces)
+@@ -213,6 +234,57 @@ class FileSystemLoader(BaseLoader):
+             return contents, filename, uptodate
+         raise TemplateNotFound(template)
+ 
++    def _get_template_name(self, file_path: str) -> t.Optional[str]:
++        """Convert an absolute file path to the template name it would
++        be loaded as, based on :attr:`searchpath`. Returns ``None`` if
++        the path is not below any search path.
++        """
++        file_path = os.path.abspath(file_path)
++
++        for searchpath in self.searchpath:
++            searchpath = os.path.abspath(searchpath)
++
++            if os.path.commonpath([file_path, searchpath]) != searchpath:
++                continue
++
++            rel_path = os.path.relpath(file_path, searchpath)
++            return rel_path.replace(os.path.sep, "/")
++
++        return None
++
++    def _on_template_changed(self, file_paths: t.List[str]) -> None:
++        """Invalidate cached templates in all tracked environments
++        whose source file is one of ``file_paths``. ``file_paths`` is a
++        list of absolute paths to files that were created, modified,
++        or deleted.
++
++        This is called automatically as search paths are monitored
++        when ``auto_reload`` is enabled, but can also be called
++        directly, for example in tests.
++        """
++        names = set()
++
++        for file_path in file_paths:
++            name = self._get_template_name(file_path)
++
++            if name is not None:
++                names.add(name)
++
++        if not names:
++            return
++
++        for environment in self._environments:
++            cache = environment.cache
++
++            if not cache:
++                continue
++
++            for cache_key in list(cache.keys()):
++                _, name = cache_key
++
++                if name in names:
++                    del cache[cache_key]
++
+     def list_templates(self) -> t.List[str]:
+         found = set()
+         for searchpath in self.searchpath:

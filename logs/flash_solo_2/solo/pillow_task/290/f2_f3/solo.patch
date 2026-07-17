@@ -1,0 +1,170 @@
+diff --git a/Tests/test_image_quantize.py b/Tests/test_image_quantize.py
+index bd9db362c..931de3332 100644
+--- a/Tests/test_image_quantize.py
++++ b/Tests/test_image_quantize.py
+@@ -77,6 +77,51 @@ def test_quantize_dither_diff():
+     assert dither.tobytes() != nodither.tobytes()
+ 
+ 
++def test_quantize_max_colors():
++    image = hopper()
++
++    converted = image.quantize(colors=100, max_colors=10)
++    assert_image(converted, "P", converted.size)
++    assert len(converted.getcolors()) <= 10
++
++    # max_colors defaults to colors, preserving current behavior
++    converted = image.quantize(colors=10)
++    assert len(converted.getcolors()) <= 10
++
++    # max_colors larger than colors has no effect
++    converted = image.quantize(colors=10, max_colors=100)
++    assert len(converted.getcolors()) <= 10
++
++
++def test_quantize_sort_palette():
++    image = hopper()
++
++    for sort_palette in ("brightness", "rgb"):
++        converted = image.quantize(colors=32, sort_palette=sort_palette)
++        assert_image(converted, "P", converted.size)
++        assert_image_similar(converted.convert("RGB"), image, 25)
++
++        palette = converted.palette.palette
++        mode = converted.im.getpalettemode()
++        channels = len(mode)
++        entries = [
++            palette[i * channels : (i + 1) * channels] for i in range(32)
++        ]
++        if sort_palette == "brightness":
++            keys = [0.299 * e[0] + 0.587 * e[1] + 0.114 * e[2] for e in entries]
++        else:
++            keys = [tuple(e[:3]) for e in entries]
++        assert keys == sorted(keys)
++
++    # sorting the palette should not change the resulting image colors
++    unsorted = image.quantize(colors=32)
++    sorted_image = image.quantize(colors=32, sort_palette="brightness")
++    assert unsorted.convert("RGB").tobytes() == sorted_image.convert("RGB").tobytes()
++
++    with pytest.raises(ValueError):
++        image.quantize(colors=32, sort_palette="invalid")
++
++
+ def test_transparent_colors_equal():
+     im = Image.new("RGBA", (1, 2), (0, 0, 0, 0))
+     px = im.load()
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..f2043f5ef 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -1048,7 +1048,16 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        max_colors=None,
++        sort_palette=None,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1082,15 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param max_colors: The maximum number of colors allowed in the output
++           palette, <= 256. The quantized image will use up to ``colors``
++           colors, but never more than ``max_colors``. This is useful when
++           ``colors`` is used as a target that should be reduced further if a
++           smaller palette is required. Defaults to the value of ``colors``.
++        :param sort_palette: Sort the resulting palette. Use ``"brightness"``
++           to order colors from darkest to lightest, or ``"rgb"`` to order
++           them by their RGB value. Defaults to ``None``, which leaves the
++           palette in the order produced by the quantization algorithm.
+         :returns: A new image
+ 
+         """
+@@ -1104,8 +1122,14 @@ class Image:
+             im = self.im.convert("P", dither, palette.im)
+             new_im = self._new(im)
+             new_im.palette = palette.palette.copy()
++            if sort_palette:
++                new_im = new_im._sort_palette(sort_palette)
+             return new_im
+ 
++        if max_colors is None:
++            max_colors = colors
++        colors = min(colors, max_colors)
++
+         im = self._new(self.im.quantize(colors, method, kmeans))
+ 
+         from . import ImagePalette
+@@ -1113,6 +1137,60 @@ class Image:
+         mode = im.im.getpalettemode()
+         im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
+ 
++        if sort_palette:
++            im = im._sort_palette(sort_palette, colors)
++
++        return im
++
++    def _sort_palette(self, sort_palette, num_colors=256):
++        """
++        Reorders this image's palette according to ``sort_palette`` and
++        remaps pixel data to match. Used by :py:meth:`~PIL.Image.Image.quantize`.
++
++        :param sort_palette: ``"brightness"`` to sort colors from darkest to
++           lightest, or ``"rgb"`` to sort colors by their RGB value.
++        :param num_colors: Only the first ``num_colors`` palette entries are
++           reordered; entries beyond that are left untouched.
++        :returns: A new image
++        """
++        mode = self.im.getpalettemode()
++        channels = len(mode)
++        palette_bytes = self.im.getpalette(mode, mode)
++        num_colors = min(num_colors, len(palette_bytes) // channels)
++        entries = [
++            palette_bytes[i * channels : (i + 1) * channels]
++            for i in range(num_colors)
++        ]
++
++        if sort_palette == "brightness":
++
++            def sort_key(color):
++                r, g, b = color[0], color[1], color[2]
++                return 0.299 * r + 0.587 * g + 0.114 * b
++
++        elif sort_palette == "rgb":
++
++            def sort_key(color):
++                return color[:3]
++
++        else:
++            raise ValueError("sort_palette must be 'brightness', 'rgb' or None")
++
++        order = sorted(range(num_colors), key=lambda i: sort_key(entries[i]))
++
++        table = list(range(256))
++        for new_index, old_index in enumerate(order):
++            table[old_index] = new_index
++        im = self.point(table)
++
++        new_palette_bytes = bytearray(palette_bytes)
++        for new_index, old_index in enumerate(order):
++            new_palette_bytes[new_index * channels : (new_index + 1) * channels] = (
++                palette_bytes[old_index * channels : (old_index + 1) * channels]
++            )
++
++        im.putpalette(bytes(new_palette_bytes), mode)
++
+         return im
+ 
+     def copy(self):

@@ -1,0 +1,128 @@
+diff --git a/Tests/test_image_quantize.py b/Tests/test_image_quantize.py
+index bd9db362c..6a12662aa 100644
+--- a/Tests/test_image_quantize.py
++++ b/Tests/test_image_quantize.py
+@@ -85,3 +85,41 @@ def test_transparent_colors_equal():
+     converted = im.quantize()
+     converted_px = converted.load()
+     assert converted_px[0, 0] == converted_px[0, 1]
++
++
++def test_quantize_lightness_factor_no_change():
++    image = Image.new("RGB", (10, 10), (100, 150, 200))
++    converted = image.quantize(colors=4)
++    unchanged = image.quantize(colors=4, lightness_factor=1.0)
++    assert converted.getpalette() == unchanged.getpalette()
++
++
++def test_quantize_lightness_factor_brighter():
++    image = Image.new("RGB", (10, 10), (100, 150, 200))
++    converted = image.quantize(colors=4, lightness_factor=1.2)
++    assert converted.getpalette()[:3] == [120, 180, 240]
++
++
++def test_quantize_lightness_factor_darker():
++    image = Image.new("RGB", (10, 10), (100, 150, 200))
++    converted = image.quantize(colors=4, lightness_factor=0.5)
++    assert converted.getpalette()[:3] == [50, 75, 100]
++
++
++def test_quantize_lightness_factor_clamped():
++    image = Image.new("RGB", (10, 10), (200, 220, 240))
++    converted = image.quantize(colors=4, lightness_factor=2.0)
++    assert converted.getpalette()[:3] == [255, 255, 255]
++
++    darkened = image.quantize(colors=4, lightness_factor=-1.0)
++    assert darkened.getpalette()[:3] == [0, 0, 0]
++
++
++def test_quantize_lightness_factor_with_palette():
++    image = hopper()
++    with Image.open("Tests/images/caption_6_33_22.png") as palette:
++        palette = palette.convert("P")
++
++    converted = image.quantize(palette=palette, lightness_factor=1.5)
++    unchanged = image.quantize(palette=palette)
++    assert converted.getpalette() != unchanged.getpalette()
+diff --git a/src/PIL/Image.py b/src/PIL/Image.py
+index 0fca3fa5c..88608cbca 100644
+--- a/src/PIL/Image.py
++++ b/src/PIL/Image.py
+@@ -1048,7 +1048,15 @@ class Image:
+                 new_im.info["transparency"] = trns
+         return new_im
+ 
+-    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
++    def quantize(
++        self,
++        colors=256,
++        method=None,
++        kmeans=0,
++        palette=None,
++        dither=1,
++        lightness_factor=1.0,
++    ):
+         """
+         Convert the image to 'P' mode with the specified number
+         of colors.
+@@ -1073,6 +1081,12 @@ class Image:
+            mode "RGB" to "P" or from "RGB" or "L" to "1".
+            Available methods are :data:`NONE` or :data:`FLOYDSTEINBERG` (default).
+            Default: 1 (legacy setting)
++        :param lightness_factor: A floating point value used to adjust the
++           brightness of the palette colors after quantization. Values
++           greater than 1.0 make the image brighter, values less than 1.0
++           make it darker. Default: 1.0 (no change). The adjustment is
++           applied to the resulting palette, not the source image, so it
++           does not introduce additional colors or require re-quantization.
+         :returns: A new image
+ 
+         """
+@@ -1104,6 +1118,12 @@ class Image:
+             im = self.im.convert("P", dither, palette.im)
+             new_im = self._new(im)
+             new_im.palette = palette.palette.copy()
++            if lightness_factor != 1.0:
++                new_im.palette = _adjust_palette_lightness(
++                    new_im.palette, lightness_factor
++                )
++                new_im.palette.dirty = 1
++                new_im.load()
+             return new_im
+ 
+         im = self._new(self.im.quantize(colors, method, kmeans))
+@@ -1112,6 +1132,10 @@ class Image:
+ 
+         mode = im.im.getpalettemode()
+         im.palette = ImagePalette.ImagePalette(mode, im.im.getpalette(mode, mode))
++        if lightness_factor != 1.0:
++            im.palette = _adjust_palette_lightness(im.palette, lightness_factor)
++            im.palette.dirty = 1
++            im.load()
+ 
+         return im
+ 
+@@ -2880,6 +2904,23 @@ _fromarray_typemap[((1, 1), _ENDIAN + "i4")] = ("I", "I")
+ _fromarray_typemap[((1, 1), _ENDIAN + "f4")] = ("F", "F")
+ 
+ 
++def _adjust_palette_lightness(palette, lightness_factor):
++    from . import ImagePalette
++
++    mode = palette.mode
++    channels = len(mode)
++    # don't adjust the alpha channel, if present
++    color_channels = min(channels, 3)
++
++    data = bytearray(palette.tobytes())
++    for i in range(0, len(data), channels):
++        for c in range(color_channels):
++            value = round(data[i + c] * lightness_factor)
++            data[i + c] = max(0, min(255, value))
++
++    return ImagePalette.ImagePalette(mode, bytes(data))
++
++
+ def _decompression_bomb_check(size):
+     if MAX_IMAGE_PIXELS is None:
+         return

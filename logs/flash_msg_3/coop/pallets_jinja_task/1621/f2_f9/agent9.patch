@@ -1,0 +1,115 @@
+diff --git a/src/jinja2/loaders.py b/src/jinja2/loaders.py
+index d7d9bd04..dbd49ba7 100644
+--- a/src/jinja2/loaders.py
++++ b/src/jinja2/loaders.py
+@@ -170,6 +170,18 @@ class FileSystemLoader(BaseLoader):
+     :param encoding: Use this encoding to read the text from template
+         files.
+     :param followlinks: Follow symbolic links in the path.
++    :param auto_reload: Track the :class:`~jinja2.Environment`
++        instances that use this loader in ``_environments`` so that
++        :meth:`_on_template_changed` can proactively invalidate their
++        cached templates when a search path file changes, rather than
++        waiting for the next time the template is requested. Defaults
++        to ``True``.
++
++    .. versionchanged:: 3.1
++        Added the ``auto_reload`` parameter, along with the
++        ``_environments`` and ``_on_template_changed`` internals used
++        to invalidate cached templates when a search path file
++        changes.
+ 
+     .. versionchanged:: 2.8
+         Added the ``followlinks`` parameter.
+@@ -180,6 +192,7 @@ class FileSystemLoader(BaseLoader):
+         searchpath: t.Union[str, os.PathLike, t.Sequence[t.Union[str, os.PathLike]]],
+         encoding: str = "utf-8",
+         followlinks: bool = False,
++        auto_reload: bool = True,
+     ) -> None:
+         if not isinstance(searchpath, abc.Iterable) or isinstance(searchpath, str):
+             searchpath = [searchpath]
+@@ -187,6 +200,13 @@ class FileSystemLoader(BaseLoader):
+         self.searchpath = [os.fspath(p) for p in searchpath]
+         self.encoding = encoding
+         self.followlinks = followlinks
++        self.auto_reload = auto_reload
++
++        # Environments that load templates through this loader, tracked
++        # with weak references so environments can still be garbage
++        # collected normally. Only populated while ``auto_reload`` is
++        # enabled.
++        self._environments: "weakref.WeakSet[Environment]" = weakref.WeakSet()
+ 
+     def get_source(
+         self, environment: "Environment", template: str
+@@ -210,9 +230,69 @@ class FileSystemLoader(BaseLoader):
+                 except OSError:
+                     return False
+ 
++            if self.auto_reload:
++                self._environments.add(environment)
++
+             return contents, filename, uptodate
+         raise TemplateNotFound(template)
+ 
++    def _get_template_name(self, file_path: str) -> t.Optional[str]:
++        """Convert an absolute file path back into the template name
++        that would be used to look it up through this loader, or
++        ``None`` if the path isn't inside any of the search paths.
++        """
++        file_path = os.path.abspath(file_path)
++
++        for searchpath in self.searchpath:
++            searchpath = os.path.abspath(searchpath)
++
++            try:
++                common = os.path.commonpath([searchpath, file_path])
++            except ValueError:
++                # Raised on Windows when the paths are on different
++                # drives, meaning the file can't be in this searchpath.
++                continue
++
++            if common != searchpath:
++                continue
++
++            name = os.path.relpath(file_path, searchpath)
++            return name.replace(os.path.sep, "/")
++
++        return None
++
++    def _on_template_changed(self, file_paths: t.List[str]) -> None:
++        """Invalidate cached templates for the given absolute file
++        paths across every environment that uses this loader.
++
++        Call this whenever a template file in one of this loader's
++        search paths is created, modified, or deleted, to proactively
++        drop it from every tracked environment's cache instead of
++        waiting for the next lookup's ``uptodate`` check. This is also
++        useful in tests to simulate a file system change without
++        depending on a real file watcher. Paths that don't correspond
++        to a template inside one of this loader's search paths are
++        silently ignored.
++        """
++        for file_path in file_paths:
++            name = self._get_template_name(file_path)
++
++            if name is None:
++                continue
++
++            cache_key = (weakref.ref(self), name)
++
++            for environment in self._environments:
++                cache = environment.cache
++
++                if cache is None:
++                    continue
++
++                try:
++                    del cache[cache_key]
++                except KeyError:
++                    pass
++
+     def list_templates(self) -> t.List[str]:
+         found = set()
+         for searchpath in self.searchpath:

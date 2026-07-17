@@ -1,0 +1,109 @@
+diff --git a/src/jinja2/ext.py b/src/jinja2/ext.py
+index d21b83aa..6076516a 100644
+--- a/src/jinja2/ext.py
++++ b/src/jinja2/ext.py
+@@ -264,7 +264,77 @@ class InternationalizationExtension(Extension):
+             uninstall_gettext_translations=self._uninstall,
+             extract_translations=self._extract,
+             newstyle_gettext=False,
++            i18n_cache_size=128,
+         )
++        self._init_cache()
++
++    def _init_cache(self) -> None:
++        """Set up the translation result cache used to avoid redundant
++        gettext/ngettext/pgettext/npgettext lookups.
++        """
++        self._cache: t.Dict[str, str] = {}
++        self._cache_order: t.List[str] = []
++        self._update_cache_size()
++
++    def _update_cache_size(self) -> None:
++        """Refresh the cache capacity from ``environment.i18n_cache_size``
++        so it can be changed after the extension has been created.
++        """
++        self._cache_size = getattr(self.environment, "i18n_cache_size", 128)
++
++    def _get_from_cache(self, key: str) -> t.Optional[str]:
++        """Return the cached value for ``key``, refreshing its LRU
++        position, or ``None`` if it isn't cached.
++        """
++        if key not in self._cache:
++            return None
++        self._cache_order.remove(key)
++        self._cache_order.append(key)
++        return self._cache[key]
++
++    def _put_in_cache(self, key: str, value: str) -> None:
++        """Store ``value`` for ``key``, evicting the least recently used
++        entry if the cache is at capacity.
++        """
++        self._update_cache_size()
++        if self._cache_size <= 0:
++            return
++        if key in self._cache:
++            self._cache_order.remove(key)
++        elif len(self._cache) >= self._cache_size:
++            oldest = self._cache_order.pop(0)
++            del self._cache[oldest]
++        self._cache[key] = value
++        self._cache_order.append(key)
++
++    def clear_cache(self) -> None:
++        """Remove all cached translation results."""
++        self._cache.clear()
++        self._cache_order.clear()
++
++    def _cached(self, name: str, func: t.Callable[..., str]) -> t.Callable[..., str]:
++        """Wrap a translation callable so its results are cached, keyed
++        by the function name and its arguments.
++
++        Callables decorated with :func:`~jinja2.pass_context` (or
++        ``pass_eval_context``/``pass_environment``) receive an implicit
++        argument that isn't part of ``args`` and may vary the result in
++        ways the cache key can't account for, so those are returned
++        unmodified.
++        """
++        if hasattr(func, "jinja_pass_arg"):
++            return func
++
++        def wrapper(*args: t.Any) -> str:
++            key = "\x00".join((name, *(str(arg) for arg in args)))
++            cached = self._get_from_cache(key)
++            if cached is not None:
++                return cached
++            rv = func(*args)
++            self._put_in_cache(key, rv)
++            return rv
++
++        return wrapper
+ 
+     def _install(
+         self, translations: "_SupportedTranslations", newstyle: t.Optional[bool] = None
+@@ -320,6 +390,18 @@ class InternationalizationExtension(Extension):
+         pgettext: t.Optional[t.Callable[[str, str], str]] = None,
+         npgettext: t.Optional[t.Callable[[str, str, str, int], str]] = None,
+     ) -> None:
++        # Installing new translations invalidates any results cached
++        # from the previously installed translations.
++        self.clear_cache()
++        gettext = self._cached("gettext", gettext)
++        ngettext = self._cached("ngettext", ngettext)
++
++        if pgettext is not None:
++            pgettext = self._cached("pgettext", pgettext)
++
++        if npgettext is not None:
++            npgettext = self._cached("npgettext", npgettext)
++
+         if newstyle is not None:
+             self.environment.newstyle_gettext = newstyle  # type: ignore
+         if self.environment.newstyle_gettext:  # type: ignore
+@@ -339,6 +421,7 @@ class InternationalizationExtension(Extension):
+     def _uninstall(self, translations: "_SupportedTranslations") -> None:
+         for key in ("gettext", "ngettext", "pgettext", "npgettext"):
+             self.environment.globals.pop(key, None)
++        self.clear_cache()
+ 
+     def _extract(
+         self,

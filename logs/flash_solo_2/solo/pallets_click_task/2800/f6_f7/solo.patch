@@ -1,0 +1,198 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index 666ad68..d535120 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -228,6 +228,14 @@ class Context:
+         value is not set, it defaults to the value from the parent
+         context. ``Command.show_default`` overrides this default for the
+         specific command.
++    :param validate_nesting: If enabled, closing this context while any
++        child contexts created from it (via :meth:`_make_sub_context` or
++        by passing this context as ``parent``) are still open raises a
++        ``RuntimeError``. Child contexts automatically inherit this
++        setting from their parent.
++
++    .. versionchanged:: 8.2
++        Added the ``validate_nesting`` parameter and attribute.
+ 
+     .. versionchanged:: 8.2
+         The ``protected_args`` attribute is deprecated and will be removed in
+@@ -280,6 +288,7 @@ class Context:
+         token_normalize_func: t.Callable[[str], str] | None = None,
+         color: bool | None = None,
+         show_default: bool | None = None,
++        validate_nesting: bool = False,
+     ) -> None:
+         #: the parent context or `None` if none exists.
+         self.parent = parent
+@@ -432,6 +441,19 @@ class Context:
+         self._parameter_source: dict[str, ParameterSource] = {}
+         self._exit_stack = ExitStack()
+ 
++        #: Whether this context enforces that all child contexts
++        #: created from it are closed before it is closed itself.
++        #:
++        #: .. versionadded:: 8.2
++        if parent is not None and parent.validate_nesting:
++            validate_nesting = True
++
++        self.validate_nesting = validate_nesting
++        self._children_contexts: list[Context] = []
++
++        if parent is not None and parent.validate_nesting:
++            parent._children_contexts.append(self)
++
+     @property
+     def protected_args(self) -> list[str]:
+         import warnings
+@@ -606,11 +628,99 @@ class Context:
+         """Invoke all close callbacks registered with
+         :meth:`call_on_close`, and exit all context managers entered
+         with :meth:`with_resource`.
++
++        :raises RuntimeError: if :attr:`validate_nesting` is enabled
++            and any child contexts created from this context have not
++            yet been closed.
++
++        .. versionchanged:: 8.2
++            Added validation of unclosed child contexts when
++            :attr:`validate_nesting` is enabled.
+         """
++        if self.validate_nesting and self._children_contexts:
++            raise RuntimeError(
++                "Tried to close a context while it still has unclosed"
++                f" child contexts: {self._children_contexts!r}"
++            )
++
+         self._exit_stack.close()
+         # In case the context is reused, create a new exit stack.
+         self._exit_stack = ExitStack()
+ 
++        if self.parent is not None and self in self.parent._children_contexts:
++            self.parent._children_contexts.remove(self)
++
++    def save_state(self) -> dict[str, t.Any]:
++        """Capture a snapshot of this context's state.
++
++        The returned dictionary can later be passed to
++        :meth:`restore_state` to revert the context back to how it
++        looked when the snapshot was taken. Attributes that can hold
++        nested, mutable data (``params``, ``obj``, ``meta``,
++        ``default_map``, and the parameter source tracking) are deep
++        copied so that later in-place mutations of those structures do
++        not affect the snapshot.
++
++        .. versionadded:: 8.2
++        """
++        import copy
++
++        return {
++            "params": copy.deepcopy(self.params),
++            "args": list(self.args),
++            "protected_args": list(self._protected_args),
++            "opt_prefixes": set(self._opt_prefixes),
++            "obj": copy.deepcopy(self.obj),
++            "meta": copy.deepcopy(self._meta),
++            "default_map": copy.deepcopy(self.default_map),
++            "parameter_source": copy.deepcopy(self._parameter_source),
++            "info_name": self.info_name,
++            "invoked_subcommand": self.invoked_subcommand,
++            "terminal_width": self.terminal_width,
++            "max_content_width": self.max_content_width,
++            "allow_extra_args": self.allow_extra_args,
++            "allow_interspersed_args": self.allow_interspersed_args,
++            "ignore_unknown_options": self.ignore_unknown_options,
++            "help_option_names": list(self.help_option_names),
++            "token_normalize_func": self.token_normalize_func,
++            "resilient_parsing": self.resilient_parsing,
++            "auto_envvar_prefix": self.auto_envvar_prefix,
++            "color": self.color,
++            "show_default": self.show_default,
++            "validate_nesting": self.validate_nesting,
++        }
++
++    def restore_state(self, snapshot: dict[str, t.Any]) -> None:
++        """Restore this context's state from a snapshot previously
++        returned by :meth:`save_state`.
++
++        :param snapshot: The dictionary produced by :meth:`save_state`.
++
++        .. versionadded:: 8.2
++        """
++        self.params = snapshot["params"]
++        self.args = snapshot["args"]
++        self._protected_args = snapshot["protected_args"]
++        self._opt_prefixes = snapshot["opt_prefixes"]
++        self.obj = snapshot["obj"]
++        self._meta = snapshot["meta"]
++        self.default_map = snapshot["default_map"]
++        self._parameter_source = snapshot["parameter_source"]
++        self.info_name = snapshot["info_name"]
++        self.invoked_subcommand = snapshot["invoked_subcommand"]
++        self.terminal_width = snapshot["terminal_width"]
++        self.max_content_width = snapshot["max_content_width"]
++        self.allow_extra_args = snapshot["allow_extra_args"]
++        self.allow_interspersed_args = snapshot["allow_interspersed_args"]
++        self.ignore_unknown_options = snapshot["ignore_unknown_options"]
++        self.help_option_names = snapshot["help_option_names"]
++        self.token_normalize_func = snapshot["token_normalize_func"]
++        self.resilient_parsing = snapshot["resilient_parsing"]
++        self.auto_envvar_prefix = snapshot["auto_envvar_prefix"]
++        self.color = snapshot["color"]
++        self.show_default = snapshot["show_default"]
++        self.validate_nesting = snapshot["validate_nesting"]
++
+     @property
+     def command_path(self) -> str:
+         """The computed command path.  This is used for the ``usage``
+diff --git a/src/click/shell_completion.py b/src/click/shell_completion.py
+index 6fd9e54..69e1a03 100644
+--- a/src/click/shell_completion.py
++++ b/src/click/shell_completion.py
+@@ -271,8 +271,13 @@ class ShellComplete:
+         :param incomplete: Value being completed. May be empty.
+         """
+         ctx = _resolve_context(self.cli, self.ctx_args, self.prog_name, args)
+-        obj, incomplete = _resolve_incomplete(ctx, args, incomplete)
+-        return obj.shell_complete(ctx, incomplete)
++        state = ctx.save_state()
++
++        try:
++            obj, incomplete = _resolve_incomplete(ctx, args, incomplete)
++            return obj.shell_complete(ctx, incomplete)
++        finally:
++            ctx.restore_state(state)
+ 
+     def format_completion(self, item: CompletionItem) -> str:
+         """Format a completion item into the form recognized by the
+@@ -544,6 +549,7 @@ def _resolve_context(
+     :param args: List of complete args before the incomplete value.
+     """
+     ctx_args["resilient_parsing"] = True
++    ctx_args["validate_nesting"] = False
+     ctx = cli.make_context(prog_name, args.copy(), **ctx_args)
+     args = ctx._protected_args + ctx.args
+ 
+@@ -557,7 +563,13 @@ def _resolve_context(
+                 if cmd is None:
+                     return ctx
+ 
+-                ctx = cmd.make_context(name, args, parent=ctx, resilient_parsing=True)
++                ctx = cmd.make_context(
++                    name,
++                    args,
++                    parent=ctx,
++                    resilient_parsing=True,
++                    validate_nesting=False,
++                )
+                 args = ctx._protected_args + ctx.args
+             else:
+                 sub_ctx = ctx
+@@ -575,6 +587,7 @@ def _resolve_context(
+                         allow_extra_args=True,
+                         allow_interspersed_args=False,
+                         resilient_parsing=True,
++                        validate_nesting=False,
+                     )
+                     args = sub_ctx.args
+ 
