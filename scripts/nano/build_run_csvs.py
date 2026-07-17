@@ -246,7 +246,12 @@ def leaf_row(run_name: str, cfg: dict, leaf: Path, logs: Path) -> dict | None:
     # slot mapping: which agent slot owns which feature id
     slot_of: dict[int, str] = {}
     if res is not None:
-        for slot, a in (res.get("agents") or {}).items():
+        agents = res.get("agents") or {}
+        # solo runs store a single "agent" (implements both features) instead of
+        # an "agents" dict — fold it into the 'a' side so a_/b_ columns are
+        # populated consistently (b_ stays empty; a_+b_ still totals the pair).
+        solo_agent = res.get("agent") if not agents else None
+        for slot, a in agents.items():
             slot_of[a.get("feature_id")] = slot
         row.update(
             duration_s=_b(res.get("duration_seconds")),
@@ -256,10 +261,14 @@ def leaf_row(run_name: str, cfg: dict, leaf: Path, logs: Path) -> dict | None:
         )
         for kind, n in (res.get("messages_by_kind") or {}).items():
             row[f"msgs_{kind}"] = n
-        for side, fid in (("a", fa), ("b", fb)):
-            agent = (res.get("agents") or {}).get(slot_of.get(fid, ""), {})
+        if solo_agent is not None:
             for c in AGENT_COLS:
-                row[f"{side}_{c}"] = _b(agent.get(c))
+                row[f"a_{c}"] = _b(solo_agent.get(c))
+        else:
+            for side, fid in (("a", fa), ("b", fb)):
+                agent = agents.get(slot_of.get(fid, ""), {})
+                for c in AGENT_COLS:
+                    row[f"{side}_{c}"] = _b(agent.get(c))
 
     if ev is not None:
         apply = ev.get("apply_status") or {}
