@@ -354,6 +354,11 @@ def main():
         "default; skipping is faster but loses the capability-vs-coordination split.",
     )
 
+    # === scaling command (opt-in; base run/eval untouched when not invoked) ===
+    from cooperbench.scaling.cli import add_scaling_parser
+
+    add_scaling_parser(subparsers)
+
     args = parser.parse_args()
 
     if args.command == "config":
@@ -366,6 +371,10 @@ def main():
         from cooperbench.dataset import _prepare_command
 
         _prepare_command(args)
+    elif args.command == "scaling":
+        from cooperbench.scaling.cli import scaling_command
+
+        scaling_command(args)
 
 
 def _config_command(args):

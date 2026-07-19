@@ -174,6 +174,43 @@ The chain closes. The flash analysis says two-agent failure on this benchmark is
 
 Because every arm differs only in its system prompt and message validation, this constitutes direct evidence for the central claim of this work: prompt-level protocol design alone is sufficient to produce substantial coordination improvement. The residual failures of the best arm (17% textual conflict, 10% functional failure) mark where the next problem begins: once the spatial collision is solved, the semantic coordination failures that dominate the original paper's taxonomy finally become visible.
 
+# The Scaling Study: The Cost of Adding Agents
+
+Every result so far fixes the team size at two. The protocol study shows the two-agent integration gap is solvable at the prompt level, but it leaves the more basic question untouched: as a fixed workload is divided among *more* agents, does the cost of coordinating grow, and how? Answering this requires two changes to the apparatus. The workload must be held constant while only the agent count varies. And, more importantly, the naive two-branch merge used as the coordination oracle throughout the benchmark is unfair to the very thing we are measuring: it conflicts whenever two agents touch the same lines, whether or not they coordinated, conflating genuine coordination failure with incidental overlap that any competent integrator resolves trivially.
+
+## A Fairer Apparatus: Agent-Owned Integration
+
+We therefore built a shared-repository mode. All N agents work against one git remote seeded at the task's base commit; each agent implements its assigned features, then fetches its peers, merges their branches into its own tree, resolves any conflicts, and rebuilds its patch from the *integrated* result. Integration is thus performed by the agents, as part of their coordination work — not imposed by the evaluator. Evaluation no longer merges anything: it scores the single integrated tree the agents produced against every feature's held-out suite. We verified the mechanism directly at N = 2, 3, and 4: in each case every agent fetched and merged all of its peers and the agents converged on the same integrated tree, and a four-agent integration on a conflict-clique task passed all four held-out suites — confirming that the agents genuinely integrate rather than shipping isolated patches.
+
+## Design
+
+The independent variable is the agent count N ∈ {1, 2, 3, 4}; the constant is a pool of K mutually-conflicting features (a clique in the gold conflict graph) split across the N agents by a fixed round-robin partition. N = 1 is one agent implementing all K; higher N deals the same K features across more agents. Every pool is solo-screened — a single agent must complete all K — so that any degradation at higher N is attributable to coordination, not to raw difficulty; this also anchors the curve at a clean solo ceiling. The primary measure is a graded score, the fraction of the K held-out suites passing on the integrated tree, which credits a partially-correct team (three of four features working = 0.75) and treats a merge that breaks the codebase, so tests fail to even run, as 0.
+
+Solo-achievability is the binding constraint. Only ~24% of K = 4 candidate tasks pass screening (4 of 17 flash tasks), so the four-agent sweep is limited to four pools; the harder repositories become solo-achievable only at K = 3, capping them at N = 3. The final dataset is 10 pools across six repositories, 118 runs under Claude Sonnet 5 (~$300 API-equivalent).
+
+## Results: Efficiency Collapses as a Power Law
+
+The cleanest and most general result is in efficiency — the fraction of the workload solved per dollar spent.
+
+| N | graded score | cost / run | solved per \$ | vs. solo |
+|---|---|---|---|---|
+| 1 | 0.96 | $0.68 | 1.40 | 100% |
+| 2 | 0.92 | $1.93 | 0.48 | 34% |
+| 3 | 0.88 | $3.59 | 0.24 | 17% |
+| 4 | 0.94 | $7.02 | 0.13 | 10% |
+
+Efficiency falls as a power law in the agent count, efficiency = 1.45·N^−1.67 (R² = 0.996), reaching ~10% of the solo value at four agents. The relationship is *universal*: fitting each pool separately, all ten collapse as power laws with exponents between 1.1 and 2.3 (mean 1.76, every R² > 0.9). The exponent exceeding 1 everywhere is the substantive point. If dividing the work simply gave each agent a fixed share at a fixed per-agent cost, efficiency would fall as 1/N (b = 1); the observed b ≈ 1.8 means each added agent is *super-proportionally* wasteful — the coordination overhead (re-loading shared context, messaging, re-integration, and repair of botched merges) grows faster than the work is divided. This holds even for pools whose correctness never degrades: pallets_jinja/1621 integrates perfectly at every N, yet its efficiency still falls 1.07 → 0.15, a 7× loss. The efficiency penalty does not require a coordination *failure* — it is the price of coordination itself.
+
+## Correctness and Cost
+
+Correctness degrades more mildly, and less universally. Averaged over all ten pools, the graded score falls 0.96 → 0.92 → 0.88 from one to three agents, and the strict all-pass rate — the probability the team ships a fully-correct integration — falls 86% → 75%. The four-agent point recovers to 0.94, but only because just the four cleaner K = 4 pools reach it; this is a composition artifact, not a genuine recovery, and cannot be compared to the N ≤ 3 means, which span all ten pools. The degradation is concentrated on the hardest repository, dspy, whose two tasks fall 0.92 → 0.75 and 0.75 → 0.42, while six of the ten pools integrate cleanly and hold near 1.0. When correctness is lost, the failure mode is specific: the agents merge but botch the integration, producing code that no longer runs, so the held-out suite returns zero passed and zero failed.
+
+Cost, by contrast, rises on every pool and is close to linear in N — each added agent adds a roughly constant $1.7–$2.3 per run (its own context load plus its slice of the work), for a ~10× increase from one to four agents on the same workload. It is this near-linear cost against flat-or-declining correctness that produces the super-linear efficiency collapse.
+
+## What This Shows
+
+Where the protocol study showed that the two-agent integration gap is fixable, the scaling study shows what prompt design does *not* fix: the cost of coordination itself. Splitting a task a single agent can already solve across more agents buys no correctness — at best it matches solo, and on hard, conflict-dense tasks it actively destroys it — while the work delivered per dollar falls as roughly N^−1.8, a penalty that appears on every task we measured, including those that remain perfectly correct. For agentic development on interdependent work, adding agents is not merely unhelpful; it is super-proportionally expensive for the same result. This is a limit on parallelism that no messaging protocol can remove, because it is paid before any message is sent — in the redundant context each agent must load and the integration each must redo.
+
 # Conclusion
 
 This work set out to test whether the coordination gap between LLM coding agents is a fixed cost of working in parallel, or a failure with identifiable, addressable causes. The answer is the latter, and the evidence forms a closed chain.
