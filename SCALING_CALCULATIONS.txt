@@ -1,0 +1,168 @@
+====================================================================
+SCALING STUDY — ANALYSIS CALCULATIONS (reproduction spec)
+====================================================================
+Purpose: reproduce every number/conclusion for the shared-git agent-count
+scaling study (14 clique-pools, 148 runs, N in {1,2,3,4}). Everything below
+is computable from the per-run records. Validation targets are given so a
+re-implementation can be checked against the published figures.
+
+
+--------------------------------------------------------------------
+0. INPUT DATA  (build the record list first)
+--------------------------------------------------------------------
+- The unit is ONE RUN = one (pool, N, condition, trial). One row per run.
+
+- SOURCE OF TRUTH (stable): the per-cell JSON under
+    logs/scaling_*_git/scaling/<repo>/<task>/<features>/N<N>_<cond>_r<trial>/
+  Each cell dir has:
+    * eval.json   -> "score" (float), "all_passed" (bool), "n_passed" (int), "k" (int),
+                     "features" (per-feature pass detail)
+    * result.json -> "n_agents" (int = N), "total_cost" (float, USD), "condition", "trial"
+  Only keep cells whose eval.json contains a "score" key (that marks the
+  git-integrated eval; skip anything else).
+
+  (Alternative source: results_study*/rows.jsonl and results_overnight_*/rows.jsonl
+   carry the same fields, BUT rows.jsonl gets truncated/rewritten whenever a study
+   is relaunched at higher trials — so prefer the eval.json/result.json cells.)
+
+- Each record keeps:
+    pool_id  = "<repo>/<task>/<features>"   (distinct CLIQUE; e.g. dspy/8394/f2_f3_f4_f5)
+    repo     = repo name
+    N        = n_agents
+    score    = eval.json score  (= n_passed / K)
+    all_pass = eval.json all_passed  (bool)
+    cost     = result.json total_cost  (USD)
+
+- EXPECTED TOTALS: 148 records, 14 distinct clique-pools, N in {1,2,3,4}.
+  (N=1,2,3 have all 14 pools = 44 records each; N=4 has only the 6 K=4 pools = 16 records.)
+
+
+--------------------------------------------------------------------
+1. PER-RUN QUANTITIES  (already in the data, no computation)
+--------------------------------------------------------------------
+* graded_score = n_passed / K
+    = fraction of the K feature test-suites that PASS on the single integrated
+      tree the agents produced. Stored as eval.json "score".
+* all_pass = (n_passed == K)  -> the run was fully correct. Stored.
+* cost = total_cost (API list-price USD, summed over the N agents). Stored.
+
+  NOTE: use the feature-level score (n_passed/K). Do NOT recompute a percentage
+  from individual tests_passed/tests_failed — a botched merge breaks the repo and
+  the suite then reports 0 passed / 0 failed, so per-test ratios are unreliable.
+
+
+--------------------------------------------------------------------
+2. AGGREGATE-BY-N  (the raw curves)
+--------------------------------------------------------------------
+Group all records by N. For each N compute:
+  * mean_score(N) = mean(score) over records with that N
+  * all_pass(N)   = count(all_pass == True) / count(records with that N)   [strict success RATE]
+  * mean_cost(N)  = mean(cost) over records with that N
+
+  VALIDATION:
+    N=1: mean_score 0.964, all_pass 0.89, mean_cost $0.78
+    N=2: mean_score 0.907, all_pass 0.82, mean_cost $2.10
+    N=3: mean_score 0.892, all_pass 0.77, mean_cost $3.82
+    N=4: mean_score 0.922, all_pass 0.69, mean_cost $7.21
+  (all_pass declines monotonically 0.89 -> 0.82 -> 0.77 -> 0.69.)
+
+
+--------------------------------------------------------------------
+3. EFFICIENCY  (THE headline metric = work solved per dollar)
+--------------------------------------------------------------------
+  * efficiency(N)  = mean_score(N) / mean_cost(N)     [ratio of the means from section 2]
+  * pct_of_solo(N) = efficiency(N) / efficiency(1) * 100
+
+  VALIDATION:
+    efficiency:  N1 1.241, N2 0.433, N3 0.233, N4 0.128
+    pct_of_solo: N1 100%, N2 35%, N3 19%, N4 10%
+
+  (Definition note: "ratio of means" is the headline. An alternative is the
+   "mean of per-run ratios", mean(score_i / cost_i); it gives higher absolute
+   numbers but the SAME collapse shape. The power-law fit below uses the ratio-of-means.)
+
+
+--------------------------------------------------------------------
+4. POWER-LAW FIT of efficiency vs N  (THE key result)
+--------------------------------------------------------------------
+Model:   efficiency = a * N^(-b)      <=>      ln(efficiency) = ln(a) - b * ln(N)
+
+Fit ordinary least squares on the 4 aggregate points (N = 1..4),
+with x = ln(N) and y = ln(efficiency(N)):
+  n   = number of points (4)
+  Sx  = sum(x);  Sy = sum(y);  Sxy = sum(x*y);  Sxx = sum(x*x)
+  b   = -( n*Sxy - Sx*Sy ) / ( n*Sxx - Sx*Sx )      # reported POSITIVE; law is N^(-b)
+  lna = ( Sy + b*Sx ) / n
+  a   = exp(lna)
+
+R-squared:
+  yhat_i = lna - b*x_i
+  SS_res = sum( (y_i - yhat_i)^2 )
+  SS_tot = sum( (y_i - mean(y))^2 )
+  R2     = 1 - SS_res / SS_tot
+
+  VALIDATION:  a = 1.28,  b = 1.61,  R2 = 0.996     (i.e. efficiency = 1.28 * N^-1.61)
+
+Interpretation to report:
+  * b > 1  =>  "super-proportional": worse than a perfect 1/N split (which would be b=1).
+  * Each DOUBLING of N multiplies efficiency by 2^(-b) = 2^-1.61 = 0.33  (~ one-third).
+  * Sanity check against data: 1.241 * 0.33 = 0.41 (~N2 0.433); 0.433 * 0.33 = 0.14 (~N4 0.128).
+
+
+--------------------------------------------------------------------
+5. PER-POOL POWER LAW  (universality check)
+--------------------------------------------------------------------
+For each distinct clique-pool (group records by pool_id):
+  * compute efficiency_pool(N) = mean_score_pool(N) / mean_cost_pool(N) for each N
+    that pool has (require >= 3 distinct N-levels to fit)
+  * fit the SAME power law (section 4) on that pool's points -> b_pool, R2_pool
+
+  VALIDATION: all 14 pools fit; exponents b_pool roughly in [1.1, 2.3], mean ~1.7,
+  every R2 > 0.9. Conclusion to state: the collapse is UNIVERSAL — every pool,
+  including ones that stay 100% correct at all N.
+
+
+--------------------------------------------------------------------
+6. DEGRADER CLASSIFICATION  (correctness is task-dependent)
+--------------------------------------------------------------------
+For each distinct clique-pool:
+  spread   = max_over_N( mean_score_pool(N) ) - min_over_N( mean_score_pool(N) )
+  degrades = ( spread >= 0.12 )     # threshold; 0.12 = ~half a feature out of K=3/4
+
+  VALIDATION: 6 of 14 pools degrade. All four dspy cliques degrade (dspy is the
+  degrader repo). The other 8 hold near 1.0.
+
+
+--------------------------------------------------------------------
+7. COST vs N  (secondary — near-linear)
+--------------------------------------------------------------------
+  * Per-pool per-agent increment: for a pool present at N=1 and N=4,
+      delta_per_agent = ( cost(4) - cost(1) ) / 3     -> ~ $1.7 to $2.3
+  * Or fit aggregate mean_cost(N) = alpha + beta*N (OLS with intercept); beta ~ $2/agent.
+  * Total cost ratio: mean_cost(4) / mean_cost(1) ~ 10x.
+  Conclusion: cost is ~linear in N (each agent adds a roughly fixed cost). It is this
+  near-linear cost against flat-or-declining score that yields the super-linear
+  efficiency collapse in section 4.
+
+  (Optional, if you want the earlier framing: quadratic no-intercept fit
+   cost(N) = alpha*N + beta*N^2 via 2-param OLS. The POOLED beta is diluted by pool
+   cost-heterogeneity, so fit PER POOL and aggregate the betas instead.)
+
+
+--------------------------------------------------------------------
+8. GOTCHAS / CONVENTIONS
+--------------------------------------------------------------------
+* Read eval.json (stable), not rows.jsonl (rewritten on study relaunch).
+* N=4 aggregate spans only 6 K=4 pools; N<=3 spans all 14. So do NOT read the
+  N=4 mean_score (0.922) as "correctness recovered" — it is a composition change.
+  This is exactly why EFFICIENCY (section 3-4) is the clean headline: it stays
+  monotonic because the N=4 pools still cost ~$7, so their efficiency is the floor.
+* score is already n_passed/K; the per-test denominator collapses on broken merges.
+* costs are total_cost_usd (API list-price equivalent), summed over agents; the
+  model was run on a flat-rate plan, so these are equivalent prices, not actual spend.
+* Distinct clique-pool = repo/task/FEATURES (same task can appear as >1 clique;
+  we have e.g. three dspy/8394 cliques). Per-repo/per-task grouping merges them.
+
+====================================================================
+END
+====================================================================
