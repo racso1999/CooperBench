@@ -1,229 +1,72 @@
 # Introduction
 
-AI agents are becoming an increasingly central part of how large language models (LLMs) are used. The architecture underlying these models, the transformer, was introduced by Vaswani et al. in 2017 [1]. A transformer is stateless: given a sequence of tokens, it predicts the next, and it retains no memory between calls — everything the model "knows" about an ongoing interaction must be re-supplied in its context window. An AI agent is what emerges when this stateless predictor is wrapped in a loop: the model is given tools (a shell, a file editor, a messaging channel), its outputs are executed against a real environment, and the results are fed back into its context. State, in other words, lives in the environment rather than in the model. This construction turns a next-token predictor into a system that can pursue multi-step goals — reading a codebase, editing files, running tests — and it is the construction studied throughout this work.
+A large language model (LLM) is, at its core, a stateless predictor. Built on the transformer architecture, when given a sequence of text, it outputs the most likely continuation, token by token, and retains no memory of one call to the next [1]. An AI agent is what emerges when this stateless predictor is wrapped in a loop: the model is given tools (a shell, a file editor, a messaging channel), its outputs are executed against a real environment, and the results are fed back into its context. This construction turns a next-token predictor into a system that can pursue multi-step goals: reading a codebase, editing files, running tests.
 
-Once one agent works, the appeal of several is immediate, and multi-agent systems have risen in popularity accordingly. The intuition borrows directly from human organisations: divide the work, assign specialists, and let them collaborate — several agents should deliver the parallelism and division of labour that a single context-limited agent cannot. Frameworks built on this premise have proliferated, from conversational multi-agent toolkits such as AutoGen [2] to software-company simulations such as MetaGPT [3] and ChatDev [4], which cast agents as product managers, engineers, and testers cooperating through structured conversations. The premise is seductive because each agent brings its own context window and its own working environment, so a team appears to scale where a single agent saturates. What this intuition quietly assumes, however, is that LLM agents can coordinate — that dividing the work costs less than it returns. For software engineering specifically, that assumption is largely untested, and the evidence that does exist points the other way: it is precisely the gap this work investigates.
+Once one agent works, the appeal of several is obvious, and multi-agent systems have risen in popularity accordingly. The intuition borrows directly from human organisations: divide the work, and let them collaborate. In theory, several agents should deliver the parallelism and division of labour that a single context-limited agent cannot. Frameworks built on this premise have proliferated, from conversational multi-agent toolkits such as AutoGen [2] to software-company simulations such as MetaGPT [3] and ChatDev [4], which cast agents as product managers, engineers, and testers cooperating through structured conversations. The premise is seductive because each agent brings its own context window and its own working environment, so a team appears to scale where a single agent saturates.
 
-In "CooperBench: Why Coding Agents Cannot be Your Teammates Yet" [5], the authors found that solo agents were far better at solving coding-based tasks than their two- or multi-agent counterparts. Intuitively, this makes sense. To crudely understand the issue, imagine a single machine is told to complete a task: it is given a fixed compute budget and unlimited time. Now split the compute budget across two machines and give the machines a method of communication. One can ascertain that even if communication is 100% effective (so that the effect of communication may be dismissed), we still expect worse performance, because communication costs compute, and therefore the total compute budget available to solve the task is significantly reduced. In this paper we will refer to this as the "communication efficiency problem". Why then, one might ask, would we even consider improving a system that is doomed to fail?
+What this intuition quietly assumes, however, is that LLM agents **can** coordinate and that dividing the work produces a meaningful outcome. For software engineering specifically, that assumption is largely untested, and the little evidence that does exist points the other way. In "CooperBench: Why Coding Agents Cannot be Your Teammates Yet" [5], the authors found that solo agents were far better at solving coding-based tasks than their two- or multi-agent counterparts.
 
-The answer is that, despite multi-agent systems at times not being as efficient as their solo counterparts, they may at times be necessary or even more useful than their solo counterparts. For example, multi-agent systems may be useful when there are two agents with contrasting functionality. Or take, for example, a future where agents autonomously look after certain parts of a system. Perhaps there are a few lines where their working boundaries overlap, or their functions are called within another agent's working environment. At times, agents will be forced to work together, and when they do, we want to ensure that they can do so to their maximum capability.
+Intuitively, this makes sense. To crudely understand the issue, imagine a single machine is told to complete a task: it is given a fixed compute budget and unlimited time. Now split the compute budget across two machines and give the machines a method of communication. One can ascertain that even if communication is 100% effective (so that the effect of communication may be dismissed), we still expect worse performance, because communication costs compute, and therefore the total compute budget available to solve the task is significantly reduced. In this paper we will refer to this as the "communication efficiency problem".
+
+Why then, one might ask, would we even consider improving a system that is doomed to fail? The answer is that, despite multi-agent systems at times not being as efficient as their solo counterparts, they may also at times be necessary or even more useful than their solo counterparts. For example, multi-agent systems may be useful when there are two agents with contrasting functionality. Or take, for example, a scenario where agents autonomously look after certain parts of a system. Perhaps there are a few lines where their working boundaries overlap, or their functions are called within another agent's working environment. At times, agents will be forced to work together, and when they do, we want to ensure that they can do so to their maximum capability and, efficiently.
 
 # Hypothesis
 
-This paper aims to isolate the failures of multi - agent systems and through our findings, suggest protocol, architecture or schema changes that can be applied to preexisitng multi agents systems. In this paper, we hypothesise that multi agent systems will always be worse than their solo agent counter part. To further prove this hypothesis, this paper aims to show the increasing communcation cost by scaling multi agent systems from solo -> 4 agents using CooperBench as out primary benchmarking suite.
+This paper aims to isolate the failures of multi-agent systems and through our findings, suggest protocol, architecture or schema changes that can be applied to preexisitng multi agents systems. In this paper, we hypothesise that multi agent systems will always be worse than their solo agent counter part in tasks that are solvable by a single agent. To further prove this hypothesis, this paper aims to show the increasing communcation cost by scaling multi agent systems from solo -> 4 agents using CooperBench as our primary benchmarking suite.
 
-# Methodology
+## Methodology
 
-## The Problem
+"CooperBench: Why Coding Agents Cannot be Your Teammates Yet" [5] introduces a comprehensive benchmarking suite that isolates communcation failures in multi agent systems. CooperBench is a benchmark that tests whether two LLM coding agents can work in parallel on the same codebase. Its headline finding is the "curse of coordination" - agents average ~30% lower success working together than one agent doing both tasks alone. CooperBench works by spinning up two isolated containerised environments from which agents work within. Each agent is given a spec, access to its own copy of the code base and a tool to message with the other agent. (This can be from 1 other, up to a whole team of agents). The two agents are then tasked with individually implementing their own features.
 
-The key problem I seek to solve is the communication gap between agents. The original CooperBench paper [5] found that solo agents were far better at solving coding-based tasks than their two- or multi-agent counterparts.
+CooperBench provides a built-in evaluation pipeline, applied automatically as each task pair completes. Evaluation takes place in a fresh container, isolated from the agents' working environments. Any modifications to test files are first stripped from the submitted patches, preventing agents from passing by altering the grading tests. Each patch is then applied to its own branch off of the base commit, and the two branches are naively merged (git merge, with no conflict-resolution fallback). If the merge is clean, each feature's test suite is run against the merged tree. A pair succeeds (both_passed) only if both suites pass; a conflicted merge fails outright. Notably, the tests execute only at evaluation time: agents may run the repository's pre-existing tests while working, but never see the grading suites.
 
-The main issue appears to be a communication gap. Systems with two or more agents must communicate successfully in order to produce code that both works and is compatible with the other agent's code.
-
-My hypothesis is that multi-agent systems fail in tangible failure modes. If we can isolate these modes through benchmarking, we can iteratively produce a protocol that seeks to fix these failures.
-
-## How CooperBench Works
-
-CooperBench works by spinning up two isolated containerised environments from which agents work within. Each agent is given a spec, access to its own copy of the code base and a tool to message with the other agent. (This can be from 1 other up to a whole team of agents). The two agents are then tasked with individually implementing their own features. After which an eval script is run to score each run.
-
-CooperBench provides a built-in evaluation pipeline, applied automatically as each task pair completes. Evaluation takes place in a fresh container, isolated from the agents' working environments. Any modifications to test files are first stripped from the submitted patches, preventing agents from passing by altering the grading tests. Each patch is then applied to its own branch off the base commit, and the two branches are naively merged (git merge, with no conflict-resolution fallback). If the merge is clean, each feature's held-out test suite — extracted from the original pull request and never shown to the agents — is run against the merged tree. A pair succeeds (both_passed) only if both suites pass; a conflicted merge fails outright. Notably, the held-out tests execute only at evaluation time: agents may run the repository's pre-existing tests while working, but never see the grading suites.
-
-## Extending the Pipeline
-
-I extended this pipeline in place, so that it produces a strict superset of its original output. First, I added a pre-merge independent evaluation stage: before merging, each agent's patch is tested in isolation against its own feature's held-out suite. This distinguishes capability failures (an agent never solved its feature) from coordination failures (a working implementation broken by the merge) — a decomposition the post-merge signal alone cannot make, and the central quantity of interest in this study.
-
-## The Datasets
-
-CooperBench ships several subsets ranging from a 10-pair smoke set (core) to a 100-pair curated evaluation set (lite), alongside the full 652-pair enumeration. The flash dataset contains 50 feature pairs drawn from 20 tasks across 11 open-source repositories, sampled uniformly at the pair level from the benchmark's lite subset (seed = 42), and is intended as a development set for rapid iteration. Nano is our 20-pair capability-screened subset introduced for the protocol study.
-
-## Choosing a Model
-
-Preliminary (pilot) tests were run against the flash dataset to determine a suitable model for our experiments. Key problems to consider were cost, individual model capability, and token throughput. Local models were tested but ultimately not used due to their limited token throughput: with single locally hosted models we were restricted to sequential model calls, and this lack of concurrency added a large time overhead. Secondly, a variety of cloud API models were tested; several were capable, but the cost overhead was too high. Finally, I settled on the Claude Code wrapper, through which agents authenticate against a Claude Max (20×) subscription. This allowed access to multiple models at a fixed subscription cost, offering excellent value per token relative to per-call API billing. I decided to use Claude Sonnet 5 for the model.
-
-## Design Rationale: Fully Isolated Agents
-
-Here the experiment can take one of two directions. We give the agents a shared git workspace. This way, it more closely represents a realistic development setting, whereby developers work together on a shared codebase. Alternatively, we limit their scope so that all they have is their messaging. This way, any improvements in performance can be attributed to communication alone.
-
-From a design perspective, it makes more sense to keep agents in the dark from one another and to NOT allow them to share git workspaces. This in turn isolates an increase in performance metrics to communication alone and arguably gives us a more meaningful signal to determine what improves communication between two agents. To further explain, in a "real-life" setting, perhaps it would make more sense to allow agents to have access to each other's workspace. However, for the sake of isolating failure modes specific to communication issues and for the sake of this experiment, we decided to keep both agents completely isolated.
-
-## The Plan
-
-1. Replicate initial study using flash data set and Sonnet 5.
-2. Evaluate whether our replication displays similar behavior.
-3. Isolate common failure modes.
-4. Build protocols through structured messaging and system prompt modification to help reduce these failure modes.
+Preliminary (pilot) tests were run against the flash dataset to determine a suitable model for our experiments. Problems to consider were cost, individual model capability, and token throughput. claude-sonnet-5 was ultimately selected.
 
 # Replicating the Original Study
 
-In order to begin, I wanted to replicate the original study. It is first important to test whether we see the same issues with our own system. I expect to see that increasing difficulty of the tasks results in more failures. The original study also points to the largest communication gap arising with medium-level tasks.
+To establish that the coordination gap reported by CooperBench reproduces on our infrastructure, the 50-pair flash subset was run under two conditions with an identical model (Claude Sonnet 5): a solo condition, in which a single agent implements both features of a pair, and a cooperative condition, in which two isolated agents implement one feature each and may exchange free-text messages. Because both conditions run on the same feature pairs, the comparison is paired at the pair level, removing task difficulty as a confound. Three pairs could not be evaluated in either condition and are excluded, leaving n = 47.
 
-The original study also tested the effect of allowing agents to freely communicate with each other, although found that communication alone has no benefit to overall success rates. In order to build on this, we must first replicate the study and extract as much data as possible.
+It is important to state here that "free-msg" is not necessarily a blank canvas. In the free-messaging condition, each agent's instruction is composed of three parts, separated in a single prompt: (1) the feature specification (the agent's own feature.md, never the partner's); (2) a submission protocol instructing the agent to write its final unified diff to patch.txt before exiting; and (3) a cooperation protocol block that names the partner, warns that features may overlap, and documents the messaging commands. "Free" refers to the message content: it is unconstrained plain text, with no required fields, no message types, and no validation. The cooperation block is reproduced verbatim below (as rendered for agent1):
 
-The first task was to begin naively searching for failure modes. In order to do so, we started by running the flash dataset. To establish that the coordination gap reported by CooperBench reproduces on our infrastructure, we ran the 50-pair flash subset under two conditions with an identical model (Claude Sonnet 5): a solo condition, in which a single agent implements both features of a pair, and a cooperative condition, in which two isolated agents implement one feature each and may exchange free-text messages. Because both conditions run on the same feature pairs, the comparison is paired at the pair level, removing task difficulty as a confound. Three pairs could not be evaluated in either condition and are excluded, leaving n = 47. It is important to state here that "free-msg" is not neccessarily a blank canvas.
+```
+## Cooperation protocol
 
-In the free-messaging condition, each agent's instruction is composed of three parts, separated in a single prompt: (1) the feature specification (the agent's own feature.md, never the partner's); (2) a submission protocol instructing the agent to write its final unified diff to patch.txt before exiting; and (3) a cooperation protocol block that names the partner, warns that features may overlap, and documents the messaging commands. "Free" refers to the message content: it is unconstrained plain text, with no required fields, no message types, and no validation — in contrast to the structured arms, where messages missing required fields are rejected. The cooperation block is reproduced verbatim below (as rendered for agent1):
+You are **agent1**, working alongside: **agent2**.
 
-    ## Cooperation protocol
+Each agent has been assigned a separate feature from the same codebase;
+your features may overlap (touch the same files), so coordinate to avoid
+clobbering each other's changes.
 
-    You are **agent1**, working alongside: **agent2**.
-    Each agent has been assigned a separate feature from the same codebase;
-    your features may overlap (touch the same files), so coordinate to avoid
-    clobbering each other's changes.
+Available shell commands for cross-agent messaging (Redis-backed inbox,
+one inbox per agent):
 
-    Available shell commands for cross-agent messaging (Redis-backed inbox,
-    one inbox per agent):
+coop-send <recipient> "message text here"   # send to a specific peer
+coop-broadcast "message text here"          # send to every other peer
+coop-recv                                   # drain your inbox (prints JSON list)
+coop-peek                                   # number of unread messages
+coop-agents                                 # list every agent id
 
-    coop-send <recipient> "message text here"   # send to a specific peer
-    coop-broadcast "message text here"          # send to every other peer
-    coop-recv                                   # drain your inbox (prints JSON list)
-    coop-peek                                   # number of unread messages
-    coop-agents                                 # list every agent id
+Recommended workflow:
 
-    Recommended workflow:
+1. At the start, `coop-broadcast` a short summary of your feature and
+   which files you intend to touch.
+2. Periodically `coop-recv` to read what your peers have sent — at
+   minimum after major edits and before submitting.
+3. If two agents need to modify the same file, coordinate explicitly
+   (split the file, agree on one owner, or merge changes).
+4. Keep messages short and focused: file names, function names, and
+   one-sentence intents are usually enough.
 
-    1. At the start, `coop-broadcast` a short summary of your feature and
-       which files you intend to touch.
-    2. Periodically `coop-recv` to read what your peers have sent — at
-       minimum after major edits and before submitting.
-    3. If two agents need to modify the same file, coordinate explicitly
-       (split the file, agree on one owner, or merge changes).
-    4. Keep messages short and focused: file names, function names, and
-       one-sentence intents are usually enough.
-
-    Messages are not magic — your peers only know what you tell them.
-
-## Results
-
-The solo agent solved 20/47 pairs (42.6%), while the cooperative system solved 6/47 (12.8%). The paired contrast is decisive: 15 pairs were solved solo-only against 1 coop-only (exact McNemar test, two-sided p = 0.0005). The gap is therefore not an artifact of task selection or model capability drift — it emerges on identical tasks with an identical model, and its magnitude (a 3.3× reduction in solve rate) closely mirrors the original CooperBench finding.
-
-## Locating the Gap
-
-Our pre-merge independent evaluation stage allows a decomposition unavailable in the original benchmark. In the cooperative condition, both agents independently passed their own feature's held-out suite in 21/47 pairs — statistically indistinguishable from the solo condition's 20/47 (discordant pairs: 2 vs 3). Splitting the work across two agents therefore causes no measurable loss of individual capability: an agent working alongside a partner solves its own feature exactly as often as a solo agent does. The entire gap arises downstream, at patch integration. Of the 20 pairs demonstrably solvable by a single agent, the cooperative system delivered only 5 (25%); all pairs that were independently solved but jointly failed were lost to textual merge conflicts rather than functional incompatibility. The coordination gap is thus, on this data, an integration gap: the agents write working code but cannot place their edits so that the contributions combine.
-
-## Cost
-
-Cooperation is also uneconomical. The cooperative condition averaged $1.12 per pair against $0.68 solo (API-equivalent pricing); per solved pair this is $8.80 versus $1.60 — a 5.5× penalty for coordinating.
+Messages are not magic — your peers only know what you tell them.
+```
 
 ## The Findings
 
 Consistent with the reported curse of coordination, we observe a substantial drop in task success when agents must coordinate via messaging compared to working solo. Across 46 matched feature pairs (task_id/pair, with typst_task/6554 excluded due to intermittent evaluation-container failures leaving too few scored runs per pair for a reliable estimate), the average pass rate fell from 44.2% under the Solo condition to 12.3% under the Messaging condition. A paired Wilcoxon signed-rank test confirms this difference is statistically significant (W = 2.5, p < .001). This finding replicates the qualitative pattern reported in the original study, in which coordinated (Coop) performance is substantially lower than Solo performance across models.
 
-In the cooperative condition, both agents independently passed their own feature's held-out suite in 21/47 pairs — statistically indistinguishable from the solo condition's 20/47 (discordant pairs: 2 vs 3). Splitting the work across two agents therefore causes no measurable loss of individual capability. The gap arises at patch integration. Of the 20 pairs demonstrably solvable by a single agent, the cooperative system delivered only 5 (25%). All pairs that were independently solved but jointly failed were lost to textual merge conflicts rather than functional incompatibility. The coordination gap is thus, on this data, an integration gap. The agents consistantly write working code but cannot place their edits so that the contributions combine.
+In the cooperative condition, both agents independently passed their own feature's held-out suite in 21/47 pairs — statistically indistinguishable from the solo condition's 20/47 (discordant pairs: 2 vs 3). Splitting the work across two agents therefore causes no measurable loss of individual capability. The gap arises at patch integration. Of the 20 pairs demonstrably solvable by a single agent, the cooperative system delivered only 5 (25%). All pairs that were independently solved but jointly failed were lost to textual merge conflicts rather than functional incompatibility. The coordination gap is thus, on this data, an integration gap. The agents consistently write working code but cannot place their edits so that the contributions combine.
 
-While the original study establishes a clear coordination gap in task success rates, it does not normalize for the cost of achieving those outcomes. We use total dollar cost — which aggregates input, output, and cache read/write tokens into a single figure — as a proxy for computational effort, and find that the coordination gap is considerably larger once this is accounted for.
-
-Cost is taken directly from the `total_cost_usd` field of the Claude Code CLI's terminating result event, computed from token usage (input, output, and cache read/write) priced at Anthropic's published list rates. The reported cost of a run is the sum across its participating agents and reflects API list price.
-
-Across the same 46 matched feature pairs, the Solo condition achieved 0.675 passes per dollar spent, compared to 0.107 passes per dollar under Messaging — a roughly 6.3-fold gap, versus the 3.6-fold gap observed in raw pass rate alone. A paired Wilcoxon signed-rank test on per-pair cost efficiency confirms this difference is statistically significant (*W* = 2.0, *p* < .001). This widening indicates that the coordination penalty is not limited to lower success rates: Messaging runs are also less cost-efficient per successful outcome, compounding the disadvantage relative to Solo.
-
-## Implications
-
-These results validate the two design decisions underlying our protocol study. First, because the gap is concentrated entirely in pairs that a solo agent can already solve, benchmarking coordination on unscreened pairs wastes most of its signal on capability failures (26 of 47 pairs here); our capability-screened nano subset addresses this directly. Second, because information exchange demonstrably occurs — agents in the cooperative condition messaged in every evaluated pair — while conflicts persist, protocol interventions must target how edits are placed and combined, not merely whether agents communicate.
-
-# Understanding the Failures
-
-The initial paper fails in many ways to distinguish the difference between genuinely finding common failure modes in coding partners and simply showing that certain methods may improve performance of agents on the CooperBench benchmark alone. Furthermore, the only failure mode measured is either pre-merge (individually incapable) or post-merge (individually capable but they fail to correctly work together). The issue is not only finding these conflicts, but understanding why these conflicts happen.
-
-## The Conversations
-
-Manually reading through the conversations of the agents, we can start to unpack why these agents are failing and where the communication is breaking down. Of all 50 feature pairs tested in the flash dataset, all 50 agent pairs show evidence of attempting to resolve overlap. This behavior arises from the system prompt.
-
-## The Free-Messaging System Prompt
-
-In the free-messaging condition, each agent's instruction is composed of three parts, separated in a single prompt: (1) the feature specification (the agent's own feature.md, never the partner's); (2) a submission protocol instructing the agent to write its final unified diff to patch.txt before exiting; and (3) a cooperation protocol block that names the partner, warns that features may overlap, and documents the messaging commands. "Free" refers to the message content: it is unconstrained plain text, with no required fields, no message types, and no validation — in contrast to the structured arms, where messages missing required fields are rejected. The cooperation block is reproduced verbatim below (as rendered for agent1):
-
-    ## Cooperation protocol
-
-    You are **agent1**, working alongside: **agent2**.
-    Each agent has been assigned a separate feature from the same codebase;
-    your features may overlap (touch the same files), so coordinate to avoid
-    clobbering each other's changes.
-
-    Available shell commands for cross-agent messaging (Redis-backed inbox,
-    one inbox per agent):
-
-    coop-send <recipient> "message text here"   # send to a specific peer
-    coop-broadcast "message text here"          # send to every other peer
-    coop-recv                                   # drain your inbox (prints JSON list)
-    coop-peek                                   # number of unread messages
-    coop-agents                                 # list every agent id
-
-    Recommended workflow:
-
-    1. At the start, `coop-broadcast` a short summary of your feature and
-       which files you intend to touch.
-    2. Periodically `coop-recv` to read what your peers have sent — at
-       minimum after major edits and before submitting.
-    3. If two agents need to modify the same file, coordinate explicitly
-       (split the file, agree on one owner, or merge changes).
-    4. Keep messages short and focused: file names, function names, and
-       one-sentence intents are usually enough.
-
-    Messages are not magic — your peers only know what you tell them.
-
-Two properties of this prompt matter for interpreting the failures. First, the coordination behaviour we observe in the transcripts is prompt-compliant: agents declare their feature and intended files at the start, acknowledge each other, and keep messages short — precisely the recommended workflow. The failures therefore occur while the agents are following the protocol they were given, not because they ignore it. Second, the prompt says nothing about how the two contributions are ultimately combined. It does not mention that the two patches will be naively git-merged at evaluation time, nor that two textually overlapping edits conflict even when the agents have agreed they are semantically compatible. Its step 3 even suggests agents "merge changes" — an action that is impossible in isolated workspaces, and transcripts show agents discovering this mid-run and reasoning incorrectly about its consequences. The prompt's mental model of the environment ends exactly where the observed failures begin, which makes it the natural site for protocol interventions.
-
-## The Failure Modes
-
-Combining the mechanical evidence (patches, merge diffs, gold reference patches) with the transcripts yields five failure-mode findings, each verified programmatically on the 15 coordination failures:
-
-| # | Finding | Count | Evidence |
-|---|---|---|---|
-| F1 | **Failure is spatial, not semantic.** Every coordination failure is a textual merge conflict; zero capability-clean pairs failed on incompatible semantics after a clean merge | 15/15 | eval merge status |
-| F2 | **The overlap is task-inherent.** The gold reference patches for the two features also collide (same file, overlapping hunks) in every failing pair — by construction, since benchmark pairs are selected for gold-patch conflict | 15/15 | gold-patch hunk comparison |
-| F3 | **Information exchange is not the deficit.** The eventually-conflicting file was named in the conversation in every failure, and every agent declared the overlapping files it touched | 15/15 | conversation vs patch files |
-| F4 | **Agreement without resolution.** Agents identify the collision precisely, agree a plan ("let's each add our own param"), and still emit textually colliding edits | dominant pattern | transcripts |
-| F5 | **Wrong merge model.** Agents reason as if sharing a workspace ("your changes aren't present in my copy… you hadn't touched the files yet — go ahead"); nothing in the prompt describes the naive-merge evaluation | recurring | transcripts |
-
-The six passing pairs did something the failures did not: they negotiated placement at sub-file granularity (methods, line ranges), put new code in disjoint regions of the shared file, and confirmed disjointness before submitting. File-level overlap did not predict failure — 45 of 47 evaluated pairs overlapped on files, and 14 of those merged cleanly. The discriminating behaviour is resolving the overlap, not knowing about it.
-
-Read against the original CooperBench taxonomy [5], our failures concentrate in their *expectation failures* (information shared but never integrated into the partner's actions), with clear instances of their *trust paradox* (F5). Their *communication failures* — vague, unanswered, ill-timed messages — are nearly absent in our transcripts. Most strikingly, their finding that agents are "decent at spatial coordination but fail at semantic coordination" inverts on these conflict-selected Python pairs: here, spatial failure is the entire story.
-
-# Streamlining the Dataset
-
-The original dataset is highly inefficient. Many of the tasks fail not due to poor communication, but due to model performance. In these instances, no level of communication would solve our issue and so the signal we receive is void. In order to solve this issue, I ran the feature pairs iteratively using Sonnet 5 on a solo agent to isolate feature pairs that are solo-capable. One of the big issues with AI research is cost. Everything must be streamlined, including the dataset.
-
-## How This Moves the Baseline
-
-This moves the baseline from potentially solvable to "solvable individually". Any changes to performance metrics in further repeats of the experiment using multi agents are therefore due to communication errors alone.
-
-# The Protocol Study: From Failure Modes to Interventions
-
-The failure modes identified on flash generate testable predictions about which messaging protocols should and should not help. We evaluated six arms on the capability-screened nano set (20 pairs, 18 after pre-registered exclusions), all with the same model (Claude Sonnet 5), the same scaffold, and no shared git workspace. Critically, every protocol is implemented purely as a system prompt plus message-field validation — nothing else about the system changes between arms.
-
-## The Arms as Targeted Interventions
-
-| Arm | Protocol mechanism | Failure mode targeted | Prediction from the flash analysis |
-|---|---|---|---|
-| control | no messaging | — (floor) | conflicts dominate |
-| free-text | unconstrained messages | F3 (exchange information) | no effect — information already flows |
-| semi_structured | every message carries type (CLAIM/INTENT/…) + files + summary | F3 (declare more clearly) | no effect — declarations were already made, and accurate |
-| plan_handshake | two-phase PROPOSE/ACCEPT of a disjoint file split before editing | F1 at file granularity | no effect — F2 shows the overlap is *within* files, so no disjoint file split exists |
-| designated_coder | for each shared file, one agent owns and writes the union; the other defers and sends a spec | F4 (eliminate dual authorship) | should work *if* the deferring agent actually defers |
-| coauthor_overlap | for each overlapping construct, both agents co-author and emit byte-identical merged code | F4 + F5 (resolve the collision itself) | should work — git merges identical hunks cleanly |
-
-## Results of the Pre-Registered Comparison
-
-The primary endpoint is the merge-clean rate; inference is Cochran–Mantel–Haenszel stratified by pair, Holm-corrected across the contrast family.
-
-| Arm | runs | merge-clean | vs control (CMH OR) | Holm p | verdict |
-|---|---|---|---|---|---|
-| control | 270 | 13% | — | — | floor |
-| free-text | 270 | 21% | 1.79 | 0.105 | ns — as predicted |
-| semi_structured | 270 | 16% | 1.24 | 1.000 | ns — as predicted |
-| plan_handshake | 270 | 20% | 1.63 | 0.159 | ns — as predicted |
-| designated_coder | 88 | 18% | 1.43 | 1.000 | ns — see below |
-| **coauthor_overlap** | 89 | **78%** | **27.7** | **<0.0001** | **improved — as predicted** |
-
-The failure taxonomy makes the mechanism visible directly. Under control, 87% of pair-runs end in textual conflict; the talk-only and plan-only arms leave that essentially untouched (79–84%). coauthor_overlap collapses it to 17%, and it is the only arm that produces *identical* merges (29% of its runs) — both agents emitting the same merged code, which is precisely the protocol's intended fingerprint.
-
-Two arms deserve individual comment. First, designated_coder fails for a diagnosable reason: the negotiation itself succeeds (CLAIM, DEFER, and spec messages are exchanged correctly), but the deferring agent then edits the shared file anyway, so 39% of its runs still hard-conflict, and its high secondary endpoint (58% both_passed) is an evaluation artifact (solo_rescue: the owning agent's union patch passes both suites alone). This is a textbook instance of the original paper's *commitment failure* [5], reproduced under a protocol explicitly designed to exploit commitment. Second, the suggestive-but-uncorrected gains of free-text (raw p = 0.021) and plan_handshake (raw p = 0.040) fall out under Holm — consistent with the intrinsic-collision floor implied by F2: no amount of talking about or planning around a single shared signature line can partition it.
-
-## What This Shows
-
-The chain closes. The flash analysis says two-agent failure on this benchmark is overwhelmingly spatial (F1) and unavoidable by placement alone (F2), that information exchange is not the bottleneck (F3), and that agents agree about overlap without resolving it (F4) under a wrong model of how their work combines (F5). The protocol study confirms every prediction this generates: structuring the communication channel does nothing; planning around the overlap does nothing; the single arm that *resolves the overlap* — co-authoring byte-identical text for the shared construct — lifts the primary endpoint from 13% to 78% (a ~6× improvement, OR 27.7, p < 0.0001).
-
-Because every arm differs only in its system prompt and message validation, this constitutes direct evidence for the central claim of this work: prompt-level protocol design alone is sufficient to produce substantial coordination improvement. The residual failures of the best arm (17% textual conflict, 10% functional failure) mark where the next problem begins: once the spatial collision is solved, the semantic coordination failures that dominate the original paper's taxonomy finally become visible.
+While the original study establishes a clear coordination gap in task success rates, it does not normalize for the cost of achieving those outcomes. We use total dollar cost — which aggregates input, output, and cache read/write tokens into a single figure — as a proxy for computational effort, and find that the coordination gap is considerably larger once this is accounted for. Cost is taken directly from the `total_cost_usd` field of the Claude Code CLI's terminating result event, computed from token usage (input, output, and cache read/write) priced at Anthropic's published list rates. The reported cost of a run is the sum across its participating agents and reflects API list price. Across the same 46 matched feature pairs, the Solo condition achieved 0.675 passes per dollar spent, compared to 0.107 passes per dollar under Messaging — a roughly 6.3-fold gap, versus the 3.6-fold gap observed in raw pass rate alone. A paired Wilcoxon signed-rank test on per-pair cost efficiency confirms this difference is statistically significant (*W* = 2.0, *p* < .001). This widening indicates that the coordination penalty is not limited to lower success rates: Messaging runs are also less cost-efficient per successful outcome, compounding the disadvantage relative to Solo.
 
 # Growth With Scale
 
