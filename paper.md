@@ -186,7 +186,7 @@ We therefore built a shared-repository mode. All N agents work against one git r
 
 The independent variable is the agent count N ∈ {1, 2, 3, 4}; the constant is a pool of K mutually-conflicting features (a clique in the gold conflict graph) split across the N agents by a fixed round-robin partition. N = 1 is one agent implementing all K; higher N deals the same K features across more agents. Every pool is solo-screened — a single agent must complete all K — so that any degradation at higher N is attributable to coordination, not to raw difficulty; this also anchors the curve at a clean solo ceiling. The primary measure is a graded score, the fraction of the K held-out suites passing on the integrated tree, which credits a partially-correct team (three of four features working = 0.75) and treats a merge that breaks the codebase, so tests fail to even run, as 0.
 
-Solo-achievability is the binding constraint. Only ~24% of K = 4 candidate tasks pass screening (4 of 17 flash tasks), so the four-agent sweep is limited to four pools; the harder repositories become solo-achievable only at K = 3, capping them at N = 3. The final dataset is 10 pools across six repositories, 118 runs under Claude Sonnet 5 (~$300 API-equivalent).
+Solo-achievability is the binding constraint. Only ~20% of K = 4 candidate tasks pass screening, so K = 4 pools — the only ones that reach N = 4 — are scarce; the harder repositories become solo-achievable only at K = 3, capping them at N = 3. The final dataset is 14 clique-pools across six repositories, 148 runs under Claude Sonnet 5 (~$410 API-equivalent), six of which reach N = 4.
 
 ## Results: Efficiency Collapses as a Power Law
 
@@ -194,16 +194,16 @@ The cleanest and most general result is in efficiency — the fraction of the wo
 
 | N | graded score | cost / run | solved per \$ | vs. solo |
 |---|---|---|---|---|
-| 1 | 0.96 | $0.68 | 1.40 | 100% |
-| 2 | 0.92 | $1.93 | 0.48 | 34% |
-| 3 | 0.88 | $3.59 | 0.24 | 17% |
-| 4 | 0.94 | $7.02 | 0.13 | 10% |
+| 1 | 0.96 | $0.78 | 1.24 | 100% |
+| 2 | 0.91 | $2.10 | 0.43 | 35% |
+| 3 | 0.89 | $3.82 | 0.23 | 19% |
+| 4 | 0.92 | $7.21 | 0.13 | 10% |
 
-Efficiency falls as a power law in the agent count, efficiency = 1.45·N^−1.67 (R² = 0.996), reaching ~10% of the solo value at four agents. The relationship is *universal*: fitting each pool separately, all ten collapse as power laws with exponents between 1.1 and 2.3 (mean 1.76, every R² > 0.9). The exponent exceeding 1 everywhere is the substantive point. If dividing the work simply gave each agent a fixed share at a fixed per-agent cost, efficiency would fall as 1/N (b = 1); the observed b ≈ 1.8 means each added agent is *super-proportionally* wasteful — the coordination overhead (re-loading shared context, messaging, re-integration, and repair of botched merges) grows faster than the work is divided. This holds even for pools whose correctness never degrades: pallets_jinja/1621 integrates perfectly at every N, yet its efficiency still falls 1.07 → 0.15, a 7× loss. The efficiency penalty does not require a coordination *failure* — it is the price of coordination itself.
+Efficiency falls as a power law in the agent count, efficiency = 1.28·N^−1.61 (R² = 0.996), reaching ~10% of the solo value at four agents. The relationship is *universal*: fitting each pool separately, all fourteen collapse as power laws with exponents between roughly 1.1 and 2.3 (mean ≈ 1.7, every R² > 0.9). The exponent exceeding 1 everywhere is the substantive point. If dividing the work simply gave each agent a fixed share at a fixed per-agent cost, efficiency would fall as 1/N (b = 1); the observed b ≈ 1.8 means each added agent is *super-proportionally* wasteful — the coordination overhead (re-loading shared context, messaging, re-integration, and repair of botched merges) grows faster than the work is divided. This holds even for pools whose correctness never degrades: pallets_jinja/1621 integrates perfectly at every N, yet its efficiency still falls 1.07 → 0.15, a 7× loss. The efficiency penalty does not require a coordination *failure* — it is the price of coordination itself.
 
 ## Correctness and Cost
 
-Correctness degrades more mildly, and less universally. Averaged over all ten pools, the graded score falls 0.96 → 0.92 → 0.88 from one to three agents, and the strict all-pass rate — the probability the team ships a fully-correct integration — falls 86% → 75%. The four-agent point recovers to 0.94, but only because just the four cleaner K = 4 pools reach it; this is a composition artifact, not a genuine recovery, and cannot be compared to the N ≤ 3 means, which span all ten pools. The degradation is concentrated on the hardest repository, dspy, whose two tasks fall 0.92 → 0.75 and 0.75 → 0.42, while six of the ten pools integrate cleanly and hold near 1.0. When correctness is lost, the failure mode is specific: the agents merge but botch the integration, producing code that no longer runs, so the held-out suite returns zero passed and zero failed.
+Correctness degrades more mildly, and less universally. Averaged over all fourteen pools, the graded score falls 0.96 → 0.91 → 0.89 from one to three agents, and the strict all-pass rate — the probability the team ships a fully-correct integration — falls monotonically 89% → 82% → 77% → 69% across all four agent counts. (In an earlier run with only four K = 4 pools the four-agent point spuriously recovered, a composition artifact of the easy pools; adding two more K = 4 pools, one of them a degrader, removes it and restores the monotonic decline.) The degradation is concentrated on the hardest repository, dspy: all four of its cliques degrade (e.g. 0.75 → 0.42, and 0.92 → 0.75), while eight of the fourteen pools integrate cleanly and hold near 1.0. When correctness is lost, the failure mode is specific: the agents merge but botch the integration, producing code that no longer runs, so the held-out suite returns zero passed and zero failed.
 
 Cost, by contrast, rises on every pool and is close to linear in N — each added agent adds a roughly constant $1.7–$2.3 per run (its own context load plus its slice of the work), for a ~10× increase from one to four agents on the same workload. It is this near-linear cost against flat-or-declining correctness that produces the super-linear efficiency collapse.
 
