@@ -25,7 +25,7 @@ from pathlib import Path
 
 MERGE_OK = {"clean", "identical"}
 
-# pre-registered exclusions, judged on the control arm by analyze_study.py
+# pre-registered exclusions, judged on the control arm by masters_thesis/protocol_analysis/analyze.py
 # (ceiling: control both_passed > 60%, so merge conflict never bites there).
 # rows for these pairs get in_validated_set=False; everything else True.
 EXCLUDED_PAIRS = {
