@@ -33,9 +33,16 @@ CEILING_BOTH = 0.60        # drop if naive merge already passes often -> conflic
 
 
 def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """Wilson 95% confidence interval for a proportion k out of n.
+
+    These are the error bars on each rate. The Wilson interval behaves sensibly
+    near 0% and 100% and for small n, where the textbook +/- 1.96*sqrt(p(1-p)/n)
+    interval breaks down. z=1.96 gives the 95% level.
+    """
     if n == 0:
         return (float("nan"), float("nan"))
     p = k / n
+    # d is the denominator, c the recentred midpoint, h the half-width.
     d = 1 + z * z / n
     c = p + z * z / (2 * n)
     h = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
@@ -73,20 +80,30 @@ def agg(evals: list[dict]) -> dict:
 
 
 def cmh(strata: list[tuple[int, int, int, int]]) -> tuple[float, float]:
-    """strata: (a,b,c,d) per pair; a=proto_pass,b=proto_fail,c=ctrl_pass,d=ctrl_fail.
-    Returns (common odds-ratio, two-sided p)."""
+    """Cochran-Mantel-Haenszel test across strata (here, one stratum per pair).
+
+    Each stratum is a 2x2 table (a,b,c,d): a=proto_pass, b=proto_fail,
+    c=ctrl_pass, d=ctrl_fail. The test pools the effect across strata while
+    keeping them separate, so the repeated runs of one pair don't count as
+    independent observations. Returns (common odds-ratio, two-sided p-value).
+    """
+    # num/den accumulate the Mantel-Haenszel chi-square; R/S accumulate the
+    # common odds-ratio numerator and denominator.
     num = den = R = S = 0.0
     for a, b, c, d in strata:
         T = a + b + c + d
-        if T <= 1:
+        if T <= 1:  # a stratum with 0 or 1 observation carries no information
             continue
+        # Row and column totals for this table.
         n1, n0, m1 = a + b, c + d, a + c
+        # Observed minus expected count in the top-left cell, and its variance.
         num += a - n1 * m1 / T
         den += (n1 * n0 * m1 * (b + d)) / (T * T * (T - 1))
         R += a * d / T
         S += b * c / T
     if den == 0:
         return (float("nan"), 1.0)
+    # Continuity-corrected chi-square (1 df); erfc turns it into a two-sided p.
     chi = (abs(num) - 0.5) ** 2 / den
     p = math.erfc(math.sqrt(chi / 2))
     orr = (R / S) if S > 0 else float("inf")
