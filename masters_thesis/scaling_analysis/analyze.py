@@ -1,26 +1,16 @@
 #!/usr/bin/env python3
-"""
-Reproduces the analysis of the CooperBench shared-git agent-count scaling study.
-
-Input : data/scaling_records.csv  (one row per run: pool, N, score, all_passed, cost)
-Output: prints Calculations 1-6 (see explanation.txt for what each one means).
-
-Pure standard library (csv, math) — no numpy/pandas — so it runs anywhere.
-Run:   python3 analyze.py
-"""
 
 import csv
 import math
 import os
-from collections import defaultdict
+from collections import defaultdict 
 
-DATA = os.path.join(os.path.dirname(__file__), "data", "scaling_records.csv")
+DATA = os.path.join(os.path.dirname(__file__), "data", "scaling_records.csv") #load data
 
 
-# --- load -----------------------------------------------------------------
+#comnvert csv to dict <- 1 dict per run
 def load_records(path=DATA):
-    """One dict per run. score = n_passed/K (fraction of feature suites passing on
-    the integrated tree); cost = API list-price USD summed over the N agents."""
+
     rows = []
     with open(path, newline="") as f:
         for r in csv.DictReader(f):
@@ -29,13 +19,14 @@ def load_records(path=DATA):
                     "pool_id": r["pool_id"],            # distinct clique: repo/task/features
                     "repo": r["repo"],
                     "N": int(r["N"]),                   # number of agents
-                    "score": float(r["score"]),         # graded correctness in [0,1]
+                    "score": float(r["score"]),         # number of features that pass test suite
                     "all_passed": r["all_passed"] == "True",
-                    "cost": float(r["cost"]),           # dollars
+                    "cost": float(r["cost"]),           # cost in dollars
                 }
             )
-    return rows
+    return rows 
 
+#Helper functin to fix zero division errors
 
 def mean(xs):
     return sum(xs) / len(xs) if xs else float("nan")
@@ -68,9 +59,8 @@ def power_law_fit(points):
     return a, b, r2, n
 
 
-# =========================================================================
+
 # CALCULATION 1 — Aggregate curves by N (mean score, all-pass rate, mean cost)
-# =========================================================================
 def calc1_aggregate_by_N(recs):
     by_n = defaultdict(list)
     for r in recs:
@@ -87,27 +77,27 @@ def calc1_aggregate_by_N(recs):
     return out
 
 
-# =========================================================================
+
 # CALCULATION 2 — Efficiency by N  (work solved per dollar)
-# =========================================================================
+
 def calc2_efficiency(agg):
     eff = {N: agg[N]["mean_score"] / agg[N]["mean_cost"] for N in agg}
     solo = eff[min(eff)]
     return {N: {"efficiency": eff[N], "pct_of_solo": 100 * eff[N] / solo} for N in eff}
 
 
-# =========================================================================
+
 # CALCULATION 3 — Power-law fit of efficiency vs N   (THE headline)
-# =========================================================================
+
 def calc3_power_law(eff):
     pts = [(N, eff[N]["efficiency"]) for N in sorted(eff)]
     a, b, r2, n = power_law_fit(pts)
     return {"a": a, "b": b, "r2": r2, "n_points": n, "per_double_factor": 2 ** (-b)}
 
 
-# =========================================================================
+
 # CALCULATION 4 — Per-pool power law  (universality check)
-# =========================================================================
+
 def calc4_per_pool(recs):
     by_pool = defaultdict(lambda: defaultdict(list))
     for r in recs:
@@ -132,9 +122,9 @@ def calc4_per_pool(recs):
     }
 
 
-# =========================================================================
+
 # CALCULATION 5 — Degrader classification  (correctness is task-dependent)
-# =========================================================================
+
 def calc5_degraders(recs, threshold=0.12):
     by_pool = defaultdict(lambda: defaultdict(list))
     for r in recs:
@@ -148,9 +138,9 @@ def calc5_degraders(recs, threshold=0.12):
     return {"pools": result, "n_degraders": n_deg, "n_pools": len(result), "threshold": threshold}
 
 
-# =========================================================================
+
 # CALCULATION 6 — Cost vs N  (near-linear per agent)
-# =========================================================================
+
 def calc6_cost(recs, agg):
     # per-pool per-agent increment (pools present at both N=1 and N=4)
     by_pool = defaultdict(lambda: defaultdict(list))
@@ -171,7 +161,7 @@ def calc6_cost(recs, agg):
     }
 
 
-# --- run & print ----------------------------------------------------------
+# run all calculations and print results
 def main():
     recs = load_records()
     print(f"Loaded {len(recs)} runs across {len({r['pool_id'] for r in recs})} pools "
