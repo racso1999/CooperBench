@@ -151,44 +151,136 @@ uv run --with matplotlib python masters_thesis/protocol_analysis/figures.py
 
 ---
 
-## 3. Scaling-study infrastructure
+## 3. Scaling-study infrastructure (the "pool" experiment)
 
-**What it does.** Holds a fixed workload — K mutually-conflicting features from one task
-(a "pool") — constant and splits it across N agents to measure how coordination cost
-scales. Pipeline: build pools from the gold conflict graph → **screen** (keep pools a solo
-agent can complete) → **partition** features round-robin across N agents → **sweep**
-N ∈ {1..4} running each agent on its share (with Redis messaging + a shared git server) →
-stream one row per run to `rows.jsonl` → aggregate to `runs.csv` with a power-law fit.
-Headline: work-per-dollar collapses as `efficiency ≈ 1.28·N^-1.61`.
+New to this part? Read this whole section top-to-bottom once — it takes you from zero to
+a running sweep. It assumes you have already run ordinary CooperBench tasks.
 
-**How to use it.** A `scaling` subcommand on the main CLI. Three modes:
+### What it is
+
+The question: **when you split one fixed workload across more agents, what does
+coordination cost you?** The workload is a **pool** — K features from a *single task* that
+are mutually interdependent (their gold patches conflict, so they cannot be done in
+isolation without stepping on each other). You hold that K-feature pool constant and run it
+at N = 1, 2, 3, 4 agents. N = 1 (one agent does all K alone) is the baseline; higher N
+splits the same K features across the agents. The output is a cost/quality curve vs N.
+
+Everything runs through one subcommand: **`cooperbench scaling`**.
+
+### Prerequisites
+
+Same as a normal `coop` run — nothing pool-specific to install:
+
+- A working `--backend` (default `docker`) with the task images you already use for
+  CooperBench. Pools only reference tasks that exist in your dataset.
+- The conflict graph `dataset/gold_conflict_report.json` — ships with the dataset; pools
+  are computed from it, you do not create it.
+- **Redis** is used for inter-agent messaging in the `comm` condition; you do **not** need
+  to start it — `cooperbench` auto-launches a `redis:alpine` container via Docker on first
+  use.
+
+### The workflow: screen → sweep → analyse
+
+There are three modes. The normal path is **screen once, then sweep** (the sweep prints the
+analysis automatically; `--analyze-only` is only for re-running analysis later).
+
+**Step 1 — screen** the candidate pools for *your model*. This runs a single agent alone on
+each candidate and keeps only the ones it can fully solve, writing the survivors to
+`<out>/pools.json` (details + why in the callout below):
 
 ```bash
-# 1. Screen candidate pools → writes <out>/pools.json
-uv run cooperbench scaling --screen-pools --features 4 --r-screen 3 --screen-threshold 2 --out results_scaling
-
-# 2. Sweep the screened pools across agent counts
-uv run cooperbench scaling --manifest results_scaling/pools.json --agents 1,2,3,4 \
-    --comm --trials 2 --git --backend docker -m claude-sonnet-5 --out results_scaling
-
-# 3. Re-run the analysis on existing rows
-uv run cooperbench scaling --analyze-only --out results_scaling
+uv run cooperbench scaling --screen-pools \
+    --features 4 --r-screen 3 --screen-threshold 2 \
+    -m claude-sonnet-5 --backend docker \
+    --out results_scaling_sonnet5
 ```
 
-Key flags:
+**Step 2 — sweep** the screened pools across agent counts. Point `--manifest` at the
+`pools.json` from step 1. Each `(pool, N, condition, trial)` cell runs, streams a row to
+`<out>/rows.jsonl`, and the analysis (`runs.csv` + the power-law fit) prints at the end:
 
-- `--agents 1,2,3,4` — agent counts to sweep (comma list; N=1 is the solo baseline).
-- `--features K` — features per pool (default 4); `--require clique|connected` — interdependence.
-- `--comm` / `--no-comm` — messaging on/off; `--trials N`; `--seed`/`--seeds`.
-- `--screen-pools` / `--analyze-only` — mode selectors (default mode is the sweep).
-- `--r-screen`, `--screen-threshold` — screening repeats and pass bar.
-- `--git` — shared-git evaluation (agents merge peers into one integrated tree).
-- `--manifest` — reuse a screened `pools.json`; `--subset`/`--repos`/`--pool`/`--pools` — pool selection.
-- `-a/--agent`, `-m/--model`, `--backend modal|docker|gcp`, `--timeout`, `--out` (output dir).
+```bash
+uv run cooperbench scaling \
+    --manifest results_scaling_sonnet5/pools.json \
+    --agents 1,2,3,4 --comm --trials 2 --git \
+    -m claude-sonnet-5 --backend docker \
+    --out results_scaling_sonnet5
+```
 
-Note: the output flag is `--out` (not `--out-dir`), and agent count is `--agents` (no `-N`).
+**Step 3 (optional) — re-analyse** existing rows without re-running any agents:
 
-**Analysis** (self-contained, reads the frozen `data/scaling_records.csv`):
+```bash
+uv run cooperbench scaling --analyze-only --out results_scaling_sonnet5
+```
+
+> **Start small and cheap.** Both steps launch real agents, and cost ≈ (pools) × (trials) ×
+> (agent counts). For a first run, scope to one or two pools (see below) with `--trials 1`
+> before committing to a full sweep.
+
+### Choosing which pools to run
+
+The sweep needs a set of pools. It resolves them (in priority order) from:
+
+- `--manifest pools.json` — the screened set from step 1 (**recommended**).
+- `--pool <pool_id>` or `--pools <id1,id2>` — specific pools by id (ids look like
+  `dspy_task/8394/f1_f2_f4`; you can copy them from a `pools.json` or any `rows.jsonl`).
+- `--subset <name>` / `--repos <repo1,repo2>` — restrict the tasks pools are drawn from.
+- nothing — fresh selection of one pool per eligible task straight from the conflict graph.
+
+⚠️ Only `--manifest` (or re-screening) gives you a **screened** set. Selecting with
+`--pool`/`--subset`/nothing skips screening, so those pools have no capability floor — fine
+for a quick smoke test, not for a real result.
+
+**Key constraint:** `K ≥ max(--agents)` — every agent must own at least one feature. With
+`--features 4` you can sweep up to `--agents 1,2,3,4`; ask for `--agents ...,5` and it errors
+(`--agents max 5 exceeds smallest pool K 4`).
+
+### Flags you'll actually use
+
+- `--features K` — pool size (default 4); `--require clique|connected` — how tightly the K
+  features must interconnect (default `clique` = all pairs conflict).
+- `--agents 1,2,3,4` — the N values to sweep (N=1 is the solo baseline, always run once).
+- `--comm` / `--no-comm` — messaging condition; omit both to run *both* conditions.
+- `--trials N` — repeats per cell (captures model stochasticity; default 8).
+- `--git` — shared-git evaluation: agents integrate peers into one tree and it's scored
+  graded. This is the mode the thesis uses; recommend keeping it on.
+- `--screen-pools` / `--analyze-only` — pick a non-default mode (default is the sweep).
+- `--r-screen`, `--screen-threshold` — screening trials and the pass bar (default 3 / 2).
+- `-m/--model`, `-a/--agent`, `--backend modal|docker|gcp`, `--timeout`, `--out` (output dir).
+
+Gotchas: the output flag is `--out` (not `--out-dir`), and agent count is `--agents` (no `-N`).
+
+### Outputs (all under `--out`)
+
+- `pools.json` — the screened pool manifest (from `--screen-pools`).
+- `rows.jsonl` — one row per `(pool, N, condition, trial)` cell, streamed live (crash-safe).
+- `runs.csv` + `analysis.json` — the aggregated table and the power-law fits.
+
+Note: the default `--out` (`results_scaling*`) is git-ignored, so treat it as scratch — the
+`pools.json` there is **not** persisted across a clean checkout.
+
+### What `--screen-pools` does (and why it is model-specific)
+
+Screening runs a *single* agent alone on each candidate pool — handed all K features at
+once — for `--r-screen` trials, and keeps only pools that agent solves completely (all K
+test-suites pass) in at least `--screen-threshold` trials. The survivors, with their pass
+counts, are written to `<out>/pools.json`, which the sweep consumes via `--manifest`. This
+is what makes the scaling result interpretable: it guarantees the workload is
+*solo-solvable*, so any failure at N ≥ 2 is a **coordination** failure, not an impossible
+task.
+
+> **Important — re-screen for every model.** The capability floor is model-specific: a pool
+> solo-solvable by one model may be unsolvable by another. A `pools.json` is therefore only
+> valid for the model (`-m`) that screened it. **When you change `-m`/`-a`, re-run
+> `--screen-pools` to produce a fresh manifest for that model** — do not reuse another
+> model's pool set, or its N ≥ 2 failures will be misread as coordination failures when they
+> are really task-impossibility. (The manifest does not record which model screened it, so
+> nothing warns you of a mismatch — track it yourself, e.g. `--out results_scaling_<model>`.)
+
+### Offline analysis of the thesis data
+
+Self-contained, stdlib-only, reads the frozen `data/scaling_records.csv` (no agents, no
+cost) — the quickest way to see the shape of the output:
 
 ```bash
 uv run python masters_thesis/scaling_analysis/analyze.py    # Calculations 1–6 + power-law fit
