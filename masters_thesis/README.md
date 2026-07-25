@@ -10,8 +10,8 @@ tables), a `data/` artifact, and the rendered `figures/`.
 How coordination cost scales as a fixed workload is split across N ∈ {1,2,3,4}
 agents. Headline: efficiency collapses as a power law, ≈ 1.28·N^−1.61.
 
-- `analyze.py` — reads `data/scaling_records.csv` (148 runs, 14 pools), prints Calculations 1–6.
-- `figures.py` → `figures/fig2a_correctness.png`, `fig2b_cost.png`, `fig2c_efficiency.png`.
+- `analyze.py` — reads `data/scaling_records.csv` (148 runs, 14 pools), prints Calculations 1–7.
+- `figures.py` → `figures/fig2a_correctness.png`, `fig2b_cost.png`, `fig2c_efficiency.png`, `fig2d_cost_decomposition.png`.
 - Paper: `../paper.md` (scaling-study sections).
 
 ```bash

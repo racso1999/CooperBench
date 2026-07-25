@@ -23,12 +23,15 @@ matplotlib.use("Agg")  # headless: write files, never open a window
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 from matplotlib.lines import Line2D  # noqa: E402
+from matplotlib.patches import Patch  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from analyze import (  # noqa: E402
     calc1_aggregate_by_N,
     calc2_efficiency,
     calc3_power_law,
+    calc7_cost_accounts,
+    load_accounts,
     load_records,
 )
 
@@ -336,6 +339,55 @@ def figure2c(recs):
     return _save(fig, "fig2c_efficiency.png", facecolor="white")
 
 
+# =========================================================================
+# FIGURE 2d — cost-account decomposition vs N (where the tax is paid)
+# =========================================================================
+# Stacked $ accounts per N in the four-shade orange ramp: context (pale) is the
+# message-independent floor at the base; task, then comm and rework stacked on top
+# so the messaging-related cap (comm + rework) reads as the removable portion. The
+# per-bar label is that cap's share of the run's cost.
+def figure2d(accts):
+    dec = calc7_cost_accounts(accts)
+    ns = sorted(dec)
+    # base -> top: floor first, messaging-related on top
+    segments = [
+        ("Context", "context", LIGHT),
+        ("Task", "task", MID),
+        ("Comm", "comm", ORANGE),
+        ("Rework", "rework", DEEP),
+    ]
+
+    fig, ax = plt.subplots(figsize=(3.7, 3.3))
+    bottoms = {N: 0.0 for N in ns}
+    for _label, key, color in segments:
+        heights = [dec[N][key] for N in ns]
+        ax.bar(ns, heights, bottom=[bottoms[N] for N in ns], width=0.62,
+               color=color, edgecolor="black", linewidth=0.4, zorder=3)
+        for N, h in zip(ns, heights):
+            bottoms[N] += h
+
+    for N in ns:
+        total = dec[N]["total"]
+        # total $ above the bar
+        ax.annotate(f"${total:.2f}", (N, total), textcoords="offset points",
+                    xytext=(0, 3), ha="center", va="bottom", fontsize=4.7,
+                    color="black", fontname="Helvetica")
+        # comm+rework share, centred on the messaging-related cap (skip N=1: 0%)
+        cap = dec[N]["comm"] + dec[N]["rework"]
+        if cap > 0:
+            y = total - cap / 2
+            ax.annotate(f"{dec[N]['comm_rework_share']*100:.0f}%", (N, y),
+                        ha="center", va="center", fontsize=4.7, color="white",
+                        fontweight="bold", fontname="Helvetica")
+
+    ax.set_ylim(0, max(dec[N]["total"] for N in ns) * 1.14)
+    handles = [Patch(facecolor=c, edgecolor="black", linewidth=0.4, label=lbl)
+               for lbl, _k, c in segments]
+    _fig2_chrome(fig, ax, ns, "US dollars")
+    _fig2_legend(ax, handles, loc="upper left", bbox=(0.03, 0.97))
+    return _save(fig, "fig2d_cost_decomposition.png", facecolor="white")
+
+
 def main():
     os.makedirs(OUTDIR, exist_ok=True)
     _style()
@@ -343,6 +395,7 @@ def main():
     print(f"Loaded {len(recs)} runs across {len({r['pool_id'] for r in recs})} pools.")
     for fn in (figure2a, figure2b, figure2c):
         print(f"  wrote {fn(recs)}")
+    print(f"  wrote {figure2d(load_accounts())}")
 
 
 if __name__ == "__main__":

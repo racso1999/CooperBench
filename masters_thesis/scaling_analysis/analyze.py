@@ -6,6 +6,7 @@ import os
 from collections import defaultdict 
 
 DATA = os.path.join(os.path.dirname(__file__), "data", "scaling_records.csv") #load data
+ACCOUNTS = os.path.join(os.path.dirname(__file__), "data", "cost_accounts.csv")  # per-run $ decomposition
 
 
 #comnvert csv to dict <- 1 dict per run
@@ -24,7 +25,28 @@ def load_records(path=DATA):
                     "cost": float(r["cost"]),           # cost in dollars
                 }
             )
-    return rows 
+    return rows
+
+
+# One dict per run holding the four dollar accounts. Each run's cost is apportioned
+# across context / task / comm / rework so the four sum back to the run's total cost
+# (they are a partition of it), which is what makes their per-N shares meaningful.
+def load_accounts(path=ACCOUNTS):
+    rows = []
+    with open(path, newline="") as f:
+        for r in csv.DictReader(f):
+            rows.append(
+                {
+                    "pool_id": r["pool_id"],
+                    "N": int(r["N"]),
+                    "context_usd": float(r["context_usd"]),   # each agent re-loads the shared repo
+                    "task_usd": float(r["task_usd"]),          # implementing assigned features
+                    "comm_usd": float(r["comm_usd"]),          # messages sent/received/re-ingested
+                    "rework_usd": float(r["rework_usd"]),      # re-editing files after an inbound message
+                }
+            )
+    return rows
+
 
 #Helper functin to fix zero division errors
 
@@ -161,6 +183,36 @@ def calc6_cost(recs, agg):
     }
 
 
+# CALCULATION 7 — Cost-account decomposition  (where the tax is paid)
+#
+# For each N, mean the four dollar accounts across runs and report two shares of
+# the total run cost:
+#   comm_share        = comm / total                 (messaging channel alone)
+#   comm_rework_share = (comm + rework) / total       (messaging + the rework it triggers)
+# The gap between the two is the message-triggered rework. Both are reported because
+# the paper distinguishes messaging strictly (~a quarter) from all messaging-related
+# cost (~a third).
+def calc7_cost_accounts(accts):
+    by_n = defaultdict(list)
+    for r in accts:
+        by_n[r["N"]].append(r)
+    out = {}
+    for N in sorted(by_n):
+        g = by_n[N]
+        ctx = mean([r["context_usd"] for r in g])
+        task = mean([r["task_usd"] for r in g])
+        comm = mean([r["comm_usd"] for r in g])
+        rework = mean([r["rework_usd"] for r in g])
+        total = ctx + task + comm + rework
+        out[N] = {
+            "n_runs": len(g),
+            "context": ctx, "task": task, "comm": comm, "rework": rework, "total": total,
+            "comm_share": comm / total if total else float("nan"),
+            "comm_rework_share": (comm + rework) / total if total else float("nan"),
+        }
+    return out
+
+
 # run all calculations and print results
 def main():
     recs = load_records()
@@ -204,6 +256,22 @@ def main():
     lo, hi = c["per_agent_increment_range"]
     print(f"  per-agent increment: mean ${c['per_agent_increment_mean']:.2f} "
           f"(range ${lo:.2f}-${hi:.2f}) | cost ratio N=4/N=1: {c['cost_ratio_maxN_over_solo']:.1f}x")
+
+    ca = calc7_cost_accounts(load_accounts())
+    print("\nCALCULATION 7 — Cost-account decomposition (context / task / comm / rework)")
+    print(f"  {'N':>2} {'context':>8} {'task':>8} {'comm':>8} {'rework':>8} {'total':>8}"
+          f" {'comm%':>7} {'comm+rwk%':>10}")
+    for N in sorted(ca):
+        a = ca[N]
+        print(f"  {N:>2} ${a['context']:>7.2f} ${a['task']:>7.2f} ${a['comm']:>7.3f} "
+              f"${a['rework']:>7.3f} ${a['total']:>7.2f} {a['comm_share']*100:>6.1f}% "
+              f"{a['comm_rework_share']*100:>9.1f}%")
+    multi = [ca[N] for N in ca if N > 1]
+    if multi:
+        print(f"  across N>=2: comm alone {min(a['comm_share'] for a in multi)*100:.0f}-"
+              f"{max(a['comm_share'] for a in multi)*100:.0f}% of cost; "
+              f"comm+rework {min(a['comm_rework_share'] for a in multi)*100:.0f}-"
+              f"{max(a['comm_rework_share'] for a in multi)*100:.0f}%")
 
 
 if __name__ == "__main__":
