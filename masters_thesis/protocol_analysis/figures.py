@@ -5,11 +5,16 @@ data/nano_study.json (produced by the sibling analyze.py). Reading the same
 numbers the paper's tables cite means the plotted values can never drift from
 the reported results. Requires matplotlib (the analysis itself is stdlib-only).
 
+Styled to match the scaling study's figures (masters_thesis/scaling_analysis):
+compact white panels, thin black left/bottom spines, a faint warm grid, tiny
+Charter axis labels with direct value labels in Helvetica, a small boxed corner
+legend, no in-figure title, and one warm Claude-orange palette throughout.
+
   Fig 1 — endpoints: merge-clean (primary) vs both-passed (secondary) per arm.
           The talk-only arms sit at the floor; only the structural protocols move.
-  Fig 2 — failure taxonomy: where each pair-run lands after the naive merge.
-          Shows the mechanism — textual conflict dominates every arm except the
-          one that resolves the overlap itself.
+  Fig 2 — failure taxonomy: where each pair-run lands after the naive merge,
+          on a pale-to-dark severity ramp. Textual conflict (deep) dominates
+          every arm except the one that resolves the overlap itself.
 
 Run:  python3 figures.py            # writes figures/*.png next to this file
 
@@ -30,17 +35,15 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "data", "nano_study.json")
 OUTDIR = os.path.join(HERE, "figures")
 
-# --- palette (validated dataviz reference; certified categorical slots) -----
-BLUE = "#2a78d6"  # slot 1 — merge-clean / honest pass (the win)
-ORANGE = "#eb6834"  # slot 2 — both-passed / functional_fail
-YELLOW = "#eda100"  # slot 4 — solo_rescue (evaluation artifact, a caveat)
-RED = "#e34948"  # slot 8 — textual_conflict (the dominant failure)
-INK = "#0b0b0b"
-SECONDARY = "#52514e"
-MUTED = "#898781"  # axis / labels / missing_patch
-GRID = "#e1e0d9"
-BASELINE = "#c3c2b7"
-SURFACE = "#fcfcfb"
+# --- Claude-orange warm palette (shared with scaling_analysis/figures.py) ----
+INK = "#3d1c0a"       # near-black warm brown: text + darkest segment
+DEEP = "#8f3a14"      # deep burnt orange: emphasis / worst-failure segment
+ORANGE = "#d97757"    # Claude signature orange: primary series
+MID = "#e0913f"       # amber orange: secondary series
+LIGHT = "#f0c19a"     # pale orange: best-outcome / light series
+MUTED = "#a9846b"     # warm muted brown: axis ticks
+BASELINE = "#d9c3b0"  # axis spine
+SURFACE = "#fffdfb"   # faint warm off-white surface
 
 # study arms, control first — same order and labels as the paper's tables
 ARMS = [
@@ -51,14 +54,16 @@ ARMS = [
     ("nano_dc", "des. coder"),
     ("nano_coauthor", "coauthor"),
 ]
-# failure taxonomy, ordered good -> bad (a severity scale)
+# failure taxonomy, ordered good -> bad on a pale-to-dark severity ramp
 TAX = [
-    ("pass", "passed", BLUE),
-    ("solo_rescue", "solo-rescue", YELLOW),
+    ("pass", "passed", LIGHT),
+    ("solo_rescue", "solo-rescue", MID),
     ("functional_fail", "func-fail", ORANGE),
-    ("textual_conflict", "conflict", RED),
-    ("missing_patch", "no-patch", MUTED),
+    ("textual_conflict", "conflict", DEEP),
+    ("missing_patch", "no-patch", INK),
 ]
+# which segment colours need white (rather than black) direct labels
+_DARK = {DEEP, INK}
 
 
 def _style():
@@ -67,28 +72,66 @@ def _style():
             "figure.facecolor": SURFACE,
             "axes.facecolor": SURFACE,
             "savefig.facecolor": SURFACE,
+            # crisp sans everywhere by default; Charter is applied to the axis
+            # labels only (see _chrome)
             "font.family": "sans-serif",
             "font.sans-serif": ["Helvetica", "Arial", "DejaVu Sans"],
-            "font.size": 10,
+            "font.size": 8,
             "axes.edgecolor": BASELINE,
-            "axes.labelcolor": SECONDARY,
-            "axes.linewidth": 1.0,
+            "axes.labelcolor": DEEP,
+            "axes.linewidth": 0.9,
             "xtick.color": MUTED,
             "ytick.color": MUTED,
-            "xtick.labelcolor": SECONDARY,
-            "ytick.labelcolor": SECONDARY,
+            "xtick.labelcolor": DEEP,
+            "ytick.labelcolor": DEEP,
             "text.color": INK,
-            "axes.titlecolor": INK,
         }
     )
 
 
-def _bare(ax):
+# --- shared chrome (mirrors scaling_analysis' _fig2_chrome, categorical x) --
+def _chrome(fig, ax, labels, ylabel):
+    """Greyscale chrome, small black wording, tight axis labels, no title — the
+    look dialled in on the scaling figures. The y-axis label uses Charter;
+    everything else (ticks, legend, value labels) stays in the crisp sans
+    default. x is categorical (the study arms), so there is no x-axis label."""
+    ax.set_ylabel(ylabel, fontsize=5.3, labelpad=1, color="black", fontname="Charter")
+    ax.set_xticks(range(len(labels)))
+    ax.set_xticklabels(labels)
+    ax.set_ylim(0, 100)
+    ax.set_yticks([0, 25, 50, 75, 100])
+    ax.set_yticklabels(["0", "25", "50", "75", "100%"])
+    ax.tick_params(axis="both", labelsize=5.2, labelcolor="black", color="black",
+                   width=0.5)
+    fig.set_facecolor("white")
+    ax.set_facecolor("white")
+    ax.grid(axis="y", color="0.8", linewidth=0.35, alpha=0.5)
+    ax.set_axisbelow(True)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.grid(axis="y", color=GRID, linewidth=0.8, zorder=0)
-    ax.set_axisbelow(True)
-    ax.tick_params(length=0)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_color("black")
+        ax.spines[side].set_linewidth(0.5)
+
+
+def _legend(ax, handles, loc="upper left", bbox=(0.03, 0.97), ncol=1):
+    """Small boxed legend, matching the scaling figures' corner legend."""
+    leg = ax.legend(handles=handles, loc=loc, bbox_to_anchor=bbox, ncol=ncol,
+                    frameon=True, fontsize=5, handlelength=1.4, borderpad=0.4,
+                    labelspacing=0.3, handletextpad=0.5, columnspacing=1.0,
+                    framealpha=0.95, edgecolor="0.7")
+    leg.get_frame().set_linewidth(0.4)
+    for txt in leg.get_texts():
+        txt.set_color("black")
+        txt.set_fontsize(5)
+    return leg
+
+
+def _save(fig, name):
+    path = os.path.join(OUTDIR, name)
+    fig.savefig(path, dpi=400, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return path
 
 
 def load():
@@ -105,35 +148,31 @@ def figure1(d):
     merge = [100 * per[k]["mergeok"] / per[k]["n"] for k, _ in ARMS]
     both = [100 * per[k]["both"] / per[k]["n"] for k, _ in ARMS]
 
-    fig, ax = plt.subplots(figsize=(8.4, 4.3))
+    fig, ax = plt.subplots(figsize=(4.6, 3.3))
     x = list(range(len(ARMS)))
-    w = 0.38
-    ax.bar([i - w / 2 for i in x], merge, w, color=BLUE, zorder=3,
-           label="merge-clean (primary)")
-    ax.bar([i + w / 2 for i in x], both, w, color=ORANGE, zorder=3,
-           label="both features pass (secondary)")
+    w = 0.40
+    # signature orange = the primary win; pale orange = the secondary endpoint
+    ax.bar([i - w / 2 for i in x], merge, w, color=ORANGE, edgecolor="black",
+           linewidth=0.4, zorder=3)
+    ax.bar([i + w / 2 for i in x], both, w, color=LIGHT, edgecolor="black",
+           linewidth=0.4, zorder=3)
     for i in x:
-        ax.text(i - w / 2, merge[i] + 1.5, f"{merge[i]:.0f}", ha="center", va="bottom",
-                fontsize=8.5, color=BLUE)
-        ax.text(i + w / 2, both[i] + 1.5, f"{both[i]:.0f}", ha="center", va="bottom",
-                fontsize=8.5, color=ORANGE)
+        ax.annotate(f"{merge[i]:.0f}", (i - w / 2, merge[i]),
+                    textcoords="offset points", xytext=(0, 2), ha="center",
+                    va="bottom", fontsize=4.7, color="black", fontname="Helvetica")
+        ax.annotate(f"{both[i]:.0f}", (i + w / 2, both[i]),
+                    textcoords="offset points", xytext=(0, 2), ha="center",
+                    va="bottom", fontsize=4.7, color="black", fontname="Helvetica")
 
-    ax.set_ylim(0, 100)
-    ax.set_yticks([0, 25, 50, 75, 100])
-    ax.set_yticklabels(["0", "25", "50", "75", "100%"])
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels)
-    ax.set_ylabel("Rate over validated pair-runs")
-    ax.set_title("Only structural protocols move the merge — talk does not",
-                 fontsize=12, fontweight="bold", loc="left", pad=26)
-    ax.legend(frameon=False, fontsize=9, loc="upper left", bbox_to_anchor=(0, 1.10),
-              handlelength=1.1)
-    _bare(ax)
-    fig.tight_layout()
-    path = os.path.join(OUTDIR, "fig1_endpoints.png")
-    fig.savefig(path, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-    return path
+    handles = [
+        Patch(facecolor=ORANGE, edgecolor="black", linewidth=0.4,
+              label="merge-clean (primary)"),
+        Patch(facecolor=LIGHT, edgecolor="black", linewidth=0.4,
+              label="both features pass (secondary)"),
+    ]
+    _chrome(fig, ax, labels, "Rate over validated pair-runs")
+    _legend(ax, handles, loc="upper left", bbox=(0.03, 0.97))
+    return _save(fig, "fig1_endpoints.png")
 
 
 # =========================================================================
@@ -145,43 +184,31 @@ def figure2(d):
     x = list(range(len(ARMS)))
 
     # percentages per arm (denominator = all assigned buckets for that arm)
-    totals = {k: sum(tax[k].values()) for k, _ in ARMS}
+    totals = {k: sum(tax[k].get(b, 0) for b, _, _ in TAX) for k, _ in ARMS}
     pct = {
         bucket: [100 * tax[k].get(bucket, 0) / totals[k] for k, _ in ARMS]
         for bucket, _, _ in TAX
     }
 
-    fig, ax = plt.subplots(figsize=(8.4, 4.6))
+    fig, ax = plt.subplots(figsize=(4.6, 3.3))
     bottom = [0.0] * len(ARMS)
     for bucket, _, color in TAX:
         vals = pct[bucket]
-        # 2px surface gap between stacked segments so adjacent warm hues separate
-        ax.bar(x, vals, bottom=bottom, color=color, width=0.68, zorder=3,
-               edgecolor=SURFACE, linewidth=1.4)
+        ax.bar(x, vals, bottom=bottom, color=color, width=0.66, zorder=3,
+               edgecolor="black", linewidth=0.4)
         for i, v in enumerate(vals):
             if v >= 8:  # direct-label every segment big enough to read
                 ax.text(i, bottom[i] + v / 2, f"{v:.0f}", ha="center", va="center",
-                        fontsize=8.5, color=SURFACE if color in (RED, BLUE) else INK)
+                        fontsize=4.7, fontname="Helvetica",
+                        color="white" if color in _DARK else "black")
         bottom = [b + v for b, v in zip(bottom, vals)]
 
-    ax.set_ylim(0, 100)
-    ax.set_yticks([0, 25, 50, 75, 100])
-    ax.set_yticklabels(["0", "25", "50", "75", "100%"])
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels)
-    ax.set_ylabel("Share of validated pair-runs")
-    ax.set_title("Why the merge fails: textual conflict dominates until the overlap is resolved",
-                 fontsize=11.5, fontweight="bold", loc="left", pad=30)
-    handles = [Patch(facecolor=c, label=lbl) for _, lbl, c in TAX]
-    ax.legend(handles=handles, frameon=False, ncol=5, fontsize=8.8, loc="lower center",
-              bbox_to_anchor=(0.5, 1.005), handlelength=1.0, columnspacing=1.1,
-              handletextpad=0.5)
-    _bare(ax)
-    fig.tight_layout()
-    path = os.path.join(OUTDIR, "fig2_failure_taxonomy.png")
-    fig.savefig(path, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-    return path
+    handles = [Patch(facecolor=c, edgecolor="black", linewidth=0.4, label=lbl)
+               for _, lbl, c in TAX]
+    _chrome(fig, ax, labels, "Share of validated pair-runs")
+    # 100%-stacked leaves no empty corner, so seat the legend just above the axes
+    _legend(ax, handles, loc="lower center", bbox=(0.5, 1.01), ncol=5)
+    return _save(fig, "fig2_failure_taxonomy.png")
 
 
 def main():
