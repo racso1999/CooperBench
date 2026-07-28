@@ -349,18 +349,21 @@ def figure2c(recs):
 def figure2d(accts):
     dec = calc7_cost_accounts(accts)
     ns = sorted(dec)
-    # base -> top: floor first, messaging-related on top.
-    # Two hue families: sunset pink = base work (context + task), sea blue =
-    # the communication tax (comm + rework) stacked on top, light -> dark within each.
-    PINK_LIGHT = "#f6c1cb"  # context (message-independent floor)
-    PINK_DEEP = "#db5c7c"   # task
-    BLUE_MID = "#3f92b3"    # comm
-    BLUE_DEEP = "#0f5069"   # rework
+    # base -> top: floor first, messaging-related on top. Colour encodes the
+    # paper's argument, not decoration: cool sea blue = the base work you would
+    # pay anyway (context = message-independent floor, then task), receding;
+    # warm sunset pink = the *removable* communication tax (comm + the rework it
+    # triggers), advancing, so the ~third that a better protocol could recover
+    # is the part that pops. Light -> dark within each hue.
+    BLUE_LIGHT = "#cfe6ef"  # context — message-independent floor
+    BLUE_DEEP = "#2f7d9a"   # task — the actual feature work
+    PINK_LIGHT = "#f6a5b9"  # comm — the messages themselves
+    PINK_DEEP = "#d84f6e"   # rework — edits the messages provoke
     segments = [
-        ("Context", "context", PINK_LIGHT),
-        ("Task", "task", PINK_DEEP),
-        ("Comm", "comm", BLUE_MID),
-        ("Rework", "rework", BLUE_DEEP),
+        ("Context", "context", BLUE_LIGHT),
+        ("Task", "task", BLUE_DEEP),
+        ("Comm", "comm", PINK_LIGHT),
+        ("Rework", "rework", PINK_DEEP),
     ]
 
     fig, ax = plt.subplots(figsize=(3.7, 3.3))
@@ -378,13 +381,17 @@ def figure2d(accts):
         ax.annotate(f"${total:.2f}", (N, total), textcoords="offset points",
                     xytext=(0, 3), ha="center", va="bottom", fontsize=4.7,
                     color="black", fontname="Helvetica")
-        # comm+rework share, centred on the messaging-related cap (skip N=1: 0%)
+        # comm+rework share = the removable communication tax, labelled on the
+        # pink cap. Dark text on a faint white chip so it reads on either pink
+        # shade (skip N=1, where the tax is 0%).
         cap = dec[N]["comm"] + dec[N]["rework"]
         if cap > 0:
             y = total - cap / 2
             ax.annotate(f"{dec[N]['comm_rework_share']*100:.0f}%", (N, y),
-                        ha="center", va="center", fontsize=4.7, color="white",
-                        fontweight="bold", fontname="Helvetica")
+                        ha="center", va="center", fontsize=4.7, color=INK,
+                        fontweight="bold", fontname="Helvetica",
+                        bbox=dict(boxstyle="round,pad=0.18", fc="white",
+                                  ec="none", alpha=0.72))
 
     ax.set_ylim(0, max(dec[N]["total"] for N in ns) * 1.14)
     handles = [Patch(facecolor=c, edgecolor="black", linewidth=0.4, label=lbl)
