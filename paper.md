@@ -32,6 +32,41 @@ To establish that the coordination gap reported by CooperBench reproduces, the 5
 
 It is important to state here that "free-msg" is not necessarily a blank canvas. In the free-messaging condition, each agent's instruction is composed of three parts, separated in a single prompt: (1) the feature specification (the agent's own feature.md, never the partner's); (2) a submission protocol instructing the agent to write its final unified diff to patch.txt before exiting; and (3) a cooperation protocol block that names the partner, warns that features may overlap, and documents the messaging commands. "Free" refers to the message content: it is unconstrained plain text, with no required fields, no message types, and no validation. The cooperation block is reproduced verbatim below (as rendered for agent1):
 
+Redis-backed inbox, free-text send/broadcast/recv, recommended-but-unenforced workflow.
+
+````
+## Cooperation protocol
+
+You are **agent1**, working alongside: **agent2**.
+Each agent has been assigned a separate feature from the same codebase;
+your features may overlap (touch the same files), so coordinate to avoid
+clobbering each other's changes.
+
+Available shell commands for cross-agent messaging (Redis-backed inbox,
+one inbox per agent):
+
+```bash
+coop-send <recipient> "message text here"   # send to a specific peer
+coop-broadcast "message text here"          # send to every other peer
+coop-recv                                    # drain your inbox (prints JSON list)
+coop-peek                                    # number of unread messages
+coop-agents                                  # list every agent id
+```
+
+Recommended workflow:
+
+1. At the start, `coop-broadcast` a short summary of your feature and
+   which files you intend to touch.
+2. Periodically `coop-recv` to read what your peers have sent — at
+   minimum after major edits and before submitting.
+3. If two agents need to modify the same file, coordinate explicitly
+   (split the file, agree on one owner, or merge changes).
+4. Keep messages short and focused: file names, function names, and
+   one-sentence intents are usually enough.
+
+Messages are not magic — your peers only know what you tell them.
+````
+
 ## The Findings
 
 Consistent with the reported curse of coordination, we observe a substantial drop in task success when agents must coordinate via messaging compared to working solo. Across 46 matched feature pairs (task_id/pair, with typst_task/6554 excluded due to intermittent evaluation-container failures leaving too few scored runs per pair for a reliable estimate), the average pass rate fell from 44.2% under the Solo condition to 12.3% under the Messaging condition. A paired Wilcoxon signed-rank test confirms this difference is statistically significant (W = 2.5, p < .001). This finding replicates the qualitative pattern reported in the original study, in which coordinated (Coop) performance is substantially lower than Solo performance across models.
