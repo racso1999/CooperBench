@@ -349,12 +349,18 @@ def figure2c(recs):
 def figure2d(accts):
     dec = calc7_cost_accounts(accts)
     ns = sorted(dec)
-    # base -> top: floor first, messaging-related on top
+    # base -> top: floor first, messaging-related on top.
+    # Two hue families: sunset pink = base work (context + task), sea blue =
+    # the communication tax (comm + rework) stacked on top, light -> dark within each.
+    PINK_LIGHT = "#f6c1cb"  # context (message-independent floor)
+    PINK_DEEP = "#db5c7c"   # task
+    BLUE_MID = "#3f92b3"    # comm
+    BLUE_DEEP = "#0f5069"   # rework
     segments = [
-        ("Context", "context", LIGHT),
-        ("Task", "task", MID),
-        ("Comm", "comm", ORANGE),
-        ("Rework", "rework", DEEP),
+        ("Context", "context", PINK_LIGHT),
+        ("Task", "task", PINK_DEEP),
+        ("Comm", "comm", BLUE_MID),
+        ("Rework", "rework", BLUE_DEEP),
     ]
 
     fig, ax = plt.subplots(figsize=(3.7, 3.3))
