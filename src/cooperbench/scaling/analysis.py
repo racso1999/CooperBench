@@ -15,6 +15,10 @@ produces ``runs.csv`` + ``analysis.json``:
     difference removes the shared floor, isolating the communication cost directly.
 * **cost_curve** — mean ± sd of dollar cost and comm dollars per (N, condition):
   the error-bar curve behind the fits.
+* **time_curve / speedup** — wall-clock per (N, condition) and the per-pool
+  parallel speedup vs the solo baseline (``wall(N=1)/wall(N)``, efficiency =
+  speedup/N): does splitting the pool across N agents actually finish sooner
+  than one agent working through it sequentially?
 * **per_pool_cost_fits** — the cost fit run per pool, then ``beta`` aggregated
   (mean/sd/se) across pools, so pool heterogeneity is not conflated with the
   N-effect of one pooled regression.
@@ -57,6 +61,8 @@ RUNS_CSV_FIELDS = [
     "total_tokens",
     "dollar_cost",
     "total_steps",
+    "wall_seconds",
+    "agent_seconds",
     "score",
     "n_passed",
     "best_score",
@@ -319,6 +325,79 @@ def cost_curve(rows: list[dict]) -> dict:
     return out
 
 
+def time_curve(rows: list[dict]) -> dict:
+    """Wall-clock and summed-agent time per (N, condition) — mean ± sd.
+
+    ``wall_seconds`` is the cell's wall clock (agents run in parallel, so it
+    tracks the slowest agent): the "did sharing the work make it faster" axis.
+    ``agent_seconds`` is the serial-equivalent work (per-agent runtimes summed);
+    wall vs sum shows how much of the theoretical parallelism was realised.
+    """
+
+    def stat(vals: list[float]) -> dict:
+        n = len(vals)
+        if n == 0:
+            return {"n": 0, "mean": None, "sd": None}
+        mu = sum(vals) / n
+        sd = math.sqrt(sum((v - mu) ** 2 for v in vals) / (n - 1)) if n > 1 else 0.0
+        return {"n": n, "mean": mu, "sd": sd}
+
+    by_cell: dict[tuple[int, str], dict[str, list[float]]] = defaultdict(lambda: {"wall": [], "agent": []})
+    for r in rows:
+        key = (int(r["N"]), r.get("condition", "?"))
+        w = _num(r.get("wall_seconds"))
+        if w is not None:
+            by_cell[key]["wall"].append(w)
+        a = _num(r.get("agent_seconds"))
+        if a is not None:
+            by_cell[key]["agent"].append(a)
+    out: dict[str, dict] = {}
+    for (n, cond), d in sorted(by_cell.items()):
+        out[f"N{n}_{cond}"] = {"wall_seconds": stat(d["wall"]), "agent_seconds": stat(d["agent"])}
+    return out
+
+
+def speedup_curve(rows: list[dict]) -> dict:
+    """Parallel speedup vs the solo baseline, paired within each pool.
+
+    Per pool: ``speedup(N, cond) = mean wall(N=1) / mean wall(N, cond)`` and
+    ``efficiency = speedup / N`` (1.0 = perfect work-sharing, ideal wall time
+    T1/N; < 1 means coordination ate into the parallelism; speedup < 1 means N
+    agents were outright *slower* than one).  Pairing within a pool removes
+    pool-difficulty heterogeneity; the per-(N, cond) aggregate is the mean ± sd
+    of those per-pool ratios across pools that have both cells.
+    """
+    # mean wall seconds per (pool, N, condition)
+    walls: dict[tuple[str, int, str], list[float]] = defaultdict(list)
+    for r in rows:
+        w = _num(r.get("wall_seconds"))
+        if w is not None and w > 0:
+            walls[(r["pool_id"], int(r["N"]), r.get("condition", "?"))].append(w)
+    mean_wall = {k: sum(v) / len(v) for k, v in walls.items()}
+
+    # N=1 always runs as nocomm — that single cell is the pool's solo baseline.
+    base = {pool: m for (pool, n, _cond), m in mean_wall.items() if n == 1}
+
+    per_cell: dict[tuple[int, str], list[float]] = defaultdict(list)
+    for (pool, n, cond), m in mean_wall.items():
+        if n == 1 or pool not in base or m <= 0:
+            continue
+        per_cell[(n, cond)].append(base[pool] / m)
+
+    out: dict[str, dict] = {}
+    for (n, cond), ratios in sorted(per_cell.items()):
+        mu = sum(ratios) / len(ratios)
+        sd = math.sqrt(sum((x - mu) ** 2 for x in ratios) / (len(ratios) - 1)) if len(ratios) > 1 else 0.0
+        out[f"N{n}_{cond}"] = {
+            "n_pools": len(ratios),
+            "speedup_mean": mu,
+            "speedup_sd": sd,
+            "efficiency_mean": mu / n,
+            "ideal_speedup": float(n),
+        }
+    return out
+
+
 def performance_curve(rows: list[dict]) -> dict:
     """Graded performance vs N — the headline for the shared-git experiment.
 
@@ -333,6 +412,7 @@ def performance_curve(rows: list[dict]) -> dict:
     for n, group in sorted(by_n.items()):
         scores = [s for r in group if (s := _num(r.get("score"))) is not None]
         costs = [c for r in group if (c := _num(r.get("dollar_cost"))) is not None]
+        walls = [w for r in group if (w := _num(r.get("wall_seconds"))) is not None]
         passed = sum(1 for r in group if r.get("all_passed") in (True, "True"))
         mean = sum(scores) / len(scores) if scores else None
         sd = math.sqrt(sum((s - mean) ** 2 for s in scores) / (len(scores) - 1)) if len(scores) > 1 else 0.0
@@ -342,6 +422,7 @@ def performance_curve(rows: list[dict]) -> dict:
             "sd_score": sd if mean is not None else None,
             "all_passed_rate": passed / len(group) if group else None,
             "mean_cost": sum(costs) / len(costs) if costs else None,
+            "mean_wall_seconds": sum(walls) / len(walls) if walls else None,
         }
     return out
 
@@ -447,6 +528,8 @@ def run_analysis(rows_or_path: list[dict] | str | Path, out_dir: str | Path) -> 
         "comm_fit": fit_comm_quadratic(rows, "comm"),
         "tax_fit": fit_tax_quadratic(rows),
         "cost_curve": cost_curve(rows),
+        "time_curve": time_curve(rows),
+        "speedup": speedup_curve(rows),
         "per_pool_cost_fits": per_pool_cost_fits(rows),
         "failure_mix": failure_mix(rows),
         "driver_regression": driver_regression(rows),

@@ -167,6 +167,15 @@ def _assemble_row(
         score = n_passed / pool.k if pool.k else 0.0
         best_score = ""
     dollar_cost = result_data.get("total_cost", 0)
+    # Timing.  wall_seconds is the cell's wall clock (agents run in parallel
+    # threads, so it ~= the slowest agent + launch overhead) — the "did sharing
+    # the work make it faster" metric.  agent_seconds sums per-agent runtimes:
+    # the serial-equivalent work, so wall vs sum exposes realised parallelism.
+    # Eval/grading time is deliberately excluded — it is not part of the team's
+    # task completion.  Blank when absent (cells cached before timing existed).
+    wall_seconds = result_data.get("duration_seconds")
+    agent_durs = [a.get("duration_seconds") for a in result_data.get("agents", {}).values()]
+    agent_seconds = sum(agent_durs) if agent_durs and all(d is not None for d in agent_durs) else None
     # Dollar-denominated buckets: apportion the run's real cost by price-weighted
     # token share (additive in $).  None when unrecoverable or model unpriced.
     bucket_usd = apportion_bucket_dollars(rt, dollar_cost, model_name) if recoverable else None
@@ -196,6 +205,9 @@ def _assemble_row(
         "total_tokens": total_tokens if recoverable else "",
         "dollar_cost": dollar_cost,
         "total_steps": result_data.get("total_steps", 0),
+        # time (seconds; agent phase only, eval excluded)
+        "wall_seconds": wall_seconds if wall_seconds is not None else "",
+        "agent_seconds": agent_seconds if agent_seconds is not None else "",
         # outcome — graded performance is the headline for the git experiment
         "score": score,
         "n_passed": n_passed,

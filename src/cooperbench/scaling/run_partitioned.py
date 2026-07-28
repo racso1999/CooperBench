@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -136,6 +137,7 @@ def execute_partitioned(
     threads: list[threading.Thread] = []
 
     def run_thread(agent_id: str, features: list[int]) -> None:
+        agent_start = time.monotonic()
         try:
             prompt = _build_agent_prompt(task_dir, features)
             config = dict(base_config)
@@ -162,6 +164,7 @@ def execute_partitioned(
                 "agent_id": agent_id,
                 "features": sorted(features),
                 "status": result.status,
+                "duration_seconds": time.monotonic() - agent_start,
                 "patch": result.patch,
                 "cost": result.cost,
                 "steps": result.steps,
@@ -178,6 +181,7 @@ def execute_partitioned(
                 "agent_id": agent_id,
                 "features": sorted(features),
                 "status": "Error",
+                "duration_seconds": time.monotonic() - agent_start,
                 "patch": "",
                 "cost": 0,
                 "steps": 0,
@@ -249,6 +253,7 @@ def execute_partitioned(
             a: {
                 "features": sorted(assignment[a]),
                 "status": r.get("status"),
+                "duration_seconds": r.get("duration_seconds"),
                 "cost": r.get("cost", 0),
                 "steps": r.get("steps", 0),
                 "input_tokens": r.get("input_tokens", 0),

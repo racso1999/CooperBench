@@ -226,6 +226,9 @@ def test_experiment_end_to_end_smoke(tmp_path, monkeypatch):
             "total_cost": 1.0 * n + 0.5 * n * n,
             "total_steps": 4 * n,
             "messages_sent": 2 if kw["condition"] == "comm" else 0,
+            # parallel wall clock: ~solo/N, while summed agent time stays ~solo
+            "duration_seconds": 100.0 / n,
+            "agents": {f"agent{i}": {"duration_seconds": 100.0 / n} for i in range(1, n + 1)},
         }
         return {"result_data": result_data, "log_dir": str(leaf)}
 
@@ -287,6 +290,11 @@ def test_experiment_end_to_end_smoke(tmp_path, monkeypatch):
     assert isinstance(comm_cell["comm_usd"], float)
     bucket_usd = comm_cell["context_usd"] + comm_cell["task_usd"] + comm_cell["comm_usd"] + comm_cell["rework_usd"]
     assert bucket_usd == pytest.approx(comm_cell["dollar_cost"], rel=1e-9)  # additive in $
+    # timing flows from result.json into the rows and the analysis
+    assert comm_cell["wall_seconds"] == pytest.approx(50.0)  # N=2 in parallel
+    assert comm_cell["agent_seconds"] == pytest.approx(100.0)  # serial-equivalent
+    assert result["time_curve"]["N2_comm"]["wall_seconds"]["mean"] == pytest.approx(50.0)
+    assert result["speedup"]["N2_comm"]["speedup_mean"] == pytest.approx(2.0)  # 100s solo / 50s
 
 
 # --- change 3: pricing ------------------------------------------------------
@@ -391,6 +399,37 @@ def test_score_team_uses_integrator_and_tracks_best(monkeypatch):
 
 def _patch_owner(p):
     return "agent1" if str(p).endswith("a1") else "agent2"
+
+
+def test_time_and_speedup_curves():
+    # solo takes 100s; 2 agents 60s; 4 agents 50s (parallelism, imperfectly realised)
+    rows = []
+    for n, wall in ((1, 100.0), (2, 60.0), (4, 50.0)):
+        cond = "nocomm" if n == 1 else "comm"
+        for trial in (1, 2):
+            rows.append(
+                {
+                    "pool_id": "p",
+                    "N": n,
+                    "condition": cond,
+                    "trial": trial,
+                    "wall_seconds": wall,
+                    "agent_seconds": wall * n,
+                }
+            )
+    tc = analysis.time_curve(rows)
+    assert tc["N1_nocomm"]["wall_seconds"]["mean"] == pytest.approx(100.0)
+    assert tc["N2_comm"]["wall_seconds"]["mean"] == pytest.approx(60.0)
+    assert tc["N2_comm"]["agent_seconds"]["mean"] == pytest.approx(120.0)
+    sp = analysis.speedup_curve(rows)
+    assert sp["N2_comm"]["speedup_mean"] == pytest.approx(100.0 / 60.0)
+    assert sp["N2_comm"]["efficiency_mean"] == pytest.approx(100.0 / 60.0 / 2)
+    assert sp["N4_comm"]["speedup_mean"] == pytest.approx(2.0)
+    assert sp["N4_comm"]["efficiency_mean"] == pytest.approx(0.5)  # half the ideal T1/4
+    assert sp["N4_comm"]["ideal_speedup"] == 4.0
+    # rows with blank timing (old cached cells) are simply excluded, not errors
+    sp2 = analysis.speedup_curve(rows + [{"pool_id": "p", "N": 3, "condition": "comm", "wall_seconds": ""}])
+    assert "N3_comm" not in sp2
 
 
 def test_performance_curve_over_n():
