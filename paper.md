@@ -40,6 +40,46 @@ In the cooperative condition, both agents independently passed their own feature
 
 While the original study establishes a clear coordination gap in task success rates, it does not normalize for the cost of achieving those outcomes. We use total dollar cost — which aggregates input, output, and cache read/write tokens into a single figure — as a proxy for computational effort, and find that the coordination gap is considerably larger once this is accounted for. Cost is taken directly from the `total_cost_usd` field of the Claude Code CLI's terminating result event, computed from token usage (input, output, and cache read/write) priced at Anthropic's published list rates. The reported cost of a run is the sum across its participating agents and reflects API list price. Across the same 46 matched feature pairs, the Solo condition achieved 0.675 passes per dollar spent, compared to 0.107 passes per dollar under Messaging — a roughly 6.3-fold gap, versus the 3.6-fold gap observed in raw pass rate alone. A paired Wilcoxon signed-rank test on per-pair cost efficiency confirms this difference is statistically significant (*W* = 2.0, *p* < .001). This widening indicates that the coordination penalty is not limited to lower success rates: Messaging runs are also less cost-efficient per successful outcome, compounding the disadvantage relative to Solo.
 
+# Varying the Coordination Protocol
+
+The replication localised the two-agent gap to patch integration: paired agents write working code, but their patches collide at merge time. This raises a direct question — can the coordination protocol itself close that gap, with the model, scaffold, and merge machinery held fixed? We ran a pre-registered comparison of six protocols on a capability-screened 20-pair Python subset (18 pairs after screening), all under Claude Sonnet 5. Every arm differs only in the cooperation-protocol block of its system prompt and the message-field validation the container enforces. The integration model is constant throughout: isolated checkouts combined by a naive two-branch `git merge`, with no shared workspace and no post-hoc conflict resolution. The primary endpoint is the merge-clean rate — the fraction of pair-runs whose two independent patches merge without a textual conflict. The secondary endpoint is both-passed: both features' held-out suites pass on the merged tree.
+
+## The Protocols
+
+The six arms span an axis from interventions that change only what agents *say* to interventions that change what code the merge actually receives.
+
+- **Control** — no messaging; the agent is never told it has a partner. The coordination floor.
+- **Free-text** — the replication's condition: an unconstrained plain-text messaging channel.
+- **Semi-structured** — every message must carry a validated type, the files it concerns, and a one-line intent.
+- **Plan-handshake** — agents must agree a disjoint file split before editing.
+- **Designated-coder** — for each shared file, one agent owns it and the other defers, sending a written spec of what its feature needs.
+- **Coauthor-overlap** — where two features edit the same construct, both agents jointly author the full merged version and write it byte-for-byte identically.
+
+The first three vary only the communication channel; the last three change the authorship of the overlapping code. Four arms run at k ≈ 15 (~270 pair-runs each); the two authorship-changing arms run at k ≈ 5 (88–89 runs). Rates carry Wilson 95% CIs; the inferential test is a Cochran–Mantel–Haenszel test stratified by pair, Holm-corrected across the family of contrasts.
+
+## Results
+
+| protocol | runs | merge-clean | both-passed |
+|---|---|---|---|
+| control | 270 | 13% | 2% |
+| free-text | 270 | 21% | 3% |
+| semi-structured | 270 | 16% | 3% |
+| plan-handshake | 270 | 20% | 10% |
+| designated-coder | 88 | 18% | 58% |
+| coauthor-overlap | 89 | 78% | 69% |
+
+On the primary endpoint, five of the six arms fall inside a 13–21% band. After Holm correction, only coauthor-overlap separates from control (CMH OR 27.7, *p* < 0.0001); free-text, semi-structured, plan-handshake, and designated-coder are all non-significant. Coauthor-overlap is the only arm that produces byte-identical merges in any quantity — 26 of its 89 runs, against a single occurrence across the 1,168 runs of the other five arms combined — and it collapses the textual-conflict rate from 79–87% to 17%.
+
+On the secondary endpoint, plan-handshake, designated-coder, and coauthor-overlap all beat control after correction. Designated-coder's 58% both-passed is not carried by clean merges: 43% of its runs pass both features on a *conflicted* merge — one agent's patch covers both features while the other's collides — and its merge-clean rate stays at the floor.
+
+## The Findings
+
+Changing the coordination protocol can move the integration outcome substantially, but the specific protocol is decisive. Of six, one closed the gap and five did not. Coauthor-overlap raised the merge-clean rate from 13% to 78% and both-passed from 2% to 69% — the only arm significant on the primary endpoint after correction. Because the arms differ only in the prompt and message validation, this is a protocol effect, not a model or scaffold effect.
+
+The protocols that failed and the one that succeeded differ in what they act on. Enriching the channel (free-text, semi-structured) and planning a file-level split (plan-handshake) left the merge-clean rate at the no-messaging floor. Coauthor-overlap worked by making both agents emit identical text for the overlapping construct, so the two independent patches merge as identical rather than conflicting; it changes what the merge receives, not how much the agents talk. Designated-coder targets the same construct but did not improve the primary endpoint. The spec it requires was in fact delivered in essentially every deferring run — usually inside the DEFER message rather than as a separate message — so the failure is not missing information: 39% of its runs still ended in a textual conflict, meaning the deferring agent edited the owned file anyway.
+
+Three caveats. First, the two authorship-changing arms ran at low replication (88–89 runs). Coauthor-overlap's effect is large enough to survive correction by many orders of magnitude, but designated-coder's null means only that its merge-clean rate is indistinguishable from the floor, not equal to it. Second, coauthor-overlap is not a full solution: 17% of its runs still conflict, and 10% merge cleanly but fail functionally. Third, the result is conditional on one model, one scaffold, conflict-selected Python pairs, and a single integration model (a naive two-branch merge with no post-hoc conflict resolution); a different integration model is a separate lever not tested here.
+
 # Growth With Scale
 
 Fu et al. (2026) [6] show that most multi-agent workflows fail to reliably outperform a matched single-agent baseline once evaluation infrastructure is controlled, attributing performance to task-protocol fit rather than agent count. Their evidence, however, has two limitations. First, their results are single-run pass@1 scores on one backend model (GPT-4.1); the sole positive case (EvoAgent, +1.44 points) falls within their own uncertainty bounds, and the negative finding holds only at the benchmark-balanced average. Second, and more fundamentally, their comparison never varies agent count independently of structure: topology, prompts, and communication protocols all differ simultaneously across systems — a confound they acknowledge but do not resolve. We address both limitations by holding workflow structure fixed and varying only N, and by reporting repeated runs so that gaps can be distinguished from run-to-run variance. Together with our communication tax hypothesis, this isolates the relationship between agent count and the performance losses due to communication tax.

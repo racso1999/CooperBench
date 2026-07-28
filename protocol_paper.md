@@ -337,10 +337,10 @@ Messages are not magic — your peers only know what you tell them.
 |---|---|---|
 | coauthor_overlap vs control | 3.7e-43 | 90.2 |
 | designated_coder vs control | 1.1e-35 | 75.6 |
-| coauthor_overlap vs plan_handshake | 2.4e-29 | — |
-| designated_coder vs plan_handshake | 3.9e-23 | — |
+| coauthor_overlap vs plan_handshake | 2.4e-29 | 18.9 |
+| designated_coder vs plan_handshake | 3.9e-23 | 20.9 |
 | plan_handshake vs control | 8.1e-05 | 5.9 |
-| coauthor_overlap vs designated_coder | 0.476 | — |
+| coauthor_overlap vs designated_coder | 0.476 | 1.8 |
 | free-text vs control | 1.000 | — |
 | semi_structured vs control | 1.000 | — |
 
@@ -393,9 +393,11 @@ Buckets: `pass` = clean/identical merge AND both features pass; `solo_rescue` = 
 
 ### designated_coder message compliance (from transcripts)
 
-- SURVEY, CLAIM, and DEFER are exchanged in 100% of its validated runs.
-- The SPEC message, which the protocol makes mandatory whenever a file is deferred, is sent in only 39% of runs.
-- 39% of its runs still end in a textual conflict — i.e. both branches touched the same region despite one agent having deferred the file.
+Computed by `message_compliance.py` over the 90 designated_coder runs that produced a message log (the eval set is 88; two runs logged messages but produced no eval record).
+
+- SURVEY, CLAIM, and DEFER are each sent in 100% of runs; every run defers at least one file.
+- A spec reaches the owner in 100% of deferring runs. It travels inside the DEFER message's `spec` field in 97% of runs; a *separate* `SPEC`-typed message is sent in only 39%. So the spec is delivered — just usually on the DEFER message rather than as its own message. (This corrects an earlier "the SPEC is skipped in 61% of runs" reading, which counted only the separate-message route.)
+- Despite the deferral, 39% of runs still end in a textual conflict (see the taxonomy). A textual conflict is by definition both branches editing the same region, so under single-file ownership these are runs where the deferring agent edited an owned file anyway. That the 39% here matches the 39% separate-SPEC rate above is a coincidence — the two are measured on different things.
 
 ## Concerns / caveats
 
@@ -414,4 +416,5 @@ Buckets: `pass` = clean/identical merge AND both features pass; `solo_rescue` = 
 
 - **Numbers.** Computed by `masters_thesis/protocol_analysis/analyze.py` over the six no-git arms in `logs/`. Frozen output: `masters_thesis/protocol_analysis/data/nano_study.json`. Regenerate with `uv run python masters_thesis/protocol_analysis/analyze.py` (also prints the merge-status split, pre-merge capability, and a per-pair merge-clean appendix not reproduced above).
 - **Figures.** `masters_thesis/protocol_analysis/figures.py` reads that JSON and writes `figures/fig1_endpoints.png` and `fig2_failure_taxonomy.png`. Run `uv run --with matplotlib python masters_thesis/protocol_analysis/figures.py`.
+- **designated_coder compliance.** The message-compliance figures (SURVEY/CLAIM/DEFER and spec-delivery rates) come from `masters_thesis/protocol_analysis/message_compliance.py`, which parses the per-run `agent*_sent.jsonl` logs (analyze.py does not read message content). Run `uv run python masters_thesis/protocol_analysis/message_compliance.py`.
 - **Protocol prompts.** The blocks above are the verbatim cooperation-protocol sections rendered by `cooperbench.agents._coop.prompt.build_instruction`; the structured schemas live in `src/cooperbench/agents/_coop/message_schema.toml` (semi_structured) and `schemas/{plan_handshake,designated_coder,coauthor_overlap}.toml`. Each arm is selected at run time by `--structured-messaging <schema>` (or `--no-messaging` for control) on `cooperbench run --setting coop`.
