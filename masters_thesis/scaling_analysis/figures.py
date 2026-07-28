@@ -352,18 +352,18 @@ def figure2d(accts):
     # base -> top: floor first, messaging-related on top. Colour encodes the
     # paper's argument, not decoration: cool sea blue = the base work you would
     # pay anyway (context = message-independent floor, then task), receding;
-    # warm sunset pink = the *removable* communication tax (comm + the rework it
+    # warm red = the *removable* communication tax (comm + the rework it
     # triggers), advancing, so the ~third that a better protocol could recover
     # is the part that pops. Light -> dark within each hue.
     BLUE_LIGHT = "#cfe6ef"  # context — message-independent floor
     BLUE_DEEP = "#2f7d9a"   # task — the actual feature work
-    PINK_LIGHT = "#f6a5b9"  # comm — the messages themselves
-    PINK_DEEP = "#d84f6e"   # rework — edits the messages provoke
+    RED_LIGHT = "#ef8080"   # comm — the messages themselves
+    RED_DEEP = "#b01e28"    # rework — edits the messages provoke
     segments = [
         ("Context", "context", BLUE_LIGHT),
         ("Task", "task", BLUE_DEEP),
-        ("Comm", "comm", PINK_LIGHT),
-        ("Rework", "rework", PINK_DEEP),
+        ("Comm", "comm", RED_LIGHT),
+        ("Rework", "rework", RED_DEEP),
     ]
 
     fig, ax = plt.subplots(figsize=(3.7, 3.3))
