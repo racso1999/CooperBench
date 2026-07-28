@@ -1,44 +1,32 @@
-# Improving Integration Mechanics in Two-Agent Coding: You Cannot Message Your Way Out of a Merge Conflict
+# Six messaging protocols on the nano_py conflict set — results
 
-*Standalone draft. In the larger paper this section sits between the replication study (which localises the two-agent coordination gap to patch integration) and the scaling study (which shows the cost of coordination grows super-proportionally in team size). The replication pinned the gap to the **integration mechanics** — how two isolated patches are combined into one tree — so here we ask whether prompt-level protocols can improve those mechanics without touching the model, the scaffold, or the merge machinery itself.*
+*Results dump, no interpretation. This records what was run and what came out, for the six no-git cooperation protocols on the capability-screened Python conflict subset. It sits alongside the replication study (which localised the two-agent gap to patch integration) and the scaling study (agent-count cost). All numbers here are computed by `masters_thesis/protocol_analysis/analyze.py` over the run logs; the frozen output is `masters_thesis/protocol_analysis/data/nano_study.json`. Reproducibility commands are at the end.*
 
-## Abstract
+## Setup
 
-The replication established that the two-agent coordination gap on CooperBench is an *integration* gap, not a capability or communication deficit: paired agents write working code as often as solo agents, but their patches collide at merge time, and every jointly-failed pair that a single agent could solve was lost to a textual merge conflict. The gap therefore lives in the **integration mechanics** — the way two isolated patches are combined into one tree, here a naive two-branch `git merge` with no shared workspace and no post-hoc conflict resolution. This paper asks whether a *prompt-level protocol* can improve those mechanics while holding the model, scaffold, and merge machinery fixed. We run a pre-registered, capability-screened comparison of six protocols on a 20-pair Python subset (18 after pre-registered exclusions), all under one model (Claude Sonnet 5), so that every arm differs *only* in its system prompt plus message-field validation. The six arms span an axis from interventions that change only what agents *say* to interventions that change what the merge actually *sees*. The result is sharp and one-directional: **you cannot message your way out of a merge conflict.** Every protocol that only enriches the communication channel — free-text messaging, enforced structured messaging, even a two-phase handshake that forces agents to agree a disjoint file split before editing — never reaches the integration mechanics and leaves the merge-clean rate at the no-messaging floor (13% → 16–21%, none significant after multiple-comparison correction). Moving it requires changing *who writes the overlapping code*, and so changing what the merge operates on — but only one of the two protocols that attempt this succeeds. Designating a single owner per shared file lands at 18% (ns), inside that same floor band, because the deferring agent edits the shared file anyway; it transforms the *secondary* endpoint (both-passed 2% → 58%) without ever fixing the merge. Only having both agents co-author byte-identical merged code for each shared construct moves the primary endpoint, and it moves it decisively: merge-clean from 13% to **78%** (Cochran–Mantel–Haenszel OR 27.7, Holm-corrected *p* < 0.0001) and the functional pass rate from 2% to 69%. Because the intervention is the prompt alone, this is direct evidence that prompt-level protocol design can improve integration mechanics substantially: the winning protocol supplies, in the prompt, the integration discipline the isolated-patch merge model otherwise leaves unspecified — the improvement comes from making the two patches combine by construction, not from richer communication about the collision.
+**What varies.** Six arms. Each arm differs from the others *only* in the cooperation-protocol block appended to the agent system prompt, plus the message-field validation the container enforces. Same model (Claude Sonnet 5, Claude Code scaffold), same tasks, same evaluation, same integration model (each agent edits its own private checkout; the evaluator combines the two independent patches with a naive two-branch `git merge`; no shared workspace, no post-hoc conflict resolution). In the structured arms the messaging CLI hard-rejects any message that omits a required field or violates an enum; field *values* stay free text, only the coordination metadata is enforced.
 
-## 1. Introduction: can a protocol improve the integration mechanics?
+**Subset.** A capability-screened 20-pair Python subset ("nano"), one conflicting pair per task, pre-filtered by static gold-patch overlap (shared files and intersecting hunk ranges). 18 pairs survive pre-registered screening (`docs/nano_py_preregistration.md`); the 2 drops are ceiling cases (control both-passed ≥ 73% > 60%).
 
-The replication study reproduced CooperBench's "curse of coordination" on our infrastructure with a paired design — a solo agent implementing both features of a pair versus two agents implementing one feature each and exchanging free-text messages — and then localised the gap. Two facts did the localising. First, pairing costs agents nothing in individual capability: an agent working alongside a partner passed its own feature's held-out suite about as often as a solo agent did. (The present study re-confirms the capability half of this directly on its own arms — see §6.) Second, of the pairs a single agent demonstrably could solve, the cooperating pair delivered a small fraction, and *every* such loss was a textual merge conflict rather than a functional incompatibility. The coordination gap is, on this data, an integration gap: the agents consistently write working code but cannot place their edits so the two contributions combine. The gap is therefore a property of the *integration mechanics* — the machinery that turns two isolated patches into one tree. In this benchmark those mechanics are fixed and deliberately minimal: each agent edits its own private checkout, and the evaluator combines the results with a naive two-branch `git merge`, with no shared workspace and no chance to resolve a conflict after the fact. Whatever the agents are going to do about a collision, they must do *before* the merge, through the prompt.
+**Endpoints.**
+- **Primary — merge-clean rate:** fraction of pair-runs whose two independent patches merge with status in {`clean`, `identical`}. `identical` = both agents emitted byte-for-byte identical merged code (git reports "identical", not a conflict).
+- **Secondary — both-passed:** both features' held-out suites pass on the merged tree.
 
-That finding names its own next experiment. If the bottleneck is the integration mechanics and not communication, then interventions on the *communication channel* — more messages, better-structured messages — should do little, because they never change what the merge sees, while interventions on *what code the two agents emit in the overlapping region* — who writes it, and whether it comes out identical — should do a lot. This paper builds a family of six protocols spanning exactly that axis, from ones that change only what agents *say* to ones that change what the merge *operates on*, and runs them head-to-head, holding everything else fixed. Crucially, every protocol is implemented purely as a system-prompt change plus validation of the message fields agents must fill — no model change, no fine-tuning, no scaffold change, and the same fixed integration model throughout (isolated checkouts, naive two-branch merge). Holding the integration machinery constant and varying only the prompt means any change in outcome is attributable to the protocol itself: we are measuring what a protocol can do to improve integration mechanics it is not allowed to re-engineer, only to feed.
+**Runs and inference.** k ≈ 15 replicates/pair for the four full-set arms (≈ 270 pair-runs each); k ≈ 5 for the two overlap-resolution arms (88 and 89 runs — three runs produced no eval record). Rates are over all runs (n), so non-applied runs count in the denominator. Per-arm rates carry Wilson 95% CIs (descriptive). Inferential test: Cochran–Mantel–Haenszel stratified by pair, Holm-corrected across the family of 8 contrasts. No run in this dataset carried an infrastructure-failure flag.
 
-## 2. What the failures look like: five findings that predict the results
+## The six arms and their prompts
 
-Before designing protocols we mechanically classified the coordination failures from the free-messaging replication run (the pairs where both agents built their own feature but the pair still failed). Five findings emerged, and together they predict which protocols can improve the integration mechanics and which only appear to.
+Ordered control → talk-only → plan-only → authorship-changing. Each block is verbatim as rendered to `agent1` (working alongside `agent2`); `<...>` are the CLI's own argument hints.
 
-- **F1 — Failure is spatial, not semantic.** Every coordination failure is a textual merge conflict. No capability-clean pair died of incompatible *semantics* after a clean merge; the code that both agents wrote was individually correct and would have worked, had it landed in the tree.
-- **F2 — The overlap is task-inherent.** The two features' gold reference patches themselves collide (same file, overlapping hunks) in every failing pair — by construction, since CooperBench pairs are selected for gold-patch conflict. The collision is usually *within a single construct* (both features must edit the same function signature), not merely within the same file.
-- **F3 — Information exchange is not the deficit.** The eventually-conflicting file was named in the conversation in every failure; agents declared the files they were touching. The channel carried the right information.
-- **F4 — Agreement without resolution.** Agents identify the collision precisely, agree a plan ("let's each add our own parameter"), and still emit textually colliding edits. They agree *about* the overlap without *resolving* it.
-- **F5 — Wrong merge model.** Agents reason as if they share a workspace ("your changes aren't in my copy yet — go ahead"), when in fact the evaluation performs a naive two-branch merge of their independent patches. Nothing in the free-messaging prompt tells them how their work will actually be combined.
+### 1. control — no messaging
 
-The prediction that falls out, in integration-mechanics terms: structuring or enriching the message channel (targets F3) should not help, because information already flows and none of it changes what the merge sees; planning a *file-level* split (targets F1 at the wrong granularity) should not help, because F2 says the overlap lives *inside* a shared construct where no disjoint file split exists; and only a protocol that changes *what the merge operates on* in that construct — a single writer, or two identical writers (targets F4/F5) — actually improves the integration mechanics.
-
-## 3. The six protocols, with their system prompts
-
-The six arms are ordered by how deeply they reach into the integration mechanics. The first three touch only the communication channel — whether agents talk, and how rigidly; the last three progressively change what the merge sees — first the *files* each agent may edit, then the *authorship* of the shared construct, and finally the *bytes* of it. Only the last two can, in principle, alter the input to the merge.
-
-All six arms share one scaffold: each agent receives its own feature specification and a submission protocol (write your final unified diff to `patch.txt` before exiting). The arms differ only in the **cooperation-protocol block** appended to that prompt, and in the message-field validation the container enforces. In the structured arms, the container's messaging CLI hard-rejects any message that omits a required field or violates an enum, so "the structure was actually used" is not a confound: field *values* stay free text, only the coordination metadata is enforced. Each block below is reproduced verbatim as rendered to `agent1` (working alongside `agent2`); `<...>` placeholders are the CLI's own argument hints.
-
-### 3.1 Control — no messaging
-
-The control agent is never told it has a partner. It receives only its feature spec and the submission protocol; there is no cooperation block at all. This is the coordination *floor*: two isolated agents each implement their feature and the evaluator merges the two independent patches.
+No cooperation block at all; the agent is never told it has a partner.
 
 > *(no cooperation block)*
 
-### 3.2 Free-text — unconstrained messaging
+### 2. free-text — unconstrained messaging
 
-The replication's cooperative condition. Agents get a Redis-backed inbox and free-text `coop-send` / `coop-broadcast` / `coop-recv` commands, with a recommended-but-unenforced workflow. This targets F3 — give agents a channel and let them talk.
+Redis-backed inbox, free-text send/broadcast/recv, recommended-but-unenforced workflow.
 
 ````
 ## Cooperation protocol
@@ -73,9 +61,9 @@ Recommended workflow:
 Messages are not magic — your peers only know what you tell them.
 ````
 
-### 3.3 Semi-structured — typed, field-validated messages
+### 3. semi_structured — typed, field-validated messages
 
-Every message must carry a `type` (CLAIM / INTENT / QUESTION / ANSWER / STATUS), the `files` it concerns, and a one-sentence `summary`; malformed messages are rejected. This targets F3 more forcefully: make agents declare, in a machine-checkable form, exactly what they will touch.
+Every message must carry `type` (CLAIM / INTENT / QUESTION / ANSWER / STATUS), `files`, and a one-sentence `summary`; malformed messages are rejected.
 
 ````
 ## Cooperation protocol (structured messaging)
@@ -117,9 +105,9 @@ Recommended workflow:
 Messages are not magic — your peers only know what you tell them.
 ````
 
-### 3.4 Plan-handshake — agree a disjoint file split before editing
+### 4. plan_handshake — agree a disjoint file split before editing
 
-A two-phase protocol: in Phase 1 agents exchange PROPOSE / ACCEPT / REVISE messages (blocking on `coop-await`) until they have mutually agreed a disjoint partition of files, and *only then* may they edit. This targets F1 at file granularity — if the two agents own disjoint files, their patches cannot collide. F2 predicts it will fail, because the collision lives inside a shared construct that no file-level split can separate.
+Phase 1: exchange PROPOSE / ACCEPT / REVISE (blocking on `coop-await`) until a disjoint file partition is mutually agreed. Only then may agents edit.
 
 ````
 ## Cooperation protocol (structured messaging)
@@ -174,9 +162,9 @@ at merge time.
 Messages are not magic — your peers only know what you tell them.
 ````
 
-### 3.5 Designated-coder — one owner per shared file, the other sends a spec
+### 5. designated_coder — one owner per shared file, the other sends a spec
 
-For any file both features need, the pair assigns exactly one owner; the non-owner DEFERs and sends a precise SPEC of what its feature needs there, and the owner implements *both* features in that file while the non-owner leaves it untouched. This targets F4 directly: eliminate dual authorship of the shared construct. It should work *if* the deferring agent actually defers.
+For any file both features need, one owner is assigned; the non-owner DEFERs, sends a SPEC of what it needs, and leaves the file untouched. The owner implements both features there.
 
 ````
 ## Cooperation protocol (structured messaging)
@@ -240,9 +228,9 @@ of as conflicting edits.
 Messages are not magic — your peers only know what you tell them.
 ````
 
-### 3.6 Coauthor-overlap — both agents write byte-identical merged code
+### 6. coauthor_overlap — both agents write byte-identical merged code
 
-The most direct attack on F4/F5. Where two features overlap in one construct, the pair jointly authors the *full merged version* of that construct — one implementation carrying both features' behaviour — and both agents write that agreed text **byte-for-byte identically**. Git merges two independent patches that make an identical change to a region as `identical`, not a conflict; so each agent's patch already satisfies both features there, and the merge comes back clean by construction.
+Where two features overlap in one construct, the pair jointly authors the full merged version of it and both agents write that agreed text byte-for-byte identically.
 
 ````
 ## Cooperation protocol (structured messaging)
@@ -308,94 +296,122 @@ conflicting — and each patch already satisfies both features there.
 Messages are not magic — your peers only know what you tell them.
 ````
 
-## 4. Method
+## Results
 
-**Subset (nano).** The comparison runs on a capability-screened 20-pair Python subset. Restricting to a single language removes the language × repo × difficulty confound; taking one conflicting pair per task keeps the clusters independent and domain-diverse. Pairs are pre-filtered by static feature overlap (shared files and intersecting hunk ranges between the two gold `feature.patch`es) to raise the conflict hit-rate — a pre-filter, not the validity check.
+### Endpoints (validated 18-pair set)
 
-**Pre-registration.** The design was fixed before any protocol result was seen (`docs/nano_py_preregistration.md`). The **primary endpoint** is the *merge-clean rate* — the fraction of pair-runs whose two independent patches merge without a textual conflict — because it is the direct read-out of the integration mechanics: it measures, and only measures, whether the two emitted patches combine, which is exactly what a protocol must improve. The **secondary endpoint** is *both-passed*: both features' held-out suites pass on the merged tree. Validity exclusions are judged on the **control arm only**, never on a with-messaging outcome (that is the dependent variable): a pair is dropped if the model cannot build the features (neither feature passes independently in more than 10% of control runs) or if the naive merge already works (control both-passed > 60%, so there is no conflict to coordinate around). Of 20 pairs, 18 survive; both drops are ceiling cases (control already passes ≥ 73%). The capability-floor criterion in fact never fired, and could not have: the control arm's evaluations do not record per-feature independent results, so the floor is undefined for every pair and the screen reduces in practice to the ceiling rule alone. This makes the retained set, if anything, *harder* than the pre-registration intended — no pair was removed for being beyond the model — which cuts against the protocols rather than for them.
-
-**Runs and inference.** Each pair is run k ≈ 15 times per arm (≈ 270 pair-runs per arm for the full-set arms; the two overlap-resolution arms were run at k ≈ 5, ≈ 88–89 runs). All arms use Claude Sonnet 5 via the Claude Code scaffold, concurrency 2, and **no** shared git workspace. Per-arm rates carry Wilson 95% CIs (descriptive), and the inferential test is a **Cochran–Mantel–Haenszel** test stratified by pair — which respects the clustering (multiple runs of the same pair are not independent) rather than pooling runs as if they were. Contrasts are Holm-corrected across the family (every protocol vs control, plus three head-to-heads). The analysis excludes any run flagged as an infrastructure failure from the denominators rather than scoring it as a task failure; in this dataset no run carried that flag, so the exclusion never applied. The two overlap-resolution arms nevertheless fall marginally short of 18 × 5 = 90 runs (88 and 89) because three runs produced no evaluation record at all.
-
-**What varies between arms.** Only the cooperation-protocol block of the system prompt and the enforced message schema. Same model, same scaffold, same tasks, same evaluation. This is what licenses attributing any difference to the protocol.
-
-## 5. Results
-
-### 5.1 Endpoints
-
-On the validated 18-pair set, the primary endpoint splits the six arms unevenly. Five of them — every talk-only and plan-only protocol, *and* designated-coder — sit inside a narrow 13–21% band that is statistically indistinguishable from the no-messaging floor. Only coauthor-overlap separates, by roughly a factor of six over control. Note that reaching the integration mechanics is not by itself enough: designated-coder targets the shared construct and still lands in the floor band (§6 explains why).
-
-| Arm (protocol) | runs | applied | merge-clean (primary) | both-passed (secondary) |
+| arm | runs | applied | merge-clean (primary) | both-passed (secondary) |
 |---|---|---|---|---|
-| control (no messaging) | 270 | 89% | **13%** [10–18] | 2% [1–4] |
-| free-text | 270 | 83% | **21%** [17–26] | 3% [2–6] |
-| semi-structured | 270 | 89% | **16%** [12–21] | 3% [2–6] |
-| plan-handshake | 270 | 93% | **20%** [16–25] | 10% [7–15] |
-| designated-coder | 88 | 86% | **18%** [12–28] | 58% [48–68] |
-| **coauthor-overlap** | 89 | 94% | **78%** [68–85] | 69% [58–77] |
+| control (no messaging) | 270 | 89% | 13% [10–18] | 2% [1–4] |
+| free-text | 270 | 83% | 21% [17–26] | 3% [2–6] |
+| semi_structured | 270 | 89% | 16% [12–21] | 3% [2–6] |
+| plan_handshake | 270 | 93% | 20% [16–25] | 10% [7–15] |
+| designated_coder | 88 | 86% | 18% [12–28] | 58% [48–68] |
+| coauthor_overlap | 89 | 94% | 78% [68–85] | 69% [58–77] |
 
-*Merge-clean = merge status in {clean, identical}; brackets are Wilson 95% CIs (descriptive).*
+*merge-clean = merge status in {clean, identical}. Brackets are Wilson 95% CIs (descriptive). Rates are over all runs; "applied" is the share of runs where the patch applied.*
+
+- Merge-clean: five arms fall in a 13–21% band; coauthor_overlap is 78%.
+- both-passed: designated_coder 58% and coauthor_overlap 69% are the two high values; plan_handshake 10%; the rest ≤ 3%.
 
 ![Endpoints by arm: merge-clean vs both-passed](masters_thesis/protocol_analysis/figures/fig1_endpoints.png)
 
-### 5.2 Inference (CMH, stratified by pair, Holm-corrected)
+### Inference — primary endpoint (merge-clean, CMH stratified by pair, Holm-corrected)
 
-On the **primary endpoint**, coauthor-overlap is the *only* arm that beats control after correction — and it beats it by a wide margin, and beats the next-best protocols in head-to-heads too:
+| contrast | base | arm | CMH OR | *p* (Holm) |
+|---|---|---|---|---|
+| free-text vs control | 13% | 21% | 1.79 | 0.105 |
+| semi_structured vs control | 13% | 16% | 1.24 | 1.000 |
+| plan_handshake vs control | 13% | 20% | 1.63 | 0.159 |
+| designated_coder vs control | 13% | 18% | 1.43 | 1.000 |
+| coauthor_overlap vs control | 13% | 78% | 27.7 | 3.1e-29 |
+| coauthor_overlap vs plan_handshake | 20% | 78% | 10.4 | 9.1e-24 |
+| coauthor_overlap vs designated_coder | 18% | 78% | 16.0 | 1.4e-13 |
+| designated_coder vs plan_handshake | 20% | 18% | 0.91 | 1.000 |
 
-| Contrast | base | arm | CMH OR | *p* (Holm) | verdict |
+- After Holm correction, coauthor_overlap is the only arm that separates from control on merge-clean (and from the next-best arms in head-to-heads). The other four arm-vs-control contrasts are non-significant.
+
+### Inference — secondary endpoint (both-passed, CMH stratified by pair, Holm-corrected)
+
+| contrast | *p* (Holm) | CMH OR |
+|---|---|---|
+| coauthor_overlap vs control | 3.7e-43 | 90.2 |
+| designated_coder vs control | 1.1e-35 | 75.6 |
+| coauthor_overlap vs plan_handshake | 2.4e-29 | — |
+| designated_coder vs plan_handshake | 3.9e-23 | — |
+| plan_handshake vs control | 8.1e-05 | 5.9 |
+| coauthor_overlap vs designated_coder | 0.476 | — |
+| free-text vs control | 1.000 | — |
+| semi_structured vs control | 1.000 | — |
+
+- On both-passed, plan_handshake, designated_coder, and coauthor_overlap all beat control after correction. coauthor_overlap and designated_coder are not distinguishable from each other on this endpoint (*p* = 0.48), despite their merge-clean rates being 78% vs 18%.
+
+### Failure taxonomy (each pair-run in exactly one bucket, over n)
+
+Buckets: `pass` = clean/identical merge AND both features pass; `solo_rescue` = both features pass but the merge was not clean (one patch carried the pair); `functional_fail` = clean merge, code fails; `textual_conflict` = patches collided; `missing_patch` = a patch did not apply.
+
+| arm | pass | solo_rescue | functional_fail | textual_conflict | missing_patch |
 |---|---|---|---|---|---|
-| free-text vs control | 13% | 21% | 1.79 | 0.105 | ns — as predicted |
-| semi-structured vs control | 13% | 16% | 1.24 | 1.000 | ns — as predicted |
-| plan-handshake vs control | 13% | 20% | 1.63 | 0.159 | ns — as predicted |
-| designated-coder vs control | 13% | 18% | 1.43 | 1.000 | ns — see §6 |
-| **coauthor-overlap vs control** | 13% | 78% | **27.7** | **< 0.0001** | **improved** |
-| coauthor-overlap vs plan-handshake | 20% | 78% | 10.4 | < 0.0001 | improved |
-| coauthor-overlap vs designated-coder | 18% | 78% | 16.0 | < 0.0001 | improved |
-| designated-coder vs plan-handshake | 20% | 18% | 0.91 | 1.000 | ns |
+| control | 2% | 0% | 1% | 87% | 11% |
+| free-text | 3% | 0% | 1% | 79% | 17% |
+| semi_structured | 3% | 0% | 2% | 84% | 11% |
+| plan_handshake | 10% | 0% | 3% | 80% | 7% |
+| designated_coder | 5% | 43% | 0% | 39% | 14% |
+| coauthor_overlap | 62% | 6% | 10% | 17% | 6% |
 
-*All eight contrasts in the Holm family are shown, so the correction can be checked directly.*
-
-On the **secondary endpoint** (both-passed), plan-handshake, designated-coder, and coauthor-overlap all beat control (Holm *p* = 0.0001, < 0.0001, < 0.0001; ORs 5.9, 75.6, 90.2). But designated-coder's high both-passed is not what it looks like — see §6.
-
-### 5.3 The mechanism: where each pair-run lands
-
-The failure taxonomy makes the mechanism visible directly. Every pair-run is classified by what actually happened at merge time.
-
-| Arm | passed | solo-rescue | func-fail | textual conflict | no-patch |
-|---|---|---|---|---|---|
-| control | 2% | 0% | 1% | **87%** | 11% |
-| free-text | 3% | 0% | 1% | **79%** | 17% |
-| semi-structured | 3% | 0% | 2% | **84%** | 11% |
-| plan-handshake | 10% | 0% | 3% | **80%** | 7% |
-| designated-coder | 5% | 43% | 0% | 39% | 14% |
-| **coauthor-overlap** | **62%** | 6% | 10% | **17%** | 6% |
+- Textual-conflict share: 79–87% for control / free-text / semi_structured / plan_handshake; 39% for designated_coder; 17% for coauthor_overlap.
+- designated_coder's both-passed comes almost entirely through `solo_rescue` (43% of its runs — both features pass on a non-clean merge), not through `pass` (5%).
+- Note the taxonomy `pass`+`solo_rescue` (dc 48%, coauthor 68%) does not equal the both-passed endpoint (dc 58%, coauthor 69%): the both-passed endpoint also credits runs where a patch did not apply but both suites still pass on the merged tree; the taxonomy routes those to `missing_patch`.
 
 ![Failure taxonomy by arm](masters_thesis/protocol_analysis/figures/fig2_failure_taxonomy.png)
 
-The talk-only and plan-only arms leave the textual-conflict bucket essentially untouched at 79–87%. Coauthor-overlap collapses it to 17% — and it is the only arm that produces **identical merges** in any quantity (26 of its 89 runs, 29%; a further 48% merge cleanly). An identical merge — both agents emitting the same merged construct — is the protocol's intended fingerprint: it occurs exactly once in all 1,168 runs of the other five arms combined (a single designated-coder run), against 26 times in coauthor-overlap's 89.
+### Merge status split (validated set)
 
-## 6. What the results show
+| arm | identical | clean | conflicts/other |
+|---|---|---|---|
+| control | 0 (0%) | 36 (13%) | 234 (87%) |
+| free-text | 0 (0%) | 57 (21%) | 213 (79%) |
+| semi_structured | 0 (0%) | 43 (16%) | 227 (84%) |
+| plan_handshake | 0 (0%) | 54 (20%) | 216 (80%) |
+| designated_coder | 1 (1%) | 15 (17%) | 72 (82%) |
+| coauthor_overlap | 26 (29%) | 43 (48%) | 20 (22%) |
 
-**Capability was never the problem, and neither was communication.** In every arm where the pre-merge per-feature suite was recorded, at least one feature passed independently in 86–97% of pair-runs — the agents can build their features; the replication already showed pairing does not erode this. And under free-text messaging the eventually-conflicting file was named in conversation in essentially every failure. So the 79–84% textual-conflict rate that persists through the free-text and semi-structured arms is not a failure to talk or to declare intent. It is F3 confirmed: the channel already carried the right information, and enriching it changes nothing the merge can see — the integration mechanics are downstream of the talk, and the talk never reaches them.
+- `identical` merges (both agents emitting byte-for-byte identical merged code): 26 of coauthor_overlap's 89 runs (29%); exactly 1 across all 1,168 runs of the other five arms combined (a single designated_coder run).
 
-**Planning around the overlap does not work, because the overlap cannot be partitioned.** Plan-handshake forces agents to agree a disjoint *file* split before editing, and they do — yet 80% of its runs still hard-conflict. This is F2 made concrete: the collision lives *inside* a shared construct (two features both editing one function signature), and no file-level partition can separate a single line. The handshake operates at the wrong granularity to touch the integration mechanics — it reassigns whole files while the merge conflict is decided line by line — so it solves a problem the task does not have.
+### Pre-merge capability (feature-independent, validated set)
 
-**Changing who writes the overlapping code is necessary — but not sufficient.** The two protocols that alter authorship of the shared construct are the only two that reach the integration mechanics at all, and the only two that move the taxonomy. But only one of them actually improves the merge, and the contrast between them is the most instructive result in the study.
+| arm | pair-runs with ≥1 feature passing independently |
+|---|---|
+| control | not recorded |
+| free-text | not recorded |
+| semi_structured | 86% (n=270) |
+| plan_handshake | 97% (n=270) |
+| designated_coder | 94% (n=88) |
+| coauthor_overlap | 90% (n=89) |
 
-- *Coauthor-overlap* resolves the collision itself: both agents converge on identical merged text, so the integration mechanics now receive two patches that are mergeable by construction — git treats the region as an identical change rather than a conflict — and the merge-clean rate goes from 13% to 78% while both-passed goes from 2% to 69%. This is the intended mechanism working exactly as designed, down to the `identical`-merge fingerprint.
-- *Designated-coder* is the instructive near-miss, and it fails at two distinct points. The first is a silent omission: SURVEY, CLAIM, and DEFER are exchanged in **100%** of its validated runs, but the SPEC that the protocol makes *mandatory* whenever a file is deferred is sent in only **39%** — so in most runs a file is handed over with no description of what the deferring agent's feature needs there. The second is the outright breach: the deferring agent **edits the shared file anyway**. The merges prove it — a textual conflict can only arise when both branches touch the same region, and 39% of its runs still hard-conflict, leaving its merge-clean rate at the floor (18%, ns). Its headline 58% both-passed is a `solo_rescue` artifact (43% of runs, every one of them a conflicted merge in which both features nonetheless passed): the *owning* agent's union patch carries both features by itself, while the partner's colliding patch is what the merge chokes on. In other words, the protocol that most explicitly demands commitment is undone by a *commitment failure* — agents agree to defer and then don't. This is a textbook instance of the original CooperBench taxonomy's commitment/expectation failures, reproduced under a protocol built to exploit commitment.
+- Where recorded, at least one feature passed independently (before merge) in 86–97% of pair-runs. control and free-text evals do not record per-feature independent results.
 
-**The chain closes — with one correction.** The failure analysis made two negative predictions and one positive one. Both negatives hold exactly: structuring communication (F3) and planning a file split (F1 at the wrong granularity, given F2) leave the merge untouched. The positive prediction — that resolving the shared construct is what reaches the integration mechanics — holds only in its *necessary* direction. Construct-level resolution was indeed the only thing that moved anything, but §2 named two ways to achieve it, single-ownership and co-authorship, and treated them as interchangeable. They are not. Single-ownership requires one agent to *refrain* from writing code it is capable of writing, and that forbearance does not survive contact with the task; co-authorship requires no forbearance from anyone, only agreement, and it is the one that works. The operative variable is not merely *whether* a protocol targets the shared construct but *whether its mechanism depends on an agent honouring a commitment*. And because each arm differs *only* in its system prompt and message-field validation — no model change, no scaffold change, and one fixed integration model throughout — the 13% → 78% jump is direct evidence that **prompt-level protocol design alone can improve the integration mechanics substantially**, provided the protocol changes what the merge operates on rather than a plausible-looking bystander upstream of it. The winning protocol does not re-engineer the merge; it supplies, in the prompt, the integration discipline the naive-merge model leaves unspecified — the byte-identical overlap that makes two independent patches combine by construction.
+### designated_coder message compliance (from transcripts)
 
-## 7. Limitations and what comes next
+- SURVEY, CLAIM, and DEFER are exchanged in 100% of its validated runs.
+- The SPEC message, which the protocol makes mandatory whenever a file is deferred, is sent in only 39% of runs.
+- 39% of its runs still end in a textual conflict — i.e. both branches touched the same region despite one agent having deferred the file.
 
-The scope is deliberately narrow: one model, one scaffold, and conflict-selected Python pairs chosen precisely because their features collide. The inference is conditional on these pairs — there are no per-repository or per-language claims (one pair per task). It is also conditional on one *integration model* — isolated checkouts combined by a naive two-branch merge, with no post-hoc conflict resolution. That model is what makes the overlap decisive, and it is held fixed on purpose: we test what a protocol can do to improve the integration mechanics *within* a given integration model, not whether a different model (a shared workspace with live conflict resolution) would move the mechanics by itself. The latter is a change to the harness, not the prompt, and is a separate lever we leave out of scope here. The two overlap-resolution arms ran at lower k (≈ 5 replicates) than the full-set arms, so their intervals are correspondingly wider. Coauthor-overlap's effect is far too large for that to matter — it survives correction by many orders of magnitude. Designated-coder's primary-endpoint *null* deserves more caution: at 88 runs we can say its merge-clean rate is indistinguishable from the floor, not that it is identical to it, and a small real benefit could hide inside that interval. The mechanism evidence (39% still hard-conflicting, the mandatory SPEC skipped in 61% of runs) is what makes the null interpretable rather than merely underpowered. And coauthor-overlap is demanding: it asks two agents to reproduce an agreed block byte-for-byte, which is why 17% of its runs still conflict and 10% fail functionally.
+## Concerns / caveats
 
-That residual is where the next problem begins. Once the spatial collision is solved, what remains is *semantic* coordination — agreeing not just where code goes but what the merged behaviour should be — the failure mode that dominates once merges stop conflicting. And a separate limit sits underneath all of this: the protocols here operate at team size two. The scaling study that follows holds a solo-achievable workload fixed and varies only the agent count, and finds a cost that grows super-proportionally in team size — a composite tax whose message-independent floor (the shared context each agent must re-load) no protocol can erase, even though a good protocol can trim the messaging-related part. The lesson of this study and the next are two halves of one point: a good protocol can improve the *integration mechanics* and close the two-agent integration gap, but nothing at the protocol level removes the structural floor of the *coordination* cost that grows as the team grows.
+- **Two arms are low-k.** designated_coder and coauthor_overlap ran at k ≈ 5 (88 and 89 runs) versus ≈ 270 for the other four. Their Wilson intervals are correspondingly wider. coauthor_overlap's primary-endpoint effect survives correction by many orders of magnitude regardless; the low-k caution bites hardest on designated_coder.
+- **The designated_coder primary null is an interval, not an identity.** At 88 runs, "18%, indistinguishable from the 13% floor" means a small real benefit could still sit inside the CI [12–28]. It is not established that designated_coder equals the floor, only that it is not distinguishable from it here.
+- **The capability-floor screen never fired.** The pre-registration specified dropping pairs where neither feature builds solo (>10% control), but control evals do not record per-feature independent results, so that criterion was undefined for every pair; screening reduced in practice to the ceiling rule alone. Net effect: no pair was removed for being beyond the model, so the retained set is, if anything, harder than intended.
+- **both-passed vs taxonomy mismatch.** As noted above, the secondary endpoint and the taxonomy count different things when a patch fails to apply; compare like-for-like when reading the two tables together.
+- **Three missing eval records.** The two overlap-resolution arms fall short of 18 × 5 = 90 (88, 89) because three runs produced no eval record. They are dropped from denominators, not scored as failures.
+- **Residual failure in the winning arm.** coauthor_overlap still leaves 17% textual conflict and 10% functional_fail; the byte-identical requirement is not always met, and clean merges still fail functionally at a nonzero rate.
+- **Scope.** One model (Claude Sonnet 5), one scaffold, conflict-selected Python pairs (one per task, chosen because their gold patches collide), and one fixed integration model (isolated checkouts, naive two-branch merge, no post-hoc conflict resolution). No per-repository or per-language estimates. Results are conditional on all of the above; a different integration model (e.g. a shared workspace with live conflict resolution) is a harness change, not tested here.
+- **Denominator convention.** Rates are over all runs n, so the varying "applied" rates (83–94%) fold non-applied runs into the failure mass. Reading rates over `applied` instead would shift every arm upward and by different amounts.
 
 ---
 
 ### Reproducibility
 
-- **Numbers.** Every figure in §5 is computed by the pre-registered analysis, `masters_thesis/protocol_analysis/analyze.py`, over the six no-git arms in `logs/`. The frozen output is committed at `masters_thesis/protocol_analysis/data/nano_study.json`; regenerate it with `uv run python masters_thesis/protocol_analysis/analyze.py`.
-- **Figures.** `masters_thesis/protocol_analysis/figures.py` reads that JSON (so plotted values cannot drift from the tables) and writes `masters_thesis/protocol_analysis/figures/fig1_endpoints.png` and `fig2_failure_taxonomy.png`. Run `uv run --with matplotlib python masters_thesis/protocol_analysis/figures.py`.
-- **Protocol prompts.** The blocks in §3 are the verbatim cooperation-protocol sections rendered by `cooperbench.agents._coop.prompt.build_instruction`; the four structured schemas live in `src/cooperbench/agents/_coop/message_schema.toml` (semi-structured) and `schemas/{plan_handshake,designated_coder,coauthor_overlap}.toml`. Each arm is selected at run time by `--structured-messaging <schema>` (or `--no-messaging` for the control) on `cooperbench run --setting coop`.
+- **Numbers.** Computed by `masters_thesis/protocol_analysis/analyze.py` over the six no-git arms in `logs/`. Frozen output: `masters_thesis/protocol_analysis/data/nano_study.json`. Regenerate with `uv run python masters_thesis/protocol_analysis/analyze.py` (also prints the merge-status split, pre-merge capability, and a per-pair merge-clean appendix not reproduced above).
+- **Figures.** `masters_thesis/protocol_analysis/figures.py` reads that JSON and writes `figures/fig1_endpoints.png` and `fig2_failure_taxonomy.png`. Run `uv run --with matplotlib python masters_thesis/protocol_analysis/figures.py`.
+- **Protocol prompts.** The blocks above are the verbatim cooperation-protocol sections rendered by `cooperbench.agents._coop.prompt.build_instruction`; the structured schemas live in `src/cooperbench/agents/_coop/message_schema.toml` (semi_structured) and `schemas/{plan_handshake,designated_coder,coauthor_overlap}.toml`. Each arm is selected at run time by `--structured-messaging <schema>` (or `--no-messaging` for control) on `cooperbench run --setting coop`.
