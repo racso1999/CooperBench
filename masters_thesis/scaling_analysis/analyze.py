@@ -23,6 +23,9 @@ def load_records(path=DATA):
                     "score": float(r["score"]),         # number of features that pass test suite
                     "all_passed": r["all_passed"] == "True",
                     "cost": float(r["cost"]),           # cost in dollars
+                    # wall-clock seconds for the cell (agents run in parallel, so
+                    # this tracks the slowest agent; eval time excluded)
+                    "wall_seconds": float(r["wall_seconds"]) if r.get("wall_seconds") else None,
                 }
             )
     return rows
@@ -214,6 +217,31 @@ def calc7_cost_accounts(accts):
 
 
 # run all calculations and print results
+# CALCULATION 8 — Wall-clock time & parallel speedup (does sharing work finish faster?)
+
+def calc8_time(recs):
+    """Per-N mean wall-clock, plus per-pool paired speedup vs the solo baseline:
+    speedup(N) = mean wall(N=1) / mean wall(N); efficiency = speedup / N (1.0 =
+    perfect work-sharing, ideal wall time T1/N). Pairing within a pool removes
+    pool-difficulty heterogeneity."""
+    timed = [r for r in recs if r["wall_seconds"] is not None]
+    by_n = defaultdict(list)
+    by_pool_n = defaultdict(lambda: defaultdict(list))
+    for r in timed:
+        by_n[r["N"]].append(r["wall_seconds"])
+        by_pool_n[r["pool_id"]][r["N"]].append(r["wall_seconds"])
+    out = {N: {"n_runs": len(v), "mean_wall_s": mean(v)} for N, v in sorted(by_n.items())}
+    for N in out:
+        if N == 1:
+            continue
+        sps = [mean(p[1]) / mean(p[N]) for p in by_pool_n.values() if 1 in p and N in p and mean(p[N]) > 0]
+        if sps:
+            out[N]["speedup_mean"] = mean(sps)
+            out[N]["efficiency"] = mean(sps) / N
+            out[N]["n_pools"] = len(sps)
+    return out
+
+
 def main():
     recs = load_records()
     print(f"Loaded {len(recs)} runs across {len({r['pool_id'] for r in recs})} pools "
@@ -272,6 +300,16 @@ def main():
               f"{max(a['comm_share'] for a in multi)*100:.0f}% of cost; "
               f"comm+rework {min(a['comm_rework_share'] for a in multi)*100:.0f}-"
               f"{max(a['comm_rework_share'] for a in multi)*100:.0f}%")
+
+    t = calc8_time(recs)
+    print("\nCALCULATION 8 — Wall-clock time & parallel speedup")
+    print(f"  {'N':>2} {'runs':>5} {'wall(min)':>10} {'speedup':>8} {'ideal':>6} {'par.eff':>8}")
+    for N in sorted(t):
+        a = t[N]
+        sp = f"{a['speedup_mean']:.2f}x" if "speedup_mean" in a else "—"
+        ef = f"{a['efficiency']:.2f}" if "efficiency" in a else "—"
+        ideal = f"{N:.1f}x" if N > 1 else "—"
+        print(f"  {N:>2} {a['n_runs']:>5} {a['mean_wall_s']/60:>10.1f} {sp:>8} {ideal:>6} {ef:>8}")
 
 
 if __name__ == "__main__":

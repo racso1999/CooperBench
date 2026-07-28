@@ -31,6 +31,7 @@ from analyze import (  # noqa: E402
     calc2_efficiency,
     calc3_power_law,
     calc7_cost_accounts,
+    calc8_time,
     load_accounts,
     load_records,
 )
@@ -111,6 +112,7 @@ def _mono_shade(v, hue, lo, hi):
 
 COST_HUE = 0.74   # violet — fig2b cost markers
 EFF_HUE = 0.42    # green  — fig2c efficiency markers
+TIME_HUE = 0.99   # warm red — fig2e wall-clock markers
 
 
 # two-sided t critical values at 95% by degrees of freedom (small-sample honest)
@@ -401,12 +403,85 @@ def figure2d(accts):
     return _save(fig, "fig2d_cost_decomposition.png", facecolor="white")
 
 
+# =========================================================================
+# FIGURE 2e — wall-clock time vs N (parallelism does not pay)
+# =========================================================================
+# Observed mean wall-clock per cell (a cell's wall clock tracks its slowest
+# agent, since the N agents run concurrently) against the dashed ideal of
+# perfect work-sharing, T1/N. The two curves diverge in opposite directions:
+# time should fall toward T1/N and instead *rises*. Each point is annotated
+# with the realised paired speedup (mean over pools of wall(1)/wall(N)).
+def figure2e(recs):
+    t = calc8_time(recs)
+    ns = sorted(t)
+    walls = [t[N]["mean_wall_s"] / 60 for N in ns]  # minutes
+    t1 = walls[ns.index(1)]
+
+    fig, ax = plt.subplots(figsize=(3.7, 3.3))
+    # ideal perfect-parallelism curve T1/N
+    xline = np.linspace(min(ns), max(ns), 100)
+    ax.plot(xline, t1 / xline, "--", color="0.5", lw=1.0, zorder=2)
+    ax.plot(ns, walls, "-", color="black", lw=0.7, zorder=3)
+    # 95% CI of mean wall time, clustered by pool (matches fig2a/2b)
+    ci = _time_ci(recs)
+    ax.errorbar(ns, walls, yerr=[ci[N]["wall_hw"] for N in ns], fmt="none",
+                ecolor="0.4", elinewidth=0.7, capsize=2, capthick=0.7, zorder=3)
+    # one hue (warm red); markers deepen as time inflates but read as one series
+    lo, hi = min(walls), max(walls)
+    cvals = [_mono_shade(w, TIME_HUE, lo, hi) for w in walls]
+    ax.scatter(ns, walls, s=34, marker="o", zorder=4, linewidths=0.3,
+               edgecolors="black", c=cvals)
+    for x, y in zip(ns, walls):
+        ax.annotate(f"{y:.1f} min", (x, y), textcoords="offset points",
+                    xytext=(7, 3), ha="left", fontsize=4.7, color="black",
+                    fontname="Helvetica")
+        # realised speedup vs solo, under each multi-agent point
+        if x > 1 and "speedup_mean" in t[x]:
+            ax.annotate(f"{t[x]['speedup_mean']:.2f}×", (x, y),
+                        textcoords="offset points", xytext=(7, -8), ha="left",
+                        fontsize=4.3, color="0.45", fontname="Helvetica")
+    top = max(w + ci[N]["wall_hw"] for N, w in zip(ns, walls))
+    ax.set_ylim(0, top * 1.16)
+    handles = [
+        Line2D([0], [0], color="black", lw=0.7, marker="o", markersize=5,
+               markerfacecolor=_mono_shade(hi, TIME_HUE, lo, hi),
+               markeredgecolor="black", markeredgewidth=0.3,
+               label="Observed wall-clock"),
+        Line2D([0], [0], color="0.5", lw=1.0, ls="--",
+               label="Perfect parallelism  $T_1/N$"),
+    ]
+    _fig2_chrome(fig, ax, ns, "Minutes to completion")
+    _fig2_legend(ax, handles, loc="upper left", bbox=(0.03, 0.97))
+    return _save(fig, "fig2e_wall_clock.png", facecolor="white")
+
+
+def _time_ci(recs):
+    """Per-N 95% CI of the mean wall time (minutes), clustered by pool (same
+    construct as the fig2a/2b bars). Returns {N: {wall_hw, n_pools}}."""
+    from collections import defaultdict
+
+    by_n = defaultdict(list)
+    for r in recs:
+        if r.get("wall_seconds") is not None:
+            by_n[r["N"]].append(r)
+    out = {}
+    for N, g in by_n.items():
+        by_pool = defaultdict(list)
+        for r in g:
+            by_pool[r["pool_id"]].append(r["wall_seconds"] / 60)
+        pool_means = np.array([np.mean(v) for v in by_pool.values()])
+        k = len(pool_means)
+        sem = pool_means.std(ddof=1) / np.sqrt(k) if k > 1 else 0.0
+        out[N] = {"wall_hw": _T975.get(k - 1, 1.96) * sem, "n_pools": k}
+    return out
+
+
 def main():
     os.makedirs(OUTDIR, exist_ok=True)
     _style()
     recs = load_records()
     print(f"Loaded {len(recs)} runs across {len({r['pool_id'] for r in recs})} pools.")
-    for fn in (figure2a, figure2b, figure2c):
+    for fn in (figure2a, figure2b, figure2c, figure2e):
         print(f"  wrote {fn(recs)}")
     print(f"  wrote {figure2d(load_accounts())}")
 
