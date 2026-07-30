@@ -1,0 +1,182 @@
+====================================================================
+LEADER (SUPERVISED) SCALING ANALYSIS — WHAT EACH CALCULATION DOES AND WHY
+====================================================================
+This document explains, calculation by calculation, the analysis in
+`analyze.py`. The numbers below (L1-L7) match the blocks in the script
+exactly. Run `python3 analyze.py` to reproduce, `python3 figures.py` for
+the figures.
+
+It is the companion to ../scaling_analysis/explanation.txt (Calculations
+1-8, the flat arm). Read that one first: this study changes exactly one
+thing and reuses everything else.
+
+THE CHANGE BEING TESTED
+  flat arm   — the K features are dealt round-robin to N peers up front.
+               Every agent gets its slice, and the peers must negotiate
+               integration among themselves on a shared git remote.
+  leader arm — one SUPERVISOR (claude-opus-5) is the only agent that sees
+               all K specs. It writes a plan, materialises each spec to a
+               shared scratchpad, assigns features to workers through the
+               shared task list, monitors, and performs the integration
+               itself. Workers (claude-sonnet-5) start with NO spec and
+               implement only what they are assigned.
+  Everything else is identical: same 14 pools, same N levels, same trial
+  counts, same shared-git apparatus, same eval (all K held-out suites run
+  against the single integrated tree).
+
+THE DATA (data/leader_records.csv)
+  One row = one RUN. 296 rows: 148 flat + 148 leader across 14 pools.
+    pool_id       distinct clique = repo/task/features
+    arm           flat | leader
+    agents        TOTAL agents (leader arm = workers + 1 supervisor)
+    workers       leader arm only: workers under the supervisor
+    score         graded correctness = n_passed / K
+    all_passed    True iff every feature passed
+    cost          API list-price USD for the run, summed over all agents
+    leader_cost   the supervisor's share of that cost (0 for flat runs)
+    wall_seconds  wall clock for the run's agent phase — agents run
+                  concurrently, so this tracks the SLOWEST agent (the
+                  team's critical path); eval time excluded
+    agent_seconds sum of per-agent runtimes = the serial-equivalent work.
+                  Leader arm only: the flat runs predate per-agent timing.
+
+  TEAM-SIZE CONVENTION. The supervisor is a real agent costing real money
+  and real time, so a leader run with N workers is reported at N+1 agents.
+  "4 agents" is therefore 4 peers (flat) vs 1 supervisor + 3 workers
+  (leader). Reporting the leader arm at worker-count instead would hide
+  the cost of supervision, which is the very thing under test.
+
+THE COST-ACCOUNT DATA (data/cost_accounts.csv)  [used by L6 + fig 3c]
+  Same runs, each run's cost split into four accounts summing to the run
+  total: context (each agent re-loads the shared repo), task (implementing
+  features), comm (messages sent/received/re-ingested), rework (re-editing
+  after an inbound message).
+  Two caveats, both specific to this study:
+  (a) The apportionment prices all tokens at ONE model's list rates, but
+      leader runs are mixed-model (opus supervisor + sonnet workers). The
+      four accounts are therefore approximate for the leader arm; read
+      their SHARES, not their absolute dollars. The `cost` column in
+      leader_records.csv is exact — it is the sum of each agent's own reported
+      cost, and is what every other calculation uses.
+  (b) 10 leader runs (of 148) produced unparseable agent streams, so their
+      accounts are MISSING, not zero. They are excluded from this file
+      entirely — 286 runs remain. Writing them as $0 would drag the leader
+      account means down by roughly 7% while leaving the shares unchanged.
+      Every run in this file reconciles exactly: the four accounts sum to
+      that run's dollar_cost.
+
+--------------------------------------------------------------------
+L1. AGGREGATE BY ARM x TEAM SIZE
+--------------------------------------------------------------------
+WHAT: Group runs by (arm, agents); report mean graded score, all-pass
+      rate, mean cost, mean wall-clock, and the supervisor's mean cost.
+WHY : The raw "as you add agents" curves for both topologies side by side.
+      Everything downstream is derived from this table.
+NOTE: The 5-agent row (leader) and the 4-agent row (flat) are the only
+      ones drawn from the 6 K=4 pools alone, so their means reflect an
+      easier pool mix, not just a team-size effect. This is the same
+      composition artifact flagged in the flat study's Calculation 1.
+
+--------------------------------------------------------------------
+L2/L3. EFFICIENCY AND ITS POWER LAW  (THE headline)
+--------------------------------------------------------------------
+WHAT: efficiency(N) = mean_score(N) / mean_cost(N), fitted per arm as
+      efficiency = a * N^(-b) by OLS on log-log.
+      Result: flat   1.28 * N^-1.61 (R2=0.996)
+              leader  0.65 * N^-1.09 (R2=0.982)
+WHY : The EXPONENT is the finding, not the level. For a fixed workload
+      split across N agents at fixed per-agent cost, efficiency must fall
+      as 1/N — you are paying N agents to do one pool's work. So b = 1 is
+      the FLOOR: it means coordination itself costs nothing extra.
+      b = 1.61 (flat) is super-proportional waste, the flat study's
+      headline. b = 1.10 (leader) sits essentially AT the floor: the
+      supervisor converts coordination waste into near-proportional cost.
+      Because the leader arm starts lower (a fixed supervision overhead
+      that is dead weight on small teams) but decays more slowly, the
+      curves CROSS at ~3.7 agents — below it flat wins, above it the
+      supervisor does. Fig 3a plots this on log-log, where a power law is
+      a straight line and the two exponents are two slopes.
+NOTE: The leader fit has 4 points (2-5 agents) against the flat fit's 4
+      (1-4). Anything beyond 5 agents is EXTRAPOLATION — the pools cap at
+      K=4, so the region where the fits say the gap becomes large is
+      exactly the region this dataset cannot test.
+
+--------------------------------------------------------------------
+L4. OUTCOME MIX  (zero / partial / perfect)
+--------------------------------------------------------------------
+WHAT: The share of runs scoring 0, a partial fraction, or a perfect 1.0,
+      per arm and team size.
+WHY : This is the mechanism behind L1's averages, and it is the most
+      interesting qualitative result. The two topologies FAIL DIFFERENTLY:
+        flat   degrades GRACEFULLY — as N grows, partial outcomes swell
+               (11 -> 14 -> 20 -> 31% at 1-4 agents). Some features land,
+               some do not.
+        leader is BIMODAL — partials thin out (16 -> 11 -> 5% at 2-4
+               agents), replaced by outright success or outright zero.
+               NOT perfectly monotone: at 5 agents the partial share
+               rebounds to 12.5%, on the 6 K=4 pools only.
+      The cause is structural: centralising integration makes the
+      supervisor a single point of success. If its merge lands everything
+      lands; if it botches, everything is lost. In the flat arm each agent
+      merges independently, so partial contributions survive.
+      That trade is a liability at small team sizes and an asset at large
+      ones, which is the same crossover L2/L3 finds in dollars.
+
+--------------------------------------------------------------------
+L5. PAIRED PER-POOL COMPARISON AT MATCHED TEAM SIZE
+--------------------------------------------------------------------
+WHAT: For each team size, restrict to pools present in BOTH arms, take
+      each pool's mean per arm, then compare. Removes pool-difficulty
+      heterogeneity, which otherwise confounds an arm-vs-arm mean.
+WHY : The aggregate means in L1 mix pool composition with topology. This
+      is the honest like-for-like: same pool, same team size, one
+      difference.
+
+--------------------------------------------------------------------
+L6. COST ACCOUNTS  (where each topology spends)
+--------------------------------------------------------------------
+WHAT: Per arm and team size, the mean of the four dollar accounts and two
+      shares: comm alone, and comm+rework (the messaging-related tax).
+      Result: the coordination tax is consistently SMALLER under
+      supervision — 21% vs 31% at 2 agents, 21% vs 32% at 3, 25% vs 36%
+      at 4 — while context and task grow similarly in both.
+WHY : This is the mechanism behind the exponent difference in L2/L3. The
+      supervisor does not reduce the message-independent floor (each agent
+      still re-loads the repo); it reduces the part that SCALES — peers
+      renegotiating with each other. Workers talk to one supervisor
+      instead of to every peer, so the comm+rework share stops climbing
+      with N as steeply.
+NOTE: See the mixed-model caveat above — read the shares, not the dollars.
+
+--------------------------------------------------------------------
+L7. WALL-CLOCK AND PARALLEL SPEEDUP
+--------------------------------------------------------------------
+WHAT: Mean wall-clock per (arm, team size), plus speedup against the flat
+      solo baseline (wall(1 agent) / wall(N)) and parallel efficiency
+      (speedup / N).
+      Result: supervision is SLOWER at every size — 9.5 vs 5.6 min at 2
+      agents, 12.3 vs 8.3 at 4 — and the gap widens. Speedup is below 1
+      everywhere in both arms.
+WHY : Neither topology buys time; supervision actively costs more of it.
+      A run ends when its slowest agent does, and the supervisor lengthens
+      that critical path twice over: workers idle while the leader plans
+      and allocates (time-to-first-claim averages 3.5 min, median 3.2), and integration
+      happens serially at the end after all workers finish. The flat arm
+      at least lets agents start immediately on a pre-dealt slice.
+      agent_seconds (leader arm only) shows the serial-equivalent work
+      growing roughly linearly with team size while wall-clock grows much
+      more slowly — so the parallelism IS real, it is just swamped by the
+      coordination on the critical path.
+
+--------------------------------------------------------------------
+ONE-LINE CONCLUSION (what all seven add up to)
+--------------------------------------------------------------------
+Putting a supervisor in charge does not make a small team cheaper, faster,
+or more correct — it costs more on all three. What it changes is how the
+penalty SCALES: coordination waste drops from super-proportional
+(N^-1.61) to almost exactly proportional (N^-1.10), and the failure mode
+flips from graceful partial credit to all-or-nothing. Past roughly four
+agents both changes favour the supervisor, and the advantage the fits
+predict beyond five agents is the obvious next experiment — one this
+dataset, capped at K=4, cannot run.
+====================================================================

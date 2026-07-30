@@ -19,6 +19,26 @@ uv run python masters_thesis/scaling_analysis/analyze.py
 uv run --with matplotlib --with numpy python masters_thesis/scaling_analysis/figures.py
 ```
 
+## `leader_analysis/` — the supervised (leader) scaling study
+
+The same workload and team sizes as `scaling_analysis/`, with one variable
+changed: a supervisor allocates the features instead of a fixed round-robin
+partition. Headline: supervision does not make a team cheaper — it changes the
+scaling exponent, from ≈ N^−1.61 (flat peers) to ≈ N^−1.09 (supervised, i.e.
+almost exactly the no-coordination-waste floor). The curves cross at ~3.7 agents,
+and the correctness trends run in opposite directions.
+
+- `analyze.py` — reads `data/leader_records.csv` (296 runs: 148 flat + 148 leader,
+  14 pools), prints Calculations L1–L7.
+- `figures.py` → `figures/fig3a_efficiency_topology.png`, `fig3b_correctness_topology.png`,
+  `fig3c_accounts_topology.png`, `fig3d_wallclock_topology.png`.
+- Paper: `../paper.md` (Study 3).
+
+```bash
+uv run python masters_thesis/leader_analysis/analyze.py
+uv run --with matplotlib --with numpy python masters_thesis/leader_analysis/figures.py
+```
+
 ## `protocol_analysis/` — the messaging-protocol study
 
 Six coordination protocols compared at team size two on the capability-screened
