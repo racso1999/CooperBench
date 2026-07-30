@@ -290,6 +290,10 @@ def figure3c(accts):
         _fig2_chrome(fig, ax, sorted({n for (_a, n) in dec}), "US dollars")
         ax.set_title(title, fontsize=5.6, color="black", fontname="Charter", pad=3)
     axes[1].set_ylabel("")  # shared axis: label once, on the left
+    # One centred x-label for the pair rather than the same words twice.
+    for ax in axes:
+        ax.set_xlabel("")
+    fig.supxlabel("Agent count  N", fontsize=5.3, color="black", fontname="Charter", y=0.02)
     handles = [Patch(facecolor=c, edgecolor="black", linewidth=0.4, label=lbl) for lbl, _k, c in ACCOUNTS]
     _fig2_legend(axes[0], handles, loc="upper left", bbox=(0.02, 0.98))
     fig.subplots_adjust(wspace=0.08)
