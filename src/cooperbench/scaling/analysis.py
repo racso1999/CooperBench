@@ -63,6 +63,9 @@ RUNS_CSV_FIELDS = [
     "total_steps",
     "wall_seconds",
     "agent_seconds",
+    "topology",
+    "leader_cost",
+    "leader_model",
     "score",
     "n_passed",
     "best_score",
@@ -464,6 +467,7 @@ def failure_mix(rows: list[dict]) -> dict:
         "all": mix(rows),
         "comm": mix([r for r in rows if r.get("condition") == "comm"]),
         "nocomm": mix([r for r in rows if r.get("condition") == "nocomm"]),
+        "leader": mix([r for r in rows if r.get("condition") == "leader"]),
     }
 
 

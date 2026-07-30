@@ -502,3 +502,110 @@ def test_git_experiment_end_to_end(tmp_path, monkeypatch):
     assert by_n[1] > by_n[4]  # graded score declines from the solo baseline
     result = analysis.run_analysis(rows, out)
     assert "performance_curve" in result and result["performance_curve"][1]["mean_score"] is not None
+
+
+# --- leader topology: supervised arm -----------------------------------------
+
+
+def test_leader_prompts_divide_knowledge():
+    """Leader sees all specs and the allocation mandate; workers see neither spec."""
+    from cooperbench.scaling import run_leader
+
+    specs = {2: "SPEC-TWO body", 5: "SPEC-FIVE body"}
+    lead = run_leader._leader_task_text(specs, ["agent2", "agent3"])
+    assert "SPEC-TWO body" in lead and "SPEC-FIVE body" in lead
+    assert "agent2, agent3" in lead
+    assert "coop-task-create" in lead  # allocation via the team task list
+    assert "/workspace/shared/specs/" in lead  # materialise specs for workers
+
+    worker = run_leader._worker_task_text("agent3", 2)
+    assert "SPEC-TWO body" not in worker and "SPEC-FIVE body" not in worker
+    assert "agent1" in worker  # knows who the lead is
+    assert "coop-task-list" in worker and "coop-task-claim" in worker
+
+
+def test_leader_experiment_end_to_end(tmp_path, monkeypatch):
+    """Leader sweep: condition 'leader', N counts workers, leader cost broken out."""
+    pool = pools.Pool("openai_tiktoken_task", 0, (1, 2, 3, 4))
+
+    def fake_execute_leader_cell(repo_name, task_id, features, n_workers, run_name, **kw):
+        assert kw["leader_model"] == "claude-opus-5"
+        assert kw["worker_model"] == "claude-sonnet-5"
+        leaf = tmp_path / "logs" / run_name / f"N{n_workers}_leader_r{kw['trial']}"
+        leaf.mkdir(parents=True, exist_ok=True)
+        ids = ["agent1"] + [f"agent{i}" for i in range(2, n_workers + 2)]
+        for a in ids:
+            (leaf / f"{a}.patch").write_text("")
+        return {
+            "result_data": {
+                "log_dir": str(leaf),
+                "topology": "leader",
+                "total_cost": 1.0 + 0.5 * n_workers,  # leader $1 + $0.5/worker
+                "leader_cost": 1.0,
+                "leader_model": kw["leader_model"],
+                "total_steps": 3 * n_workers,
+                "messages_sent": n_workers,
+                "git_integrated": True,
+                "duration_seconds": 90.0,
+                "agents": {a: {"duration_seconds": 80.0} for a in ids},
+            }
+        }
+
+    def fake_score_team(repo_name, task_id, feature_ids, agent_patches, **kw):
+        return {
+            "score": 1.0,
+            "n_passed": len(feature_ids),
+            "k": len(feature_ids),
+            "all_passed": True,
+            "best_score": 1.0,
+            "features": {},
+            "error": None,
+        }
+
+    monkeypatch.setattr(experiment, "execute_leader_cell", fake_execute_leader_cell)
+    monkeypatch.setattr(experiment, "score_team", fake_score_team)
+    monkeypatch.setattr(experiment, "compute_run_buckets", lambda ld, ids: {"recoverable": False, "run_total": {}})
+
+    out = tmp_path / "res"
+    rows = experiment.run_experiment(
+        [pool],
+        agents=[1, 2],
+        trials=1,
+        topology="leader",
+        leader_model="claude-opus-5",
+        logs_dir=str(tmp_path / "logs"),
+        out_dir=str(out),
+    )
+    assert {r["condition"] for r in rows} == {"leader"}  # even N=1 (leader + 1 worker)
+    assert {r["N"] for r in rows} == {1, 2}
+    r2 = next(r for r in rows if r["N"] == 2)
+    assert r2["topology"] == "leader"
+    assert r2["leader_cost"] == 1.0 and r2["dollar_cost"] == 2.0
+    assert r2["leader_model"] == "claude-opus-5"
+    assert r2["wall_seconds"] == 90.0 and r2["agent_seconds"] == 240.0  # 3 containers
+    result = analysis.run_analysis(rows, out)
+    assert "N2_leader" in result["cost_curve"] and "N2_leader" in result["time_curve"]
+
+
+def test_leader_and_flat_sweeps_compose_in_one_out_dir(tmp_path):
+    """A leader sweep into an existing flat out dir upserts, never clobbers."""
+    from cooperbench.scaling.experiment import _cell_key, _load_rows, _write_rows
+
+    rows_path = tmp_path / "rows.jsonl"
+
+    def row(n, cond, cost):
+        return {"pool_id": "p", "N": n, "condition": cond, "trial": 1, "dollar_cost": cost}
+
+    m = _load_rows(rows_path)
+    for r in (row(1, "nocomm", 0.1), row(2, "comm", 0.5)):  # flat git sweep
+        m[_cell_key(r)] = r
+    _write_rows(rows_path, m)
+    m = _load_rows(rows_path)
+    for r in (row(1, "leader", 0.8), row(2, "leader", 1.2)):  # leader sweep
+        m[_cell_key(r)] = r
+    _write_rows(rows_path, m)
+
+    final = [json.loads(line) for line in rows_path.read_text().splitlines() if line.strip()]
+    conds = {(r["N"], r["condition"]) for r in final}
+    assert len(final) == 4
+    assert (2, "comm") in conds and (2, "leader") in conds and (1, "nocomm") in conds

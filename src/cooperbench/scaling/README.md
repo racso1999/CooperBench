@@ -154,6 +154,48 @@ single trial would score as a spurious 0.
 Headline output for this mode: `performance_curve` — graded `score` (and strict
 all-pass rate) and mean cost per N — the solo→2→3→4→5 curve.
 
+## Leader topology (`--leader`)
+
+The flat arm scales by adding *peers*: the K features are dealt round-robin up
+front and the N agents negotiate integration among themselves. `--leader` runs
+the **supervised alternative** — does coordination scale better when it is
+centralised in a supervisor?
+
+- One extra **leader** container (`agent1`, `--leader-model`, default
+  `claude-opus-5`) plus N **worker** containers (`-m`, default sonnet). `--agents`
+  counts **workers**; the leader is topology overhead on top, so `leader`-N2 vs
+  flat-N2 compares the same implementation parallelism under different
+  coordination.
+- **The leader allocates.** It is the only agent that sees all K specs; there is
+  no round-robin partition. It writes each spec to
+  `/workspace/shared/specs/feature<id>.md`, assigns work through the team task
+  list (`coop-task-create --assign`, from the `team_harness`), monitors, and owns
+  the shared-git integration. Workers start spec-less and claim what they're
+  assigned. The task-list audit trail (`tasks.json` / `task_log.json` per cell +
+  `team_metrics` in `result.json`) records the allocation the leader chose.
+- Shared git is **always on** in this arm; `eval_git.score_team` scores the
+  leader's integrated tree (the leader sorts first, so it is the designated
+  integrator).
+- Cells are recorded with `condition="leader"` in their own `_leader` log tree.
+  N=1 is leader + one worker — *supervision overhead at zero parallelism* — not
+  the solo baseline; the solo anchor comes from a flat sweep. Rows carry
+  `topology`, `leader_cost` (inside `dollar_cost`, broken out), and
+  `leader_model`. Bucket *dollar* apportionment prices all tokens at the worker
+  model's rates, so treat `*_usd` buckets as approximate on mixed-model cells
+  (raw `dollar_cost` is exact — it sums each agent's real reported cost).
+
+Comparison recipe — sweep both arms into the same `--out` (rows upsert by cell,
+they never clobber), then analyse:
+
+```bash
+cooperbench scaling --git --manifest pools.json --agents 1,2,3,4 --trials 8 --out results_topo
+cooperbench scaling --leader --manifest pools.json --agents 1,2,3,4 --trials 8 --out results_topo
+cooperbench scaling --analyze-only --out results_topo
+```
+
+`cost_curve` / `time_curve` / `speedup` / `failure_mix` all key by
+`(N, condition)`, so `N3_comm` vs `N3_leader` is the direct read-out.
+
 ## Determinism & seeds
 
 The partition is structural (seed-independent). Claude Code exposes no sampling seed,

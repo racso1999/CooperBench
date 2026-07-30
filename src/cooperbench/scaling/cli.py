@@ -89,6 +89,22 @@ def add_scaling_parser(subparsers) -> None:
         help="Shared-git integration: agents merge peers on a shared repo and eval "
         "scores the single integrated tree (graded), instead of eval merging isolated patches.",
     )
+    p.add_argument(
+        "--leader",
+        action="store_true",
+        help="Leader topology: a supervisor agent (--leader-model) reads all K specs, "
+        "allocates features to the N workers via the team task list, and owns the "
+        "shared-git integration. --agents counts WORKERS (the leader is an extra "
+        "container on top); cells are recorded with condition 'leader'. Sweep this "
+        "into the same --out as a flat --git sweep to compare the two topologies.",
+    )
+    p.add_argument(
+        "--leader-model",
+        dest="leader_model",
+        default=experiment.DEFAULT_LEADER_MODEL,
+        help=f"Model for the leader agent in --leader mode (default {experiment.DEFAULT_LEADER_MODEL}); "
+        "workers use -m.",
+    )
     p.add_argument("--redis", default="redis://localhost:6379")
     p.add_argument("--agent-config", default=None)
     p.add_argument("--timeout", type=int, default=600)
@@ -209,10 +225,12 @@ def scaling_command(args) -> None:
         sys.exit(1)
 
     seeds = [int(s) for s in args.seeds.split(",")] if args.seeds else [args.seed]
-    conditions = _conditions(args)
+    topology = experiment.LEADER_CONDITION if getattr(args, "leader", False) else "flat"
+    conditions = (experiment.LEADER_CONDITION,) if topology == experiment.LEADER_CONDITION else _conditions(args)
     console.print(
         f"[bold]scaling[/bold] pools={len(pool_list)} agents={agents} conditions={conditions} "
         f"trials={args.trials} seeds={seeds}"
+        + (f" leader_model={args.leader_model}" if topology == experiment.LEADER_CONDITION else "")
     )
 
     all_rows: list[dict] = []
@@ -235,6 +253,8 @@ def scaling_command(args) -> None:
             timeout=args.timeout,
             run_independent=not args.no_independent,
             git_enabled=args.git,
+            topology=topology,
+            leader_model=args.leader_model,
         )
         all_rows.extend(rows)
 

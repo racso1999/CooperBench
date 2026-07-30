@@ -28,10 +28,12 @@ from cooperbench.scaling.eval_nway import test_merged_nway
 from cooperbench.scaling.partition import partition_features
 from cooperbench.scaling.pools import Pool
 from cooperbench.scaling.pricing import apportion_bucket_dollars
+from cooperbench.scaling.run_leader import DEFAULT_LEADER_MODEL, execute_leader_cell
 from cooperbench.scaling.run_partitioned import execute_partitioned
 from cooperbench.utils import console
 
 DEFAULT_CONDITIONS = ("comm", "nocomm")
+LEADER_CONDITION = "leader"
 
 
 def _run_and_eval_cell(
@@ -54,38 +56,71 @@ def _run_and_eval_cell(
     timeout: int,
     run_independent: bool,
     git_enabled: bool = False,
+    topology: str = "flat",
+    leader_model: str = DEFAULT_LEADER_MODEL,
 ) -> dict:
     """Launch one cell, evaluate it, derive buckets → one flat row.
 
     ``git_enabled`` selects the eval model: **shared-git** (agents integrate their
     own work; score the single integrated tree, graded) vs the legacy **N-way
     merge** (eval merges isolated patches).
-    """
-    assignment = partition_features(pool.features, n_agents, policy=partition_policy)
 
-    run = execute_partitioned(
-        repo_name=pool.repo,
-        task_id=pool.task_id,
-        assignment=assignment,
-        run_name=_cell_run_name(pool, git_enabled),
-        condition=condition,
-        trial=trial,
-        seed=seed,
-        pool_id=pool.pool_id,
-        agent_name=agent_name,
-        model_name=model_name,
-        redis_url=redis_url,
-        message_schema=message_schema,
-        git_enabled=git_enabled,
-        force=force,
-        backend=backend,
-        agent_config=agent_config,
-        dataset_dir=dataset_dir,
-        logs_dir=logs_dir,
-    )
-    result_data = run.get("result_data") or run  # skipped path returns result.json inline
-    log_dir = Path(result_data["log_dir"])
-    agent_ids = sorted(assignment)
+    ``topology="leader"`` runs the supervised arm instead of the flat partition:
+    a leader container (``leader_model``) reads all K specs and allocates them
+    to ``n_agents`` workers (``model_name``) via the team task list; integration
+    happens over shared git and the leader's integrated tree is scored.
+    """
+    if topology == LEADER_CONDITION:
+        run = execute_leader_cell(
+            repo_name=pool.repo,
+            task_id=pool.task_id,
+            features=list(pool.features),
+            n_workers=n_agents,
+            run_name=_cell_run_name(pool, git_enabled, topology),
+            condition=condition,
+            trial=trial,
+            seed=seed,
+            pool_id=pool.pool_id,
+            agent_name=agent_name,
+            leader_model=leader_model,
+            worker_model=model_name,
+            redis_url=redis_url,
+            force=force,
+            backend=backend,
+            agent_config=agent_config,
+            dataset_dir=dataset_dir,
+            logs_dir=logs_dir,
+        )
+        result_data = run.get("result_data") or run  # skipped path returns result.json inline
+        log_dir = Path(result_data["log_dir"])
+        agent_ids = sorted(result_data.get("agents", {}))  # leader + workers
+        git_enabled = True  # the leader's merged tree is the scored artifact
+        assignment = {}  # the leader allocated; never used (git eval path only)
+    else:
+        assignment = partition_features(pool.features, n_agents, policy=partition_policy)
+        run = execute_partitioned(
+            repo_name=pool.repo,
+            task_id=pool.task_id,
+            assignment=assignment,
+            run_name=_cell_run_name(pool, git_enabled),
+            condition=condition,
+            trial=trial,
+            seed=seed,
+            pool_id=pool.pool_id,
+            agent_name=agent_name,
+            model_name=model_name,
+            redis_url=redis_url,
+            message_schema=message_schema,
+            git_enabled=git_enabled,
+            force=force,
+            backend=backend,
+            agent_config=agent_config,
+            dataset_dir=dataset_dir,
+            logs_dir=logs_dir,
+        )
+        result_data = run.get("result_data") or run  # skipped path returns result.json inline
+        log_dir = Path(result_data["log_dir"])
+        agent_ids = sorted(assignment)
 
     # Idempotent eval: runs in a Docker sandbox, so re-deriving on resume is
     # expensive.  Reuse a cached eval.json unless --force.
@@ -208,6 +243,11 @@ def _assemble_row(
         # time (seconds; agent phase only, eval excluded)
         "wall_seconds": wall_seconds if wall_seconds is not None else "",
         "agent_seconds": agent_seconds if agent_seconds is not None else "",
+        # topology (leader arm: N counts workers; leader cost is inside
+        # dollar_cost and also broken out here as the supervision overhead)
+        "topology": result_data.get("topology", "flat"),
+        "leader_cost": result_data.get("leader_cost", ""),
+        "leader_model": result_data.get("leader_model", ""),
         # outcome — graded performance is the headline for the git experiment
         "score": score,
         "n_passed": n_passed,
@@ -229,15 +269,19 @@ def _assemble_row(
     }
 
 
-def _cell_run_name(pool: Pool, git_enabled: bool = False) -> str:
+def _cell_run_name(pool: Pool, git_enabled: bool = False, topology: str = "flat") -> str:
     """A stable run-name so re-invocation resumes (skips) completed cells.
 
     The git vs merge eval model gets its own log-dir tree (``_git`` suffix), so a
     shared-git run never reuses an isolated-patch run's cached cells (they produce
-    fundamentally different agent artifacts).
+    fundamentally different agent artifacts).  The leader topology likewise gets
+    its own ``_leader`` tree.
     """
     feats = "_".join(f"f{f}" for f in pool.features)
-    suffix = "_git" if git_enabled else ""
+    if topology == LEADER_CONDITION:
+        suffix = "_leader"
+    else:
+        suffix = "_git" if git_enabled else ""
     return f"scaling_{pool.repo}_task{pool.task_id}_{feats}{suffix}"
 
 
@@ -296,6 +340,33 @@ def screen_pools(
     return qualified
 
 
+def _cell_key(row: dict) -> tuple:
+    """Stable identity of a run cell — used to upsert/dedup rows across sweeps."""
+    return (row["pool_id"], row["N"], row["condition"], row["trial"])
+
+
+def _row_sort_key(row: dict) -> tuple:
+    return (row["pool_id"], row["N"], row["condition"], row["trial"])
+
+
+def _load_rows(rows_path: Path) -> dict[tuple, dict]:
+    """Load an existing rows.jsonl into a {cell_key: row} map (last wins)."""
+    merged: dict[tuple, dict] = {}
+    if rows_path.exists():
+        for line in rows_path.read_text().splitlines():
+            if line.strip():
+                r = json.loads(line)
+                merged[_cell_key(r)] = r
+    return merged
+
+
+def _write_rows(rows_path: Path, merged: dict[tuple, dict]) -> None:
+    """Rewrite rows.jsonl from the merged map, deterministically ordered."""
+    with rows_path.open("w") as fh:
+        for r in sorted(merged.values(), key=_row_sort_key):
+            fh.write(json.dumps(r) + "\n")
+
+
 def run_experiment(
     pools: list[Pool],
     *,
@@ -316,52 +387,66 @@ def run_experiment(
     timeout: int = 600,
     run_independent: bool = True,
     git_enabled: bool = False,
+    topology: str = "flat",
+    leader_model: str = DEFAULT_LEADER_MODEL,
     force: bool = False,
 ) -> list[dict]:
     """Sweep every ``(pool, N, condition, trial)`` cell; return + persist rows.
 
-    Rows are streamed to ``<out_dir>/rows.jsonl`` as they complete (so a long
-    sweep is crash-resilient) and returned in full.  ``analysis.py`` turns them
-    into ``runs.csv`` + the fits.
+    ``topology="leader"`` sweeps the supervised arm: every cell runs with
+    condition ``"leader"`` (a leader on ``leader_model`` allocating to N workers
+    on ``model_name``, shared-git always on) — including N=1, which is leader +
+    one worker, NOT the solo baseline; the solo anchor comes from a flat sweep
+    into the same ``out_dir``.
+
+    Rows accumulate in ``<out_dir>/rows.jsonl`` across invocations, upserted by
+    (pool, N, condition, trial) — so flat and leader sweeps into the same out
+    dir compose into one comparable dataset instead of clobbering each other.
+    The deduped file is rewritten after every cell (crash-resilient).
+    ``analysis.py`` turns the rows into ``runs.csv`` + the fits.
     """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     rows_path = out / "rows.jsonl"
-    rows: list[dict] = []
+    merged = _load_rows(rows_path)
 
-    with rows_path.open("w") as fh:
-        for pool in pools:
-            for n_agents in agents:
-                if n_agents > pool.k:
-                    console.print(f"[yellow]skip[/yellow] {pool.pool_id}: N={n_agents} > K={pool.k}")
-                    continue
+    for pool in pools:
+        for n_agents in agents:
+            if n_agents > pool.k:
+                console.print(f"[yellow]skip[/yellow] {pool.pool_id}: N={n_agents} > K={pool.k}")
+                continue
+            if topology == LEADER_CONDITION:
+                # Leader arm: one condition; N counts workers (leader on top).
+                cell_conditions: tuple[str, ...] = (LEADER_CONDITION,)
+            else:
                 # N=1 is the solo baseline the whole curve anchors on: it has no
-                # peers, so it runs exactly once (labelled nocomm) regardless of the
-                # requested conditions.  N>=2 runs each requested condition.
+                # peers, so it runs exactly once (labelled nocomm) regardless of
+                # the requested conditions.  N>=2 runs each requested condition.
                 cell_conditions = ("nocomm",) if n_agents == 1 else conditions
-                for condition in cell_conditions:
-                    for trial in range(1, trials + 1):
-                        row = _run_and_eval_cell(
-                            pool,
-                            n_agents,
-                            condition,
-                            trial,
-                            seed=seed,
-                            partition_policy=partition_policy,
-                            agent_name=agent_name,
-                            model_name=model_name,
-                            redis_url=redis_url,
-                            message_schema=message_schema,
-                            backend=backend,
-                            agent_config=agent_config,
-                            dataset_dir=dataset_dir,
-                            logs_dir=logs_dir,
-                            force=force,
-                            timeout=timeout,
-                            run_independent=run_independent,
-                            git_enabled=git_enabled,
-                        )
-                        rows.append(row)
-                        fh.write(json.dumps(row) + "\n")
-                        fh.flush()
-    return rows
+            for condition in cell_conditions:
+                for trial in range(1, trials + 1):
+                    row = _run_and_eval_cell(
+                        pool,
+                        n_agents,
+                        condition,
+                        trial,
+                        seed=seed,
+                        partition_policy=partition_policy,
+                        agent_name=agent_name,
+                        model_name=model_name,
+                        redis_url=redis_url,
+                        message_schema=message_schema,
+                        backend=backend,
+                        agent_config=agent_config,
+                        dataset_dir=dataset_dir,
+                        logs_dir=logs_dir,
+                        force=force,
+                        timeout=timeout,
+                        run_independent=run_independent,
+                        git_enabled=git_enabled,
+                        topology=topology,
+                        leader_model=leader_model,
+                    )
+                    merged[_cell_key(row)] = row
+                    _write_rows(rows_path, merged)  # keep the file complete on crash
+    return sorted(merged.values(), key=_row_sort_key)
