@@ -263,41 +263,45 @@ def figure3b(recs):
 # it provokes). The label on the warm cap is that tax's share of the run.
 def figure3c(accts):
     dec = calc6_accounts(accts)
-    panels = [("flat", "Flat peers"), ("leader", "Supervised")]
-    ymax = max(v["total"] for v in dec.values()) * 1.16
-
-    fig, axes = plt.subplots(1, 2, figsize=(5.6, 3.3), sharey=True)
-    for ax, (arm, title) in zip(axes, panels):
-        xs = sorted(n for (a, n) in dec if a == arm)
-        bottoms = {n: 0.0 for n in xs}
+    sizes = sorted({n for _, n in dec})
+    w = 0.38
+    # A fine cross-hatch marks the supervised arm. hatch.linewidth is global in
+    # matplotlib, so set it here and restore afterwards; 0.25 keeps the mesh
+    # readable as a texture without competing with the account fills the way
+    # the default-weight diagonal hatch did.
+    prev_hlw = plt.rcParams.get("hatch.linewidth", 1.0)
+    plt.rcParams["hatch.linewidth"] = 0.25
+    fig, ax = plt.subplots(figsize=(4.4, 3.3))
+    for off, arm, hatch in ((-w / 2 - 0.02, "flat", None), (w / 2 + 0.02, "leader", "++")):
+        xs, bottoms = [], {}
+        for n in sizes:
+            if (arm, n) in dec:
+                xs.append(n); bottoms[n] = 0.0
         for _label, key, colour in ACCOUNTS:
             hs = [dec[(arm, n)][key] for n in xs]
-            ax.bar(xs, hs, bottom=[bottoms[n] for n in xs], width=0.62,
-                   color=colour, edgecolor="black", linewidth=0.4, zorder=3)
+            ax.bar([x + off for x in xs], hs, bottom=[bottoms[n] for n in xs], width=w,
+                   color=colour, edgecolor="black", linewidth=0.4, zorder=3, hatch=hatch)
             for n, h in zip(xs, hs):
                 bottoms[n] += h
         for n in xs:
             tot = dec[(arm, n)]["total"]
-            ax.annotate(f"${tot:.2f}", (n, tot), textcoords="offset points", xytext=(0, 3),
-                        ha="center", va="bottom", fontsize=4.4, color="black", fontname="Helvetica")
+            ax.annotate(f"${tot:.2f}", (n + off, tot), textcoords="offset points", xytext=(0, 2),
+                        ha="center", va="bottom", fontsize=4.0, color="black", fontname="Helvetica")
             cap = dec[(arm, n)]["comm"] + dec[(arm, n)]["rework"]
             if cap > 0:
-                ax.annotate(f"{dec[(arm, n)]['comm_rework_share']*100:.0f}%", (n, tot - cap / 2),
-                            ha="center", va="center", fontsize=4.6, color=INK, fontweight="bold",
+                ax.annotate(f"{dec[(arm, n)]['comm_rework_share']*100:.0f}%", (n + off, tot - cap / 2),
+                            ha="center", va="center", fontsize=4.2, color="#3d1c0a", fontweight="bold",
                             fontname="Helvetica",
-                            bbox=dict(boxstyle="round,pad=0.16", fc="white", ec="none", alpha=0.75))
-        ax.set_ylim(0, ymax)
-        _fig2_chrome(fig, ax, sorted({n for (_a, n) in dec}), "US dollars")
-        ax.set_title(title, fontsize=5.6, color="black", fontname="Charter", pad=3)
-    axes[1].set_ylabel("")  # shared axis: label once, on the left
-    # One centred x-label for the pair rather than the same words twice.
-    for ax in axes:
-        ax.set_xlabel("")
-    fig.supxlabel("Agent count  N", fontsize=5.3, color="black", fontname="Charter", y=0.02)
+                            bbox=dict(boxstyle="round,pad=0.14", fc="white", ec="none", alpha=0.75))
+    ax.set_ylim(0, max(v["total"] for v in dec.values()) * 1.16)
     handles = [Patch(facecolor=c, edgecolor="black", linewidth=0.4, label=lbl) for lbl, _k, c in ACCOUNTS]
-    _fig2_legend(axes[0], handles, loc="upper left", bbox=(0.02, 0.98))
-    fig.subplots_adjust(wspace=0.08)
-    return _save(fig, "fig3c_accounts_topology.png", facecolor="white")
+    handles += [Patch(facecolor="white", edgecolor="black", linewidth=0.4, label="Flat peers"),
+                Patch(facecolor="white", edgecolor="black", linewidth=0.4, hatch="++", label="Supervised")]
+    _fig2_chrome(fig, ax, sizes, "US dollars")
+    _fig2_legend(ax, handles, loc="upper left", bbox=(0.02, 0.98))
+    out = _save(fig, "fig3c_accounts_topology.png", facecolor="white")
+    plt.rcParams["hatch.linewidth"] = prev_hlw
+    return out
 
 
 # =========================================================================
