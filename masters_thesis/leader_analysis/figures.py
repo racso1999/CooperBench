@@ -14,6 +14,7 @@ helpers from figures.py so this suite matches fig 2a-2e exactly.
 Run:  python3 figures_leader.py     # writes figures/fig3*.png next to this file
 """
 
+import colorsys
 import os
 import sys
 
@@ -131,6 +132,23 @@ def _fig2_legend(ax, handles=None, loc="lower left", bbox=(0.03, 0.04)):
 # floor and reads gray in isolation.
 FLAT = "#1b7ba0"    # flat peer topology
 LEADER = "#b01e28"  # supervised topology
+# fig2c tints its markers within ONE hue so a series reads as a single colour
+# while brightness tracks the value. Same helper, purple instead of the flat
+# study's green, so the supervised efficiency figure is instantly separable
+# from its sibling. Validated: L in band, chroma above floor, contrast 5.0-6.5
+# on white across the range.
+LEAD_EFF_HUE = 0.78  # purple — fig3e efficiency markers
+
+
+def _norm(v, lo, hi):
+    return max(0.0, min(1.0, (v - lo) / (hi - lo))) if hi > lo else 1.0
+
+
+def _mono_shade(v, hue, lo, hi):
+    t = _norm(v, lo, hi)
+    return colorsys.hsv_to_rgb(hue, 0.45 + 0.45 * t, 0.55 + 0.40 * t)
+
+
 # fig2d's four-account ramp, reused verbatim so fig3c reads as its sibling:
 # cool = the base work you would pay anyway, warm = the coordination tax.
 ACCOUNTS = [("Context", "context", "#cfe6ef"), ("Task", "task", "#1b7ba0"),
@@ -339,6 +357,48 @@ def figure3d(recs):
     return _save(fig, "fig3d_wallclock_topology.png", facecolor="white")
 
 
+# =========================================================================
+# FIGURE 3e — efficiency vs team size, SUPERVISED arm alone
+# =========================================================================
+# The direct counterpart of fig2c (which does this for flat peers, in green):
+# linear axes, so the collapse reads as the curve it is rather than the
+# straight line log-log turns it into. Purple markers separate it at a glance
+# from its flat-study sibling. fig3a keeps the two arms together on log-log,
+# where the exponents are slopes and the crossover is visible; this figure is
+# the single-arm shape.
+def figure3e(recs):
+    agg = calc1_aggregate(recs)
+    eff = calc2_efficiency(agg)
+    pl = calc3_power_law(eff, "leader")
+    ns = [n for n, _ in pl["points"]]
+    effv = [e for _, e in pl["points"]]
+    a, b = pl["a"], pl["b"]
+
+    fig, ax = plt.subplots(figsize=(3.7, 3.3))
+    xfit = np.linspace(min(ns), max(ns), 100)
+    ax.plot(xfit, a * xfit ** (-b), "--", color="0.45", lw=1.0, zorder=2)
+    # one hue (purple); markers fade with the collapse but read as one series
+    lo, hi = min(effv), max(effv)
+    cvals = [_mono_shade(e, LEAD_EFF_HUE, lo, hi) for e in effv]
+    ax.scatter(ns, effv, s=44, marker="o", zorder=3, linewidths=0.3,
+               edgecolors="black", c=cvals)
+    for x, y in zip(ns, effv):
+        ax.annotate(f"{y:.2f}", (x, y), textcoords="offset points", xytext=(7, 3),
+                    ha="left", fontsize=4.7, color="black", fontname="Helvetica")
+    ax.set_ylim(0, max(effv) * 1.15)
+    handles = [
+        Line2D([0], [0], color="0.45", lw=1.0, ls="--",
+               label=f"${a:.2f}\\,N^{{-{b:.1f}}}$"),
+        Line2D([0], [0], color="black", lw=0, marker="o", markersize=6,
+               markerfacecolor=_mono_shade(hi, LEAD_EFF_HUE, lo, hi),
+               markeredgecolor="black", markeredgewidth=0.3,
+               label="Efficiency (solved / \\$)"),
+    ]
+    _fig2_chrome(fig, ax, ns, "Work solved per dollar")
+    _fig2_legend(ax, handles)
+    return _save(fig, "fig3e_efficiency_supervised.png", facecolor="white")
+
+
 def main():
     os.makedirs(OUTDIR, exist_ok=True)
     _style()
@@ -348,6 +408,7 @@ def main():
     print(f"  wrote {figure3b(recs)}")
     print(f"  wrote {figure3c(load_accounts())}")
     print(f"  wrote {figure3d(recs)}")
+    print(f"  wrote {figure3e(recs)}")
 
 
 if __name__ == "__main__":

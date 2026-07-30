@@ -25,7 +25,10 @@ paired flat-vs-leader comparison on identical pools.
   rework) that sum exactly to that run's total.
 - `data/pools.json` — the 14-pool manifest both arms were run on.
 - `analyze.py` — computes Calculations L1-L7. Run: `python3 analyze.py`
-- `figures.py` — writes `figures/fig3a..3d.png`. Run: `python3 figures.py`
+- `figures.py` — writes `figures/fig3a..3e.png`. Run: `python3 figures.py`
+  (3a puts both arms on log-log, where a power law is a straight line and the
+  crossover is visible; 3e is the supervised arm alone on linear axes, the
+  direct counterpart of the flat study's fig2c, so the collapse reads as a curve.)
 - `explanation.txt` — what each of L1-L7 does and why.
 - Write-up: `../../supervisor.md`.
 
