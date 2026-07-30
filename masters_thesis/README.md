@@ -32,7 +32,7 @@ and the correctness trends run in opposite directions.
   14 pools), prints Calculations L1–L7.
 - `figures.py` → `figures/fig3a_efficiency_topology.png`, `fig3b_correctness_topology.png`,
   `fig3c_accounts_topology.png`, `fig3d_wallclock_topology.png`.
-- Paper: `../paper.md` (Study 3).
+- Paper: `../supervisor.md`.
 
 ```bash
 uv run python masters_thesis/leader_analysis/analyze.py

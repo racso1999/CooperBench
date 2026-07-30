@@ -27,6 +27,7 @@ paired flat-vs-leader comparison on identical pools.
 - `analyze.py` — computes Calculations L1-L7. Run: `python3 analyze.py`
 - `figures.py` — writes `figures/fig3a..3d.png`. Run: `python3 figures.py`
 - `explanation.txt` — what each of L1-L7 does and why.
+- Write-up: `../../supervisor.md`.
 
 **Team-size convention.** The leader is a real agent that costs real money and
 real time, so a leader run with N workers is reported at **N+1 agents**. This is
