@@ -91,7 +91,10 @@ def _fig2_chrome(fig, ax, ns, ylabel):
     look dialled in on fig2a. Axis labels use Charter; everything else (ticks,
     legend, value labels) stays in the crisp sans default."""
     ax.set_ylabel(ylabel, fontsize=5.3, labelpad=0, color="black", fontname="Charter")
-    ax.set_xlabel("Agent count  N", fontsize=5.3, labelpad=-3, color="black",
+    # labelpad: the fig2 suite tucks this to -3, which collides with the tick
+    # labels on the fig3 axes (log scale on 3a, paired bars on 3c). +2 across
+    # the whole fig3 suite keeps it clear and internally consistent.
+    ax.set_xlabel("Agent count  N", fontsize=5.3, labelpad=2, color="black",
                   fontname="Charter")
     ax.set_xticks(ns)
     ax.tick_params(axis="both", labelsize=5, labelcolor="black", color="black",
