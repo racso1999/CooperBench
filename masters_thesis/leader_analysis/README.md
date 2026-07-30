@@ -30,6 +30,9 @@ paired flat-vs-leader comparison on identical pools.
   crossover is visible; 3e is the supervised arm alone on linear axes, the
   direct counterpart of the flat study's fig2c, so the collapse reads as a curve.)
 - `explanation.txt` — what each of L1-L7 does and why.
+- `figures_explained.md` — per-figure reference for anyone (or any model)
+  using the figures without reading the analysis: what each plots, the values
+  on it, the one claim it licenses, and what it does *not* show.
 - Write-up: `../../supervisor.md`.
 
 **Team-size convention.** The leader is a real agent that costs real money and
