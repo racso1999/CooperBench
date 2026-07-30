@@ -270,9 +270,9 @@ def figure3c(accts):
     # readable as a texture without competing with the account fills the way
     # the default-weight diagonal hatch did.
     prev_hlw = plt.rcParams.get("hatch.linewidth", 1.0)
-    plt.rcParams["hatch.linewidth"] = 0.25
+    plt.rcParams["hatch.linewidth"] = 0.12
     fig, ax = plt.subplots(figsize=(4.4, 3.3))
-    for off, arm, hatch in ((-w / 2 - 0.02, "flat", None), (w / 2 + 0.02, "leader", "++")):
+    for off, arm, hatch in ((-w / 2 - 0.02, "flat", None), (w / 2 + 0.02, "leader", "+++++")):
         xs, bottoms = [], {}
         for n in sizes:
             if (arm, n) in dec:
@@ -296,7 +296,7 @@ def figure3c(accts):
     ax.set_ylim(0, max(v["total"] for v in dec.values()) * 1.16)
     handles = [Patch(facecolor=c, edgecolor="black", linewidth=0.4, label=lbl) for lbl, _k, c in ACCOUNTS]
     handles += [Patch(facecolor="white", edgecolor="black", linewidth=0.4, label="Flat peers"),
-                Patch(facecolor="white", edgecolor="black", linewidth=0.4, hatch="++", label="Supervised")]
+                Patch(facecolor="white", edgecolor="black", linewidth=0.4, hatch="+++++", label="Supervised")]
     _fig2_chrome(fig, ax, sizes, "US dollars")
     _fig2_legend(ax, handles, loc="upper left", bbox=(0.02, 0.98))
     out = _save(fig, "fig3c_accounts_topology.png", facecolor="white")
