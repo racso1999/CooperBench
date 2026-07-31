@@ -1,0 +1,840 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%                                                                     %
+%    LateX template for UG final report                               %
+%    S.S. Oyelere
+%    Feb 2025
+%    University of Exeter                                             %
+%                                                                     %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{geometry}
+\usepackage{graphicx}
+\usepackage{fancyhdr}
+\usepackage{setspace}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{multirow}
+\usepackage{titlesec}
+\usepackage{placeins}
+\usepackage[font=footnotesize]{caption}
+
+% set table of content depth
+\setcounter{tocdepth}{3}
+\usepackage[titles]{tocloft}
+
+% set spacing
+\setlength{\cftbeforesecskip}{10pt}
+
+% Page layout settings
+\geometry{
+    a4paper,
+    left=20mm,
+    right=20mm,
+    top=25mm,
+    bottom=25mm
+}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\begin{document}
+\singlespacing  % Set the document to single line spacing
+\thispagestyle{empty} % remove page number for the cover page
+
+\begin{center}
+{\bf \LARGE The Communication Tax: Isolating and Scaling the Coordination Costs of Multi-Agent LLM Coding Systems}\\[0.5cm]
+    \textbf{Your Name} \\[0.2cm]
+    \textbf{Student ID:} 1234567890 \\[1cm]
+    % \textbf{Email:} youremail@exeter.ac.uk \\[1cm]
+\end{center}
+
+\section*{Abstract}
+
+\noindent
+Multi-agent LLM systems promise the parallelism and division of labour of human teams, but whether coding agents can actually coordinate on shared codebases is largely untested. We first replicate CooperBench's ``curse of coordination'' on our own infrastructure with a stronger, paired design: on 46 matched feature pairs with an identical model (Claude Sonnet 5), a solo agent's pass rate of 44.2\% falls to 12.3\% when two agents must coordinate via free-text messaging (Wilcoxon $p < .001$). Per-feature evaluation localises the gap: paired agents pass their own feature's held-out suite exactly as often as solo agents (21/47 vs 20/47), and every jointly-failed pair that was individually solvable was lost to a textual merge conflict. Normalising for computational effort widens the gap further, from 3.6-fold in pass rate to 6.3-fold in passes per dollar. We then extend the benchmark into a controlled scaling study: a solo-achievable workload of $K$ mutually conflicting features is held fixed while only the team size $N \in \{1, 2, 3, 4\}$ varies, with integration performed by the agents themselves. Adding agents buys no correctness. The strict all-pass rate falls monotonically from 89\% to 69\% --- while cost rises faster than the work is divided, so efficiency collapses as a power law, $\approx 1.28 \cdot N^{-1.61}$, reaching ${\sim}10\%$ of the solo value at four agents. The collapse is universal across all fourteen task pools, including those that integrate perfectly at every $N$. Finally, we test whether hierarchy escapes this tax: replacing the flat peer topology with a supervisor--worker one --- a leader that plans the decomposition, allocates features, and performs the integration itself --- makes small teams costlier and slower, but changes the scaling exponent rather than the level. Supervised efficiency falls as $0.65 \cdot N^{-1.09}$, essentially the $1/N$ floor, so the two curves cross at ${\approx}3.7$ agents, and the correctness trend reverses from falling (89\% $\rightarrow$ 69\%) to rising (77\% $\rightarrow$ 88\%). Coordination overhead in agentic software development is thus super-proportional in team size under the standard peer topology: a composite tax whose message-independent floor --- the redundant context each agent must load --- is paid before any message is sent, with messaging and the rework it triggers adding roughly a third more on top. Hierarchy does not remove the tax, but it trades its level for its slope.
+
+%
+\newpage
+\thispagestyle{empty}
+\section*{Declaration}
+I acknowledge the following uses of GenAI tools in this assessment:
+
+
+\begin{itemize}[label={\ $\square$\ }, leftmargin=*]
+
+% To tick the boxes, set the label value as follows
+% \begin{itemize}[label={\ $\text{\rlap{$\checkmark$}}\square$\ }, leftmargin=*]
+
+  \item I have used GenAI tools to:
+  \begin{itemize}[label={\ $\square$\ }, leftmargin=*]
+    \item develop ideas.
+    \item assist with research or gathering information.
+    \item help me understand key theories and concepts.
+    \item identify trends and themes as part of my data analysis.
+    \item suggest a plan or structure for my assessment.
+    \item give me feedback on a draft.
+    \item generate images, figures or diagrams.
+    \item proofread and correct grammar or spelling errors.
+    \item generate citations or references.
+    \item Other: [please specify]
+    \item[]
+  \end{itemize}
+
+  \item I have not used any GenAI tools in preparing this assessment.
+\end{itemize}
+
+\bigskip
+I declare that I have referenced all use of GenAI outputs within my assessment in line with the University referencing guidelines.
+
+\vspace{1em}
+I certify that all material in this dissertation which is not my own has been identified.
+
+\vspace{5em}
+{\bf\noindent Signature:} \hrulefill
+\newpage
+
+
+% table of contents
+\tableofcontents
+\thispagestyle{empty}
+\newpage
+
+% reset page number
+\clearpage
+\pagenumbering{arabic}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
+%    Introduction
+%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Introduction}
+
+A large language model (LLM) is, at its core, a stateless predictor. Built on the transformer architecture, when given a sequence of text, it outputs the most likely continuation, token by token, and retains no memory of one call to the next~\cite{vaswani2017attention}. An AI agent is what emerges when this stateless predictor is wrapped in a loop: the model is given tools (a shell, a file editor, a messaging channel), its outputs are executed against a real environment, and the results are fed back into its context. This construction turns a next-token predictor into a system that can pursue multi-step goals: reading a codebase, editing files, running tests.
+
+Once one agent works, the appeal of several is obvious, and multi-agent systems have risen in popularity accordingly. The intuition borrows directly from human organisations: divide the work, and let them collaborate. In theory, several agents should deliver the parallelism and division of labour that a single context-limited agent cannot. Frameworks built on this premise have proliferated, from conversational multi-agent toolkits such as AutoGen~\cite{wu2023autogen} to software-company simulations such as MetaGPT~\cite{hong2023metagpt} and ChatDev~\cite{qian2024chatdev}, which cast agents as product managers, engineers, and testers cooperating through structured conversations. The premise is seductive because each agent brings its own context window and its own working environment, so a team appears to scale where a single agent saturates.
+
+What this intuition quietly assumes, however, is that dividing the work produces a meaningful outcome. For software engineering specifically, that assumption is largely untested, and the evidence that does exist points the other way. In ``CooperBench: Why Coding Agents Cannot be Your Teammates Yet''~\cite{khatua2026cooperbench}, the authors found that solo agents were far better at solving coding-based tasks than their two- or multi-agent counterparts.
+
+Intuitively, this makes sense. To crudely understand the issue, imagine a single machine is told to complete a task: it is given a fixed compute budget and unlimited time. Now split the compute budget across two machines and give the machines a method of communication. One can ascertain that even if communication were free and 100\% effective, we would still expect worse performance: each machine must independently load and hold the shared context the single machine held once, so the total compute spent exceeds the original budget before a single message is exchanged. Add the real cost of communication --- which is neither free nor perfectly efficient --- and the gap widens further. We refer to this compound overhead, as the ``communication tax''.
+
+Why then, one might ask, would we even consider improving a system that is doomed to fail? The answer is that, despite multi-agent systems at times not being as efficient as their solo counterparts, they may at times be more useful. For example, multi-agent systems may be useful when there are two agents with contrasting functionality. Or take, for example, a scenario where agents autonomously look after certain parts of a system. Perhaps there are a few lines where their working boundaries overlap, or their functions are called within another agent's working environment. At times, agents will be forced to work together, and when they do, we want to ensure that they can do so to their maximum capability and, efficiently.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
+%    Hypothesis
+%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Hypothesis}
+
+This paper aims to isolate the failures of multi-agent systems and, through our findings, suggest protocol, architecture, or schema changes that can be applied to preexisting multi-agent systems. We hypothesise that multi-agent systems will typically underperform their solo-agent counterparts on tasks solvable by a single agent — primarily due to communication overhead that grows as systems scale — but that focused protocol changes can significantly reduce this gap. To test this, we measure the increasing communication cost when scaling from a solo agent to 4 agents using CooperBench as our primary benchmarking suite, and evaluate whether targeted protocol interventions recover performance.
+
+\section{Solo vs Pair}
+
+``CooperBench: Why Coding Agents Cannot be Your Teammates Yet''~\cite{khatua2026cooperbench} introduces a comprehensive benchmarking suite that isolates communication failures in multi-agent systems. CooperBench is a benchmark that tests whether two LLM coding agents can work in parallel on the same codebase. The paper's headline finding is the ``curse of coordination'' --- agents average ${\sim}30\%$ lower success working together than one agent doing both tasks alone. CooperBench works by spinning up two isolated containerised environments from which agents work within. Each agent is given a spec, access to its own copy of the code base and a tool to message with the other agent. (This can be from 1, up to a whole team of agents). The agents are then tasked with individually implementing their own features.
+
+CooperBench provides a built-in evaluation pipeline, applied automatically as each task pair completes. Evaluation takes place in a fresh container, isolated from the agents' working environments. Any modifications to test files are first stripped from the submitted patches, preventing agents from passing by altering the grading tests. Each patch is then applied to its own branch off of the base commit, and the two branches are naively merged (\texttt{git merge}, with no conflict-resolution fallback). If the merge is clean, each feature's test suite is run against the merged tree. A pair succeeds (\texttt{both\_passed}) only if both suites pass; a conflicted merge fails outright.
+
+Preliminary (pilot) tests were run to determine a suitable model for our experiments. Problems to consider were cost, individual model capability, and token throughput. \texttt{claude-sonnet-5} was ultimately selected.
+
+To establish that the coordination gap reported by CooperBench reproduces, the 50-pair flash subset was run under two conditions with an identical model (Claude Sonnet 5): a solo condition, in which a single agent implements both features of a pair, and a cooperative condition, in which two isolated agents implement one feature each and may exchange free-text messages. Because both conditions run on the same feature pairs, the comparison is paired at the pair level, removing task difficulty as a confound.
+
+It is important to state here that ``free-msg'' is not necessarily a blank canvas. In the free-messaging condition, each agent's instruction is composed of three parts, separated in a single prompt: (1) the feature specification (the agent's own \texttt{feature.md}, never the partner's); (2) a submission protocol instructing the agent to write its final unified diff to \texttt{patch.txt} before exiting; and (3) a cooperation protocol block that names the partner, warns that features may overlap, and documents the messaging commands. ``Free'' refers to the message content: it is unconstrained plain text, with no required fields, no message types, and no validation. The cooperation block is reproduced verbatim below (as rendered for agent1).
+
+\begin{quote}
+\footnotesize
+\begin{verbatim}
+## Cooperation protocol
+
+You are **agent1**, working alongside: **agent2**.
+Each agent has been assigned a separate feature from the same codebase;
+your features may overlap (touch the same files), so coordinate to avoid
+clobbering each other's changes.
+
+Available shell commands for cross-agent messaging (Redis-backed inbox,
+one inbox per agent):
+
+    coop-send <recipient> "message text here"   # send to a specific peer
+    coop-broadcast "message text here"          # send to every other peer
+    coop-recv                                   # drain your inbox (prints JSON list)
+    coop-peek                                   # number of unread messages
+    coop-agents                                 # list every agent id
+
+Recommended workflow:
+
+1. At the start, `coop-broadcast` a short summary of your feature and
+   which files you intend to touch.
+2. Periodically `coop-recv` to read what your peers have sent -- at
+   minimum after major edits and before submitting.
+3. If two agents need to modify the same file, coordinate explicitly
+   (split the file, agree on one owner, or merge changes).
+4. Keep messages short and focused: file names, function names, and
+   one-sentence intents are usually enough.
+
+Messages are not magic -- your peers only know what you tell them.
+\end{verbatim}
+\end{quote}
+
+\subsection{The Findings}
+
+Consistent with the reported curse of coordination, we observe a substantial drop in task success when agents must coordinate via messaging compared to working solo. Across 46 matched feature pairs the average pass rate fell from 44.2\% under the Solo condition to 12.3\% under the Messaging condition. A paired Wilcoxon signed-rank test confirms this difference is statistically significant ($W = 2.5$, $p < .001$). This finding replicates the qualitative pattern reported in the original study, in which coordinated (Coop) performance is substantially lower than Solo performance across models.
+
+In the cooperative condition, both agents independently passed their own feature's held-out suite in 21/47 pairs --- statistically indistinguishable from the solo condition's 20/47. Splitting the work across two agents therefore causes no measurable loss of individual capability. The gap arises at patch integration. Of the 20 pairs demonstrably solvable by a single agent, the cooperative system delivered only 5 (25\%). All pairs that were independently solved but jointly failed were lost to textual merge conflicts rather than functional incompatibility. The agents consistently write working code but cannot place their edits so that the contributions combine.
+
+While the original study establishes a clear coordination gap in task success rates, it does not normalize for the cost of achieving those outcomes. We use total dollar cost --- which aggregates input, output, and cache read/write tokens into a single figure --- as a proxy for computational effort, and find that the coordination gap is considerably larger once this is accounted for. Cost is taken directly from the \texttt{total\_cost\_usd} field of the Claude Code CLI's terminating result event, computed from token usage (input, output, and cache read/write) priced at Anthropic's published list rates. The reported cost of a run is the sum across its participating agents and reflects API list price. Across the same 46 matched feature pairs, the Solo condition achieved 0.675 passes per dollar spent, compared to 0.107 passes per dollar under Messaging --- a roughly 6.3-fold gap, versus the 3.6-fold gap observed in raw pass rate alone. A paired Wilcoxon signed-rank test on per-pair cost efficiency confirms this difference is statistically significant ($W = 2.0$, $p < .001$). This widening indicates that the coordination penalty is not limited to lower success rates: Messaging runs are also less cost-efficient per successful outcome, compounding the disadvantage relative to Solo.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
+%    Varying the Coordination Protocol
+%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Varying the Coordination Protocol}
+
+The replication localised the two-agent gap to patch integration: paired agents write working code, but their patches collide at merge time. This raises a direct question --- can the coordination protocol itself close that gap? We ran a comparison of six protocols on a capability-screened 20-pair Python subset, all under claude-sonnet-5. Every arm differs only in the cooperation-protocol block of its system prompt and the message-field validation the container enforces. The integration model is constant throughout: isolated checkouts combined by a naive two-branch \texttt{git merge}, with no shared workspace and no post-hoc conflict resolution. The primary endpoint is the merge-clean rate --- the fraction of pair-runs whose two independent patches merge without a textual conflict. The secondary endpoint is both-passed: both features' held-out suites pass on the merged tree.
+
+\subsection{The Protocols}
+
+The six arms span an axis from interventions that change only what agents \emph{say} to interventions that change what code the merge actually receives.
+
+\begin{itemize}
+  \item \textbf{Control} --- no messaging; the agent is never told it has a partner. The coordination floor.
+  \item \textbf{Free-text} --- the replication's condition: an unconstrained plain-text messaging channel.
+  \item \textbf{Semi-structured} --- every message must carry a validated type, the files it concerns, and a one-line intent.
+  \item \textbf{Plan-handshake} --- agents must agree a disjoint file split before editing.
+  \item \textbf{Designated-coder} --- for each shared file, one agent owns it and the other defers, sending a written spec of what its feature needs.
+  \item \textbf{Coauthor-overlap} --- where two features edit the same construct, both agents jointly author the full merged version and write it byte-for-byte identically.
+\end{itemize}
+
+The first three vary only the communication channel; the last three change the authorship of the overlapping code. Four arms run at $k \approx 15$ (${\sim}270$ pair-runs each); the two authorship-changing arms run at $k \approx 5$ (88--89 runs). Rates carry Wilson 95\% CIs; the inferential test is a Cochran--Mantel--Haenszel test stratified by pair, Holm-corrected across the family of contrasts. The full cooperation-protocol block of every arm, matching the format of the free-msg block reproduced in Section 3, is given verbatim in Appendix A.
+
+\subsection{Results}
+
+\begin{table}[h!]
+\centering
+	\caption{Merge-clean and both-passed rates by coordination protocol.\label{tab:protocols}}
+   \renewcommand{\arraystretch}{1.1}
+   \setlength{\tabcolsep}{6pt}
+\begin{tabular}{lccc}
+ \toprule
+ Protocol & Runs & Merge-clean & Both-passed \\
+ \midrule
+ control & 270 & 13\% & 2\% \\
+ free-text & 270 & 21\% & 3\% \\
+ semi-structured & 270 & 16\% & 3\% \\
+ plan-handshake & 270 & 20\% & 10\% \\
+ designated-coder & 88 & 18\% & 58\% \\
+ coauthor-overlap & 89 & 78\% & 69\% \\
+ \bottomrule
+\end{tabular}
+\end{table}
+
+On the primary endpoint, five of the six arms fall inside a 13--21\% band (Table~\ref{tab:protocols}, Figure~\ref{fig:endpoints}). After Holm correction, only coauthor-overlap separates from control (CMH OR 27.7, $p < 0.0001$); free-text, semi-structured, plan-handshake, and designated-coder are all non-significant. Coauthor-overlap is the only arm that produces byte-identical merges in any quantity --- 26 of its 89 runs, against a single occurrence across the 1,168 runs of the other five arms combined --- and it collapses the textual-conflict rate from 79--87\% to 17\%.
+
+\begin{figure}[!htb]
+	\centering
+	\includegraphics[width=0.5625\linewidth]{fig1_endpoints.png}
+	\caption{\textbf{Merge-clean and both-passed rates by protocol.} Five of the six arms sit in a 13--21\% merge-clean band; only coauthor-overlap escapes it (78\%). Designated-coder's high both-passed rate (58\%) arrives despite a floor-level merge-clean rate.
+    }\label{fig:endpoints}
+\end{figure}
+
+On the secondary endpoint, plan-handshake, designated-coder, and coauthor-overlap all beat control after correction. Designated-coder's 58\% both-passed is not carried by clean merges: 43\% of its runs pass both features on a \emph{conflicted} merge --- one agent's patch covers both features while the other's collides --- and its merge-clean rate stays at the floor (Figure~\ref{fig:taxonomy}).
+
+\begin{figure}[!htb]
+	\centering
+	\includegraphics[width=0.5625\linewidth]{fig2_failure_taxonomy.png}
+	\caption{\textbf{Failure taxonomy by protocol.} Share of validated pair-runs by outcome. Textual conflict dominates every arm except coauthor-overlap, where most runs pass; designated-coder's successes arrive largely as solo-rescues --- both features passing on a conflicted merge.
+    }\label{fig:taxonomy}
+\end{figure}
+
+\subsection{The Findings}
+
+Changing the coordination protocol can move the integration outcome substantially, but the specific protocol is decisive. Of six, one closed the gap and five did not. Coauthor-overlap raised the merge-clean rate from 13\% to 78\% and both-passed from 2\% to 69\% --- the only arm significant on the primary endpoint after correction. Because the arms differ only in the prompt and message validation, this is a protocol effect, not a model or scaffold effect.
+
+The protocols that failed and the one that succeeded differ in what they act on. Enriching the channel (free-text, semi-structured) and planning a file-level split (plan-handshake) left the merge-clean rate at the no-messaging floor. Coauthor-overlap worked by making both agents emit identical text for the overlapping construct, so the two independent patches merge as identical rather than conflicting; it changes what the merge receives, not how much the agents talk. Designated-coder targets the same construct but did not improve the primary endpoint. The spec it requires was in fact delivered in essentially every deferring run --- usually inside the DEFER message rather than as a separate message --- so the failure is not missing information: 39\% of its runs still ended in a textual conflict, meaning the deferring agent edited the owned file anyway.
+
+Three caveats. First, the two authorship-changing arms ran at low replication (88--89 runs). Coauthor-overlap's effect is large enough to survive correction by many orders of magnitude, but designated-coder's null means only that its merge-clean rate is indistinguishable from the floor, not equal to it. Second, coauthor-overlap is not a full solution: 17\% of its runs still conflict, and 10\% merge cleanly but fail functionally. Third, the result is conditional on one model, one scaffold, conflict-selected Python pairs, and a single integration model (a naive two-branch merge with no post-hoc conflict resolution); a different integration model is a separate lever not tested here.
+
+The protocol study establishes what varying the coordination protocol can and cannot do: it can rescue the integration outcome, but only when it changes what code the merge receives, and even the best arm leaves a residue of conflict and functional failure. What it deliberately holds fixed, however, is the team size --- every arm is a two-agent system. The complementary question is the reverse: with the protocol held fixed, what is the effect of scaling the team itself? If the communication tax is real, its cost should compound as agents are added, independently of how well any given pair coordinates. The next section isolates exactly this, fixing a single coordination protocol and a solo-achievable workload while varying only the number of agents across which the work is divided.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
+%    Growth With Scale
+%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Growth With Scale}\label{sec:growth}
+
+Fu et al. (2026)~\cite{fu2026agents} show that most multi-agent workflows fail to reliably outperform a matched single-agent baseline once evaluation infrastructure is controlled, attributing performance to task-protocol fit rather than agent count. Their evidence, however, has two limitations. First, their results are single-run pass@1 scores on one backend model (GPT-4.1); the sole positive case (EvoAgent, $+1.44$ points) falls within their own uncertainty bounds, and the negative finding holds only at the benchmark-balanced average. Second, and more fundamentally, their comparison never varies agent count independently of structure: topology, prompts, and communication protocols all differ simultaneously across systems --- a confound they acknowledge but do not resolve. We address both limitations by holding workflow structure fixed and varying only $N$, and by reporting repeated runs so that gaps can be distinguished from run-to-run variance. Together with our communication tax hypothesis, this isolates the relationship between agent count and the performance losses due to communication tax.
+
+We extend CooperBench from a diagnostic of pairwise mergeability into PoolBench, a controlled study of how coordination cost scales with team size. Whereas the base benchmark tests whether two agents can independently implement conflicting features and merge cleanly, PoolBench fixes the workload --- a pool of $K$ mutually interdependent features drawn as a clique from the task's gold-conflict graph --- and varies only the number of agents $N \in \{1, 2, 3, 4\}$ across which it is deterministically partitioned. Each agent's execution trace is decomposed into four token accounts --- context (ingesting the shared repository and specification), task (implementing assigned features), communication (messages sent, received, and re-ingested), and rework (revising already-edited files in response to an inbound message) --- which are converted to a common monetary unit and regressed against $N$. The design targets a single question: whether the cost of parallel agentic software development is superlinear in $N$. We define the communication tax not as the messaging bill alone but as the whole coordination overhead of dividing a shared workload across $N$ separate agents --- the price $N$ contexts pay to reconstruct and reconcile the state a single agent holds for free. The four accounts localise where that overhead falls: redundant context ingestion, inflated per-agent task work, the messages themselves, and the rework those messages trigger. So framed, the tax is a composite of a structural, message-independent floor and a removable communication component, rather than either one alone.
+
+All $N$ agents work against one git remote seeded at the task's base commit. Each agent implements its assigned features, fetches and merges its peers' branches, resolves any conflicts, and rebuilds its patch from the integrated result --- integration is performed by the agents as part of their coordination work, not imposed by the evaluator, which simply scores the single integrated tree against every feature's held-out suite. We verified this mechanism directly at $N = 2$, $3$, and $4$: in each case all agents merged all peers and converged on the same integrated tree, and a four-agent integration on a conflict-clique task passed all four held-out suites.
+
+\subsection{Design}
+
+The independent variable is $N$; the constant is the $K$-feature pool, split across agents by a fixed round-robin partition ($N = 1$ is one agent implementing all $K$). Every pool is solo-screened --- a single agent must be able to complete all $K$ --- so degradation at higher $N$ is attributable to coordination rather than raw difficulty, and the curve is anchored at a clean solo ceiling. The primary measure is a graded score: the fraction of the $K$ held-out suites passing on the integrated tree, crediting partially-correct teams (three of four features $= 0.75$) and scoring a merge that breaks the build as 0.
+
+Solo-achievability is the binding constraint: only ${\sim}20\%$ of $K = 4$ candidates pass screening, making $K = 4$ pools --- the only ones reaching $N = 4$ --- scarce, while harder repositories become solo-achievable only at $K = 3$, capping them at $N = 3$. The final dataset is 14 clique-pools across six repositories and 148 runs under Claude Sonnet 5 (${\sim}\$410$ API-equivalent), six of which reach $N = 4$.
+
+\subsection{Results: Efficiency Collapses as a Power Law}\label{sec:poolresults}
+
+The cleanest and most general result is in efficiency --- the fraction of the workload solved per dollar spent.
+
+\begin{table}[h!]
+\centering
+	\caption{Efficiency by agent count $N$, averaged over all pools.\label{tab:efficiency}}
+   \renewcommand{\arraystretch}{1.1}
+   \setlength{\tabcolsep}{6pt}
+\begin{tabular}{ccccc}
+ \toprule
+ $N$ & Graded score & Cost / run & Solved per \$ & vs.\ solo \\
+ \midrule
+ 1 & 0.96 & \$0.78 & 1.24 & 100\% \\
+ 2 & 0.91 & \$2.10 & 0.43 & 35\% \\
+ 3 & 0.89 & \$3.82 & 0.23 & 19\% \\
+ 4 & 0.92 & \$7.21 & 0.13 & 10\% \\
+ \bottomrule
+\end{tabular}
+\end{table}
+
+Efficiency falls as a power law in the agent count, $\text{efficiency} = 1.28 \cdot N^{-1.61}$, reaching ${\sim}10\%$ of the solo value at four agents (Figure~\ref{fig:efficiency}). The relationship is \emph{universal}: fitting each pool separately, all fourteen collapse as power laws with exponents between roughly 1.1 and 2.3 (mean $\approx 1.7$, every $R^2 > 0.9$). The exponent exceeding 1 everywhere is the substantive point. If dividing the work simply gave each agent a fixed share at a fixed per-agent cost, efficiency would fall as $1/N$ ($b = 1$); the observed $b \approx 1.8$ means each added agent is \emph{super-proportionally} wasteful --- the coordination overhead (re-loading shared context, messaging, re-integration, and repair of botched merges) grows faster than the work is divided. This holds even for pools whose correctness never degrades: \texttt{pallets\_jinja/1621} integrates perfectly at every $N$, yet its efficiency still falls $1.07 \rightarrow 0.15$, a $7\times$ loss. The efficiency penalty does not require a coordination \emph{failure} --- it is the price of coordination itself.
+
+\begin{figure}[!htb]
+	\centering
+	\includegraphics[width=0.5625\linewidth]{fig2c_efficiency.png}
+	\caption{\textbf{Efficiency collapses as a power law in agent count.} Work solved per dollar falls from 1.24 at $N = 1$ to 0.13 at $N = 4$, closely tracking the fitted power law $1.28 \cdot N^{-1.6}$ (dashed line). At four agents, efficiency is ${\sim}10\%$ of the solo value.
+    }\label{fig:efficiency}
+\end{figure}
+
+\subsection{Correctness and Cost}
+
+Correctness degrades more mildly, and less universally. Averaged over all fourteen pools, the graded score falls $0.96 \rightarrow 0.91 \rightarrow 0.89$ from one to three agents, and the strict all-pass rate --- the probability the team ships a fully-correct integration --- falls monotonically $89\% \rightarrow 82\% \rightarrow 77\% \rightarrow 69\%$ across all four agent counts (Figure~\ref{fig:correctness}). The degradation is concentrated on the hardest repository, \texttt{dspy}: all four of its cliques degrade (e.g.\ $0.75 \rightarrow 0.42$, and $0.92 \rightarrow 0.75$), while eight of the fourteen pools integrate cleanly and hold near 1.0. When correctness is lost, the failure mode is specific: the agents merge but botch the integration, producing code that no longer runs, so the held-out suite returns zero passed and zero failed.
+
+\begin{figure}[!htb]
+	\centering
+	\includegraphics[width=0.5625\linewidth]{fig2a_correctness.png}
+	\caption{\textbf{Adding agents buys no correctness.} The graded score (blue circles) stays flat-to-declining while the strict all-pass rate (squares) falls monotonically from 89\% at $N = 1$ to 69\% at $N = 4$. Error bars show variability across pools; the number of contributing pools is annotated above each point.
+    }\label{fig:correctness}
+\end{figure}
+
+Cost, by contrast, rises on every pool --- from \$0.78 solo to \$7.21 at four agents on the same $K$ features (Figure~\ref{fig:cost}) --- and decomposing it into the four accounts shows the rise is not one thing (Figure~\ref{fig:decomposition}). Redundant context ingestion grows roughly linearly, $\$0.50 \rightarrow \$0.92 \rightarrow \$1.47 \rightarrow \$2.27$, as each agent independently re-loads the shared repository; this is the message-independent floor. But per-agent task work inflates super-linearly ($\$0.27 \rightarrow \$2.37$ --- each agent doing more, not less, as the team grows), and coordination stacks a further layer on top. The distinction here matters: the messaging channel \emph{strictly} --- tokens sent, received, and re-ingested --- is 23--25\% of every multi-agent run, but messaging also \emph{provokes} rework (re-editing files in response to an inbound message), and once that message-triggered rework is included the messaging-related share rises to 31--36\% (\$0.48 comm + \$0.16 rework at $N = 2$, rising to \$1.82 + \$0.75 at $N = 4$). The floor beneath both --- context --- is message-independent; everything above it is, in principle, coordination a better protocol could reduce. Cost per added agent stays roughly constant at ${\sim}\$2$, but because that per-agent cost sits on a nonzero solo base and correctness stays flat, the work delivered per dollar still falls super-linearly --- the efficiency collapse reported above.
+
+\begin{figure}[!htb]
+	\centering
+	\includegraphics[width=0.5625\linewidth]{fig2b_cost.png}
+	\caption{\textbf{Cost rises near-linearly in agent count.} Mean cost per run climbs from \$0.78 at $N = 1$ to \$7.21 at $N = 4$, closely following a linear trend (dashed line) of roughly \$2 per added agent. Error bars show variability across pools.
+    }\label{fig:cost}
+\end{figure}
+
+\begin{figure}[!htb]
+	\centering
+	\includegraphics[width=0.5625\linewidth]{fig2d_cost_decomposition.png}
+	\caption{\textbf{Decomposing the communication tax.} Per-run cost split into the four token accounts --- context, task, communication, and rework --- as team size grows. Redundant context ingestion forms a message-independent floor that rises with $N$, while messaging and the rework it triggers account for roughly a third of every multi-agent run.
+    }\label{fig:decomposition}
+\end{figure}
+
+\subsection{Wall-Clock Time: Sharing the Work Does Not Make It Faster}\label{sec:wallclock}
+
+The remaining argument for a team is speed: whatever the dollar cost, $N$ agents working concurrently should finish in a fraction of the time --- ideally $T_1/N$. They do not (Figure~\ref{fig:walltime}). A solo agent completes the full $K$-feature pool in 4.0 minutes on average; two agents take 5.6, three take 6.5, and four take 8.3 --- wall-clock time rises with team size when perfect work-sharing predicts it should fall toward one minute. Pairing within pools, the realised speedup is $0.66\times$ at $N = 2$, $0.55\times$ at $N = 3$, and $0.56\times$ at $N = 4$, against ideals of 2--4$\times$ --- a parallel efficiency of 0.14--0.33 --- so teams are not merely imperfect parallelisers: they are outright slower than a single agent working through the same features sequentially. The mechanism is that a team finishes only when its slowest member does, and coordination lengthens exactly that critical path --- agents pause implementation to wait on replies, re-ingest inbound messages, and then perform merging, conflict resolution, and message-triggered rework serially after their divided implementation work is done. We suspect, however, that this inversion is partly an artifact of task scale: with features this small (a ${\sim}4$-minute solo baseline), messaging and integration occupy a large fraction of every agent's clock, so the coordination overhead swamps whatever time the division of labour saves. On larger individual tasks --- where implementation dominates and the messaging exchange is a roughly fixed cost occupying a proportionally smaller share of the run --- genuine wall-clock speedup may re-emerge; locating the task size at which parallelism starts to pay is a natural target for future work.
+
+\begin{figure}[!htb]
+	\centering
+	\includegraphics[width=0.5625\linewidth]{fig2e_walltime.png}
+	\caption{\textbf{Wall-clock time to completion vs.\ team size.} Each point is the mean wall-clock minutes per run at agent count $N$ (a run's clock stops when its last agent finishes, so wall time tracks the slowest member; evaluation time is excluded). Error bars are 95\% confidence intervals of the mean, clustered by pool. The dashed curve is the perfect-parallelism ideal $T_1/N$, and the grey multiplier under each point is the realised within-pool speedup: $0.66\times$, $0.55\times$, $0.56\times$ at $N = 2, 3, 4$. Observed time rises away from the falling ideal --- teams finish later than the solo baseline rather than approaching $T_1/N$.
+    }\label{fig:walltime}
+\end{figure}
+
+\subsection{What This Shows}
+
+Where the replication of the original CooperBench study localised the two-agent gap to patch integration, the scaling study reveals a penalty that no integration fix can remove: the cost of coordination itself. Splitting a task a single agent can already solve across more agents buys no correctness --- at best it matches solo, and on hard, conflict-dense tasks it actively destroys it --- while the work delivered per dollar falls as roughly $N^{-1.8}$, a penalty that appears on every task we measured, including those that remain perfectly correct. For agentic development on interdependent work, adding agents is not merely unhelpful; it is super-proportionally expensive --- and, at this task scale, outright slower --- for the same result. This is in part a limit on parallelism that no messaging protocol can remove: a message-independent floor, the redundant context each agent must load, that grows with $N$ whether or not the agents ever speak. But that floor is not the whole tax --- messaging and the rework it provokes make up roughly a third of every multi-agent run, so a cheaper coordination protocol could recover that third even though it could never erase the context beneath it.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
+%    Does a Supervisor Scale Better Than Peers?
+%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Does a Supervisor Scale Better Than Peers?}\label{sec:supervisor}
+
+Every result in Section~\ref{sec:growth} concerns one coordination topology: $N$ \emph{peers}, each handed a slice of the workload up front, negotiating integration among themselves. That topology is the one the multi-agent literature most often assumes, but it is not the only one available. The obvious alternative is hierarchy --- put one agent in charge of deciding who does what, and of assembling the result. If the tax we have measured is the price of \emph{mutual} coordination, centralising it should reduce that price; if the tax is intrinsic to dividing interdependent work at all, hierarchy will not help. This study runs the comparison directly, extending the scaling study and inheriting its apparatus: the 14 solo-screened clique-pools, the shared-git integration model, and the graded score are all as defined there.
+
+\subsection{Design}
+
+The apparatus, workload, and evaluation are held fixed at the values used in Section~\ref{sec:growth} --- the same 14 solo-screened clique-pools, the same $N$ levels, the same trial counts, the same shared git remote, the same graded scoring of one integrated tree against all $K$ held-out suites. Exactly one thing changes: \textbf{who decides the division of labour}.
+
+In the \textbf{supervised} arm, a leader agent (Claude Opus 5) is the only participant that receives the $K$ feature specifications. It writes a decomposition plan, materialises each specification into a shared scratchpad, assigns features to workers (Claude Sonnet 5) through a shared task list, monitors progress, and performs the integration itself. Workers begin with no specification at all and implement only what they are assigned. The round-robin partition --- a fixed, benchmark-imposed allocation in the flat arm --- is thus replaced by an allocation the leader chooses. Its choices are recorded: across 148 runs the leader delegated 3.2 features on average and kept 0.3, and it never once kept the whole workload for itself. Above one worker it delegated \emph{everything} in all but two of 104 runs, so this is genuine supervision rather than a leader quietly doing the work alone; only at a single worker --- where there is little to supervise --- does it routinely implement a feature itself (it kept one in 29 of 44 such runs).
+
+Because the leader is a real agent consuming real tokens and real time, a supervised run with $N$ workers is reported at {\boldmath$N + 1$} \textbf{agents}. This is what makes the arms comparable: ``four agents'' means four peers in the flat arm and one supervisor plus three workers in the supervised arm. Reporting the supervised arm at worker-count would conceal the cost of supervision, which is the quantity under test. The dataset is 148 supervised runs (${\sim}\$721$ list-price-equivalent) against the 148 flat runs of the scaling study --- a complete matched design. Coverage differs by construction: the flat arm spans 1--4 agents and the supervised arm 2--5 (a leader with zero workers is not a team), so only 2--4 agents are directly comparable, and the endpoints of each curve --- the 4-agent flat and 5-agent supervised columns --- rest on the six $K = 4$ pools alone.
+
+\subsection{Results: Supervision Changes the Exponent, Not the Level}
+
+The supervised topology is \emph{not} cheaper. At small team sizes it is markedly more expensive: paired within pools, a supervised run costs 43\% more than a flat run of the same total size at two agents, and 12\% more at three. What changes is not the level of the coordination penalty but its \textbf{scaling}.
+
+\begin{table}[h!]
+\centering
+	\caption{Flat-peer and supervised topologies by total agent count $N$, averaged over all pools.\label{tab:topology}}
+   \renewcommand{\arraystretch}{1.1}
+   \setlength{\tabcolsep}{5pt}
+\begin{tabular}{ccccccc}
+ \toprule
+ & \multicolumn{3}{c}{Flat peers} & \multicolumn{3}{c}{Supervised} \\
+ \cmidrule(lr){2-4} \cmidrule(lr){5-7}
+ $N$ & Score & Cost & Solved per \$ & Score & Cost & Solved per \$ \\
+ \midrule
+ 1 & 0.96 & \$0.78 & 1.24 & --- & --- & --- \\
+ 2 & 0.91 & \$2.10 & 0.43 & 0.88 & \$3.01 & 0.29 \\
+ 3 & 0.89 & \$3.82 & 0.23 & 0.87 & \$4.23 & 0.21 \\
+ 4 & 0.92 & \$7.21 & 0.13 & 0.87 & \$5.81 & 0.15 \\
+ 5 & --- & --- & --- & 0.97 & \$9.16 & 0.11 \\
+ \bottomrule
+\end{tabular}
+\end{table}
+
+Both topologies collapse as power laws in team size, but with materially different exponents: flat peers at $\text{efficiency} = 1.28 \cdot N^{-1.61}$ ($R^2 = 0.996$), supervision at $0.65 \cdot N^{-1.09}$ ($R^2 = 0.982$) (Figure~\ref{fig:topoeff}). The exponent is the result, and its interpretation is sharp. For a fixed workload divided among $N$ agents at fixed per-agent cost, efficiency \emph{must} fall as $1/N$ --- one is paying $N$ agents to do one pool's work --- so {\boldmath$b = 1$} \textbf{is the floor}, the value at which coordination itself costs nothing extra. The flat arm's $b = 1.61$ is the super-proportional waste reported in Section~\ref{sec:poolresults}. Supervision's $b = 1.09$ sits almost exactly at the floor: it very nearly eliminates the \emph{scaling} component of the coordination tax, leaving little beyond the unavoidable cost of employing more agents. Plotted alone on linear axes (Figure~\ref{fig:supeff}), the supervised arm's decay has the same collapsing shape as the flat arm's (cf.\ Figure~\ref{fig:efficiency}) --- hierarchy does not exempt a team from the collapse, it only flattens its exponent.
+
+\begin{figure}[!htb]
+	\centering
+	\includegraphics[width=0.5625\linewidth]{fig3a_efficiency_topology.png}
+	\caption{\textbf{Efficiency by topology (log--log).} Work solved per dollar for flat peers and supervised teams, with each arm's fitted power law dashed through it: $1.28 \cdot N^{-1.61}$ ($R^2 = 0.996$) and $0.65 \cdot N^{-1.09}$ ($R^2 = 0.982$). On logarithmic axes a power law is a straight line whose slope is the exponent; the dotted vertical marks the crossover at $N \approx 3.7$, below which flat peers are more efficient and above which supervision is.
+    }\label{fig:topoeff}
+\end{figure}
+
+\begin{figure}[!htb]
+	\centering
+	\includegraphics[width=0.5625\linewidth]{fig3e_efficiency_supervised.png}
+	\caption{\textbf{The supervised arm's efficiency collapse.} The same measure as Figure~\ref{fig:topoeff}, for the supervised arm alone on linear axes: 0.29 $\rightarrow$ 0.11 solved per dollar across 2--5 agents, tracking the fitted $0.65 \cdot N^{-1.1}$. The direct counterpart of the flat arm's Figure~\ref{fig:efficiency}.
+    }\label{fig:supeff}
+\end{figure}
+
+Because supervision starts lower --- it pays a fixed overhead that is dead weight on a small team --- but decays more slowly, the two curves cross at approximately \textbf{3.7 agents}. Below the crossover the supervisor's overhead dominates; above it, the peers' superlinear renegotiation cost does. The cost accounts locate the mechanism (Figure~\ref{fig:topoaccounts}): the messaging-related tax (comm + rework) is consistently \emph{smaller} under supervision --- 21\% versus 31\% of the run at two agents, 21\% versus 32\% at three, 25\% versus 36\% at four --- while the context and task accounts grow similarly in both arms. Supervision does not reduce the message-independent floor; each agent still re-loads the shared repository. It reduces the part that \emph{scales}, because workers coordinate with one supervisor rather than with every peer. The supervisor's own share of run cost falls from 61\% at two agents to 32\% at five, which is the same fixed-overhead-amortised-over-a-larger-team story seen from the other side.
+
+\begin{figure}[!htb]
+	\centering
+	\includegraphics[width=0.5625\linewidth]{fig3c_accounts_topology.png}
+	\caption{\textbf{Cost accounts by topology.} Per-run cost split into the four token accounts --- context, task, comm, and rework --- with flat peers as the solid left bar of each pair and supervised as the cross-hatched right bar; the label on the warm cap is comm + rework as a share of the run. The messaging-related tax is consistently smaller under supervision (21--31\% against 31--36\%) while the context floor grows similarly in both arms. Supervised runs are mixed-model (Opus leader, Sonnet workers) priced at list rates, so the shares, not the absolute dollars, are the comparable quantity.
+    }\label{fig:topoaccounts}
+\end{figure}
+
+\subsection{Correctness: Opposite Directions, and a Different Failure Mode}
+
+The more striking result is qualitative. On the strict all-pass rate --- the probability the team ships a fully-correct integration --- the two topologies move in \textbf{opposite directions} as the team grows (Figure~\ref{fig:topocorrect}). Flat peers degrade monotonically across one to four agents: 89\%, 82\%, 77\%, 69\%. Supervision improves across the two to five agents it spans: 77\%, 80\%, 84\%, 88\%. The curves cross between two and three agents, and at four agents --- the largest size both arms reach --- the ordering has reversed decisively, 84\% supervised against 69\% flat.
+
+\begin{figure}[!htb]
+	\centering
+	\includegraphics[width=0.5625\linewidth]{fig3b_correctness_topology.png}
+	\caption{\textbf{Correctness trends run in opposite directions.} Strict all-pass rate by topology with Wilson 95\% intervals: flat peers fall monotonically from 89\% at $N = 1$ to 69\% at $N = 4$, while supervision rises from 77\% at $N = 2$ to 88\% at $N = 5$. The curves cross between two and three agents; at four agents the ordering has reversed (84\% vs 69\%). Intervals are wide at the endpoints (16 runs), so the crossing is a trend across the range rather than a significant difference at any single size.
+    }\label{fig:topocorrect}
+\end{figure}
+
+The mechanism is visible in the distribution of outcomes rather than in their mean. Flat peers fail \textbf{gracefully}: as $N$ grows, the share of runs landing in partial credit swells (11\%, 14\%, 20\%, 31\% at one to four agents) --- some features work, others do not. Supervision is \textbf{bimodal}: partial outcomes thin out (16\%, 11\%, 5\% at two to four agents), replaced by either total success or total failure. The pattern is not perfectly monotone --- at five agents the supervised partial share rebounds to 12.5\% --- but across the range where both arms can be compared it runs firmly against the flat trend. This follows from the structure. Centralising integration makes the supervisor a single point of success --- if its merge lands, everything lands; if it botches, everything is lost --- whereas in the flat arm each agent merges independently, so partial contributions survive a peer's failure. That trade is a liability on small teams, where it converts would-be partial credit into zeros, and an asset on large ones, where the flat arm's partial-credit share is precisely what is growing.
+
+\subsection{Wall-Clock: Hierarchy Is Slower Still}
+
+Supervision buys none of its advantage back in time. It is slower than flat peers at every team size --- 9.5 versus 5.6 minutes at two agents, 12.3 versus 8.3 at four --- and the gap widens (Figure~\ref{fig:topowall}). Measured against the solo baseline, parallel speedup is $0.38\times$ at two agents falling to $0.32\times$ at five, worse than the flat arm's already sub-unity $0.67\times \rightarrow 0.56\times$. The supervisor lengthens the critical path twice: workers idle while the leader plans and allocates (time-to-first-claim averages 3.5 minutes, median 3.2), and integration runs serially at the end, after every worker has finished. The per-agent runtimes tell us the parallelism is real --- summed agent time grows roughly linearly with team size while wall-clock grows far more slowly --- but it is swamped by coordination sitting on the critical path. The finding of Section~\ref{sec:wallclock}, that sharing the work does not make it faster, survives the change of topology and is amplified by it.
+
+\begin{figure}[!htb]
+	\centering
+	\includegraphics[width=0.5625\linewidth]{fig3d_wallclock_topology.png}
+	\caption{\textbf{Hierarchy is slower still.} Mean wall-clock minutes to completion by topology, against the perfect-parallelism ideal $T_1/N$ anchored at the 4.0-minute flat solo baseline. Supervision is slower at every size --- 9.5 $\rightarrow$ 14.8 minutes across 2--5 agents against the flat arm's 5.6 $\rightarrow$ 8.3 --- and the gap widens; realised speedups are $0.38\times \rightarrow 0.32\times$ against the solo baseline.
+    }\label{fig:topowall}
+\end{figure}
+
+\subsection{What This Shows}
+
+Hierarchy is not a cure for the communication tax; it is a different trade. Supervision makes a small team more expensive, slower, and slightly less correct, and it converts graceful partial degradation into all-or-nothing outcomes. What it buys is a \textbf{better exponent}: coordination waste falls from super-proportional ($N^{-1.61}$) to almost exactly proportional ($N^{-1.10}$), and the correctness trend reverses from falling to rising. Past roughly four agents both changes favour the supervisor. Below that, they do not.
+
+Two limits bound this conclusion. The five-agent column rests on the six $K = 4$ pools alone (16 runs), which are by construction the pools a single agent could already solve, so it is both the thinnest and the most favourably-composed evidence here. And the region where the fitted curves say the supervisor's advantage becomes large --- six agents and beyond --- is exactly the region a workload capped at $K = 4$ cannot test. Whether the exponent gap continues to hold, and where the two topologies' correctness curves ultimately settle, requires pools of six to eight interdependent features: the natural next experiment, and one the apparatus described here is already able to run.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
+%    Conclusion
+%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\FloatBarrier
+\section{Conclusion}
+
+This work asked whether the coordination gap between LLM coding agents is an artifact of benchmark design or a systematic cost of dividing work a single agent can already do. Four results answer it.
+
+First, the gap replicates under a stronger, paired design. On 46 matched feature pairs with an identical model, the solo pass rate of 44.2\% fell to 12.3\% under free-text messaging (Wilcoxon $W = 2.5$, $p < .001$). Per-feature evaluation localises the loss: paired agents pass their own feature's held-out suite as often as solo agents (21/47 vs 20/47), so pairing costs nothing in individual capability. Of the 20 pairs demonstrably solvable by one agent, cooperating pairs delivered only 5, and every loss was a textual merge conflict rather than a functional incompatibility. The coordination gap is, on this data, an integration gap.
+
+Second, the gap widens once computational effort is normalised: 0.675 passes per dollar solo against 0.107 under messaging ($p < .001$) --- a 6.3-fold efficiency penalty against the 3.6-fold gap in raw pass rate. Coordination does not merely lower success; it makes each success more expensive.
+
+Third, the scaling study shows the penalty compounds with team size. Holding a solo-achievable workload of $K$ mutually conflicting features fixed while varying only $N \in \{1, 2, 3, 4\}$, with integration performed by the agents themselves, adding agents bought no correctness --- the strict all-pass rate fell monotonically from 89\% to 69\% --- while cost rose near-linearly (mean $\approx \$2.04$ per added agent). Efficiency therefore collapses as a power law, $\approx 1.28 \cdot N^{-1.61}$ ($R^2 = 0.996$), with all fourteen pools individually fitting exponents between 1.1 and 2.3; at four agents, work delivered per dollar is ${\sim}10\%$ of the solo value. Because the exponent exceeds 1 everywhere --- including on pools that integrate perfectly at every $N$ --- the penalty cannot be attributed to coordination \emph{failure}. It is the price of coordination itself: a structural floor of redundant context loading, paid before any message is sent, beneath the stacked overhead of task, messaging, and rework --- the last two of which account for roughly a third of every multi-agent run.
+
+Fourth, topology reshapes the tax without removing it. Replacing flat peers with a supervisor--worker hierarchy --- a leader that plans the decomposition, allocates features to workers, and performs the integration itself --- makes small teams more expensive (43\% more at two agents), slower at every size, and bimodal in failure, converting graceful partial degradation into all-or-nothing outcomes. What it buys is the exponent: supervised efficiency falls as $0.65 \cdot N^{-1.09}$ ($R^2 = 0.982$), essentially the $1/N$ floor at which coordination itself costs nothing extra, against the flat arm's $N^{-1.61}$, so the curves cross at ${\approx}3.7$ agents. On strict correctness the trends run in opposite directions --- flat falling 89\% $\rightarrow$ 69\% while supervision rises 77\% $\rightarrow$ 88\% --- reversing the ordering at four agents (84\% vs 69\%). The mechanism is centralisation: workers coordinate with one supervisor rather than with every peer, so the messaging-related share of each run shrinks, while the context floor remains untouched.
+
+Together these results confirm and sharpen our hypothesis: for tasks solvable by a single agent, splitting work across a team is at best correctness-neutral and always efficiency-negative, with a super-linear communication tax in team size under the standard peer topology. The decomposition also identifies where remedies must act. Individual capability survives pairing intact; the bottleneck is integration --- agreeing not just on who touches what, but on how contributions combine into one tree. The topology study shows one lever that works at scale: centralising coordination in a supervisor nearly eliminates the scaling component of the tax and reverses the correctness trend, at the price of higher cost, slower delivery, and an all-or-nothing failure mode on small teams. Protocols that resolve overlap explicitly, and mechanisms for semantic coordination on merged behaviour, remain the complementary lever, and the apparatus introduced here --- solo-screened fixed workloads, agent-owned integration, per-account cost decomposition, and matched topology arms --- provides the instrument for testing both; pools of six to eight interdependent features, where the fitted curves say supervision's advantage should widen, are the natural next experiment. What no protocol or topology will remove is the structural floor this study exposes: for interdependent work, each agent must independently reconstruct the shared context, a redundant cost paid whether or not coordination succeeds. A protocol can trim the removable third that messaging and rework add on top, and a supervisor can stop that third from growing with the team; neither can erase the floor --- and the floor alone is enough to make dividing a solo-achievable task efficiency-negative.
+
+\newpage
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
+%    REFERENCES
+%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% \bibliographystyle{IEEEtran}
+% \bibliography{main}
+
+\addcontentsline{toc}{section}{References} % add References to contents line
+
+\newcommand{\bibspace}[0]{\vspace*{0.1cm}}
+\begin{thebibliography}{10}
+
+\bibitem{vaswani2017attention}
+Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A. N., Kaiser, {\L}., and Polosukhin, I.,
+\newblock ``{Attention Is All You Need},''
+\newblock Advances in Neural Information Processing Systems 30 (NeurIPS 2017),
+\newblock 2017.
+\newblock arXiv:1706.03762.
+
+\bibspace
+\bibitem{wu2023autogen}
+Wu, Q., Bansal, G., Zhang, J., Wu, Y., Li, B., Zhu, E., Jiang, L., Zhang, X., Zhang, S., Liu, J., Awadallah, A. H., White, R. W., Burger, D., and Wang, C.,
+\newblock ``{AutoGen: Enabling Next-Gen LLM Applications via Multi-Agent Conversation},''
+\newblock 2023.
+\newblock arXiv:2308.08155.
+
+\bibspace
+\bibitem{hong2023metagpt}
+Hong, S., Zheng, X., Chen, J., Cheng, Y., Wang, J., Zhang, C., Wang, Z., Yau, S. K. S., Lin, Z., Zhou, L., Ran, C., Xiao, L., Wu, C., and Schmidhuber, J.,
+\newblock ``{MetaGPT: Meta Programming for a Multi-Agent Collaborative Framework},''
+\newblock 2023.
+\newblock arXiv:2308.00352.
+
+\bibspace
+\bibitem{qian2024chatdev}
+Qian, C., Liu, W., Liu, H., Chen, N., Dang, Y., Li, J., Yang, C., Chen, W., Su, Y., Cong, X., Xu, J., Li, D., Liu, Z., and Sun, M.,
+\newblock ``{ChatDev: Communicative Agents for Software Development},''
+\newblock Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (ACL 2024),
+\newblock 2024.
+\newblock arXiv:2307.07924.
+
+\bibspace
+\bibitem{khatua2026cooperbench}
+Khatua, A., Zhu, H., Tran, P., Prabhudesai, A., Sadrieh, F., Lieberwirth, J. K., Yu, X., Fu, Y., Ryan, M. J., Pei, J., and Yang, D.,
+\newblock ``{CooperBench: Why Coding Agents Cannot be Your Teammates Yet},''
+\newblock Stanford University \& SAP Labs US,
+\newblock 2026.
+\newblock https://cooperbench.com
+
+\bibspace
+\bibitem{fu2026agents}
+Fu, Y., Fang, R., Shao, J., Zheng, H., Zhu, Z., Luo, B., and Lin, T.,
+\newblock ``{Do more agents help? Controlled and protocol-aligned evaluation of LLM agent workflows},''
+\newblock arXiv preprint,
+\newblock 2026.
+\newblock arXiv:2606.05670.
+
+\end{thebibliography}
+%
+
+\newpage
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
+%    Appendices
+%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\appendix
+\section*{Appendix A: The Six Cooperation-Protocol Blocks}
+\addcontentsline{toc}{section}{Appendix A} % add Appendix A to contents line
+
+This appendix reproduces, verbatim, the cooperation-protocol block of each of the six arms in the protocol study (Section 4), as rendered for agent1. All other parts of the prompt --- the feature specification and the submission protocol --- are identical across arms.
+
+\subsection*{A.1 \quad control --- no messaging}
+
+The control arm contains no cooperation-protocol block: the agent's prompt consists solely of its feature specification and the submission protocol, and it is never told a partner exists.
+
+\subsection*{A.2 \quad free-text --- unconstrained messaging}
+
+Redis-backed inbox, free-text send/broadcast/recv, recommended-but-unenforced workflow.
+
+\begin{quote}
+\footnotesize
+\begin{verbatim}
+## Cooperation protocol
+
+You are **agent1**, working alongside: **agent2**.
+Each agent has been assigned a separate feature from the same codebase;
+your features may overlap (touch the same files), so coordinate to avoid
+clobbering each other's changes.
+
+Available shell commands for cross-agent messaging (Redis-backed inbox,
+one inbox per agent):
+
+    coop-send <recipient> "message text here"   # send to a specific peer
+    coop-broadcast "message text here"          # send to every other peer
+    coop-recv                                   # drain your inbox (prints JSON list)
+    coop-peek                                   # number of unread messages
+    coop-agents                                 # list every agent id
+
+Recommended workflow:
+
+1. At the start, `coop-broadcast` a short summary of your feature and
+   which files you intend to touch.
+2. Periodically `coop-recv` to read what your peers have sent -- at
+   minimum after major edits and before submitting.
+3. If two agents need to modify the same file, coordinate explicitly
+   (split the file, agree on one owner, or merge changes).
+4. Keep messages short and focused: file names, function names, and
+   one-sentence intents are usually enough.
+
+Messages are not magic -- your peers only know what you tell them.
+\end{verbatim}
+\end{quote}
+
+\subsection*{A.3 \quad semi-structured --- typed, field-validated messages}
+
+Every message must carry \texttt{type} (CLAIM / INTENT / QUESTION / ANSWER / STATUS), \texttt{files}, and a one-sentence \texttt{summary}; malformed messages are rejected.
+
+\begin{quote}
+\footnotesize
+\begin{verbatim}
+## Cooperation protocol (structured messaging)
+
+You are **agent1**, working alongside: **agent2**.
+Each agent has been assigned a separate feature from the same codebase;
+your features may overlap (touch the same files), so coordinate to avoid
+clobbering each other's changes.
+
+Cross-agent messages are **structured** (schema `semi_structured_v1`). Every
+`coop-send` / `coop-broadcast` MUST supply these fields as flags:
+
+- `--type` (required) -- one of: CLAIM, INTENT, QUESTION, ANSWER, STATUS: the
+  kind of message
+- `--files` (required): comma-separated files/regions you will touch (declare
+  early to avoid clobbering peers)
+- `--summary` (required): one-sentence intent
+- `--blocked_on` (optional): anything you need from a peer before you can proceed
+
+**Messages that omit a required field or use an out-of-enum value are
+REJECTED -- they exit non-zero and are NOT delivered to your peer.** Field
+values are free text; only these coordination fields are enforced.
+
+    coop-send agent2 --type "CLAIM" --files "<files>" --summary "<summary>"
+                                                 # send to a specific peer
+    coop-broadcast --type "CLAIM" --files "<files>" --summary "<summary>"
+                                                 # send to every other peer
+    coop-recv                                    # drain your inbox now (prints JSON list)
+    coop-await                                   # BLOCK until a peer replies, then drain
+    coop-peek                                    # number of unread messages
+    coop-agents                                  # list every agent id
+
+Recommended workflow:
+
+1. At the START, broadcast which files you intend to touch, before you begin editing.
+2. `coop-recv` (or `coop-await`) to read your peers' messages -- at minimum after
+   major edits and before submitting -- and if two agents want the same file,
+   coordinate explicitly (split it, agree on one owner, or merge changes).
+3. Keep each field short and specific.
+
+Messages are not magic -- your peers only know what you tell them.
+\end{verbatim}
+\end{quote}
+
+\subsection*{A.4 \quad plan-handshake --- agree a disjoint file split before editing}
+
+Phase 1: exchange PROPOSE / ACCEPT / REVISE (blocking on \texttt{coop-await}) until a disjoint file partition is mutually agreed. Only then may agents edit.
+
+\begin{quote}
+\footnotesize
+\begin{verbatim}
+## Cooperation protocol (structured messaging)
+
+You are **agent1**, working alongside: **agent2**.
+Each agent has been assigned a separate feature from the same codebase;
+your features may overlap (touch the same files), so coordinate to avoid
+clobbering each other's changes.
+
+Cross-agent messages are **structured** (schema `plan_handshake_v1`). Every
+`coop-send` / `coop-broadcast` MUST supply these fields as flags:
+
+- `--type` (required) -- one of: PROPOSE, ACCEPT, REVISE, DONE: handshake
+  message type
+- `--my_files` (required): comma-separated files YOU will own and edit
+- `--your_files` (optional): comma-separated files you propose your PARTNER owns
+- `--note` (optional): optional short rationale
+
+**Messages that omit a required field or use an out-of-enum value are
+REJECTED -- they exit non-zero and are NOT delivered to your peer.** Field
+values are free text; only these coordination fields are enforced.
+
+    coop-send agent2 --type "PROPOSE" --my_files "<my_files>"
+                                                 # send to a specific peer
+    coop-broadcast --type "PROPOSE" --my_files "<my_files>"
+                                                 # send to every other peer
+    coop-recv                                    # drain your inbox now (prints JSON list)
+    coop-await                                   # BLOCK until a peer replies, then drain
+    coop-peek                                    # number of unread messages
+    coop-agents                                  # list every agent id
+
+Coordinate in TWO STRICT PHASES. Do NOT edit any file until Phase 1 is complete.
+
+PHASE 1 -- PLAN & HANDSHAKE (messages only, NO editing yet):
+1. Immediately send a PROPOSE: `my_files` = the files YOU will own (from your
+   feature), `your_files` = the files you think your PARTNER should own. Keep the
+   two sets DISJOINT.
+2. Run `coop-await` -- it BLOCKS until your partner replies -- to read their messages.
+3. If their split gives you a disjoint set you can implement your feature with,
+   reply ACCEPT (echo the agreed `my_files`). Otherwise reply REVISE with a better
+   split and `coop-await` again. Repeat until you have RECEIVED an ACCEPT from your
+   partner AND sent your own ACCEPT.
+4. Only after you have received your partner's ACCEPT may you begin editing.
+
+PHASE 2 -- IMPLEMENT:
+5. Edit ONLY the files in your agreed `my_files`. If you discover you genuinely must
+   touch a file your partner owns, send a REVISE and re-agree BEFORE touching it.
+6. Send DONE when your implementation is finished.
+
+The whole point: agree a disjoint file split up front so your patches never collide
+at merge time.
+
+Messages are not magic -- your peers only know what you tell them.
+\end{verbatim}
+\end{quote}
+
+\subsection*{A.5 \quad designated-coder --- one owner per shared file, the other sends a spec}
+
+For any file both features need, one owner is assigned; the non-owner DEFERs, sends a SPEC of what it needs, and leaves the file untouched. The owner implements both features there.
+
+\begin{quote}
+\footnotesize
+\begin{verbatim}
+## Cooperation protocol (structured messaging)
+
+You are **agent1**, working alongside: **agent2**.
+Each agent has been assigned a separate feature from the same codebase;
+your features may overlap (touch the same files), so coordinate to avoid
+clobbering each other's changes.
+
+Cross-agent messages are **structured** (schema `designated_coder_v1`). Every
+`coop-send` / `coop-broadcast` MUST supply these fields as flags:
+
+- `--type` (required) -- one of: SURVEY, CLAIM, DEFER, SPEC, DONE: coordination
+  message type
+- `--files` (required): comma-separated files this message is about (all files
+  you touch, for SURVEY; the owned/deferred file, for CLAIM/DEFER/SPEC)
+- `--spec` (optional): when DEFERring, a precise self-contained description of
+  what your feature needs done in that file, for the owner to implement
+- `--note` (optional): optional short rationale or the function name(s) involved
+
+**Messages that omit a required field or use an out-of-enum value are
+REJECTED -- they exit non-zero and are NOT delivered to your peer.** Field
+values are free text; only these coordination fields are enforced.
+
+    coop-send agent2 --type "SURVEY" --files "<files>"
+                                                 # send to a specific peer
+    coop-broadcast --type "SURVEY" --files "<files>"
+                                                 # send to every other peer
+    coop-recv                                    # drain your inbox now (prints JSON list)
+    coop-await                                   # BLOCK until a peer replies, then drain
+    coop-peek                                    # number of unread messages
+    coop-agents                                  # list every agent id
+
+Coordinate in THREE STRICT PHASES. Do NOT edit any file until Phase 2 is agreed.
+
+PHASE 1 -- DISCOVER SHARED FILES (messages only, NO editing yet):
+1. Immediately send a SURVEY: `files` = every file (and, in `note`, the specific
+   function(s)) YOUR feature must edit. Be exhaustive and precise.
+2. Run `coop-await` -- it BLOCKS until your partner replies -- to read their SURVEY.
+3. Intersect the two file lists. The intersection is your SHARED files; everything
+   else is yours alone.
+
+PHASE 2 -- ASSIGN A SINGLE OWNER PER SHARED FILE (still NO editing):
+4. For EACH shared file, agree exactly ONE owner. Send CLAIM (`files` = the shared
+   file(s) you will OWN and write) or DEFER (`files` = the shared file(s) you hand
+   to your partner). Every shared file must end up with exactly one owner.
+5. If you DEFER a file, you MUST send a SPEC for it: `files` = that file, `spec` =
+   a precise, self-contained description of exactly what YOUR feature needs done in
+   it (signatures, parameters, behaviour, return values, edge cases) -- enough for
+   the owner to implement your feature correctly without seeing your tests.
+6. `coop-await` and repeat until every shared file has one owner AND every deferred
+   file has a delivered SPEC that its owner has ACKNOWLEDGED (reply CLAIM echoing it).
+
+PHASE 3 -- IMPLEMENT:
+7. Edit ONLY: your own (non-shared) files, plus the shared files you OWN. In each
+   file you own that is shared, implement BOTH your feature AND your partner's SPEC.
+8. Do NOT touch any shared file you deferred -- leave it entirely to its owner.
+9. Send DONE when finished.
+
+The whole point: every shared file is written by exactly one agent, so independent
+patches never collide there; the deferring agent's needs travel as a SPEC instead
+of as conflicting edits.
+
+Messages are not magic -- your peers only know what you tell them.
+\end{verbatim}
+\end{quote}
+
+\subsection*{A.6 \quad coauthor-overlap --- both agents write byte-identical merged code}
+
+Where two features overlap in one construct, the pair jointly authors the full merged version of it and both agents write that agreed text byte-for-byte identically.
+
+\begin{quote}
+\footnotesize
+\begin{verbatim}
+## Cooperation protocol (structured messaging)
+
+You are **agent1**, working alongside: **agent2**.
+Each agent has been assigned a separate feature from the same codebase;
+your features may overlap (touch the same files), so coordinate to avoid
+clobbering each other's changes.
+
+Cross-agent messages are **structured** (schema `coauthor_overlap_v1`). Every
+`coop-send` / `coop-broadcast` MUST supply these fields as flags:
+
+- `--type` (required) -- one of: SURVEY, DRAFT, AGREE, DONE: coordination
+  message type
+- `--files` (required): comma-separated files this message is about
+- `--region` (optional): which overlapping construct this DRAFT/AGREE is about
+  (e.g. 'encode() method')
+- `--code` (optional): the complete verbatim source of the merged construct --
+  must be byte-identical to your partner's
+- `--note` (optional): optional short rationale or the construct name(s) involved
+
+**Messages that omit a required field or use an out-of-enum value are
+REJECTED -- they exit non-zero and are NOT delivered to your peer.** Field
+values are free text; only these coordination fields are enforced.
+
+    coop-send agent2 --type "SURVEY" --files "<files>"
+                                                 # send to a specific peer
+    coop-broadcast --type "SURVEY" --files "<files>"
+                                                 # send to every other peer
+    coop-recv                                    # drain your inbox now (prints JSON list)
+    coop-await                                   # BLOCK until a peer replies, then drain
+    coop-peek                                    # number of unread messages
+    coop-agents                                  # list every agent id
+
+Coordinate in THREE STRICT PHASES. Do NOT edit any file until Phase 2 is agreed.
+
+PHASE 1 -- DISCOVER OVERLAPPING CONSTRUCTS (messages only, NO editing yet):
+1. Immediately send a SURVEY: `files` = every file YOUR feature must edit, and in
+   `note` name the specific construct(s) -- function/class/import block -- you must
+   change (e.g. "the `encode()` method").
+2. Run `coop-await` -- it BLOCKS until your partner replies -- to read their SURVEY.
+3. Identify OVERLAPPING constructs: any function/class/block you BOTH must edit.
+
+PHASE 2 -- CO-AUTHOR THE OVERLAP (still NO editing):
+4. For EACH overlapping construct, jointly write the FULL merged version of it -- one
+   implementation that carries BOTH features' behaviour at once (e.g. the whole
+   `encode()` method with BOTH new parameters AND both new code paths). Send a DRAFT:
+   `region` = which construct, `code` = the complete verbatim source of the merged
+   construct.
+5. `coop-await`, compare against your partner's DRAFT character-for-character. If they
+   differ in ANY way (order, whitespace, types, trailing commas), send a new DRAFT
+   until you converge. Then send AGREE echoing the exact `code`. You must BOTH end
+   Phase 2 holding the identical agreed text for every overlapping construct.
+
+PHASE 3 -- IMPLEMENT:
+6. For every overlapping construct, write the agreed `code` VERBATIM -- copy it
+   exactly, do not paraphrase, retype, or reformat it. Both of you write the same text.
+7. For any construct only YOU touch (not overlapping), implement it normally -- but it
+   must not overlap your partner's non-shared constructs.
+8. Send DONE when finished.
+
+The whole point: for every construct you both edit, your patch and your partner's
+patch contain the IDENTICAL merged code, so git merges them as identical rather than
+conflicting -- and each patch already satisfies both features there.
+
+Messages are not magic -- your peers only know what you tell them.
+\end{verbatim}
+\end{quote}
+
+\end{document}
