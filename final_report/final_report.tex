@@ -122,6 +122,12 @@ Intuitively, this makes sense. To crudely understand the issue, imagine a single
 
 Why then, one might ask, would we even consider improving a system that is doomed to fail? The answer is that, despite multi-agent systems at times not being as efficient as their solo counterparts, they may at times be more useful. For example, multi-agent systems may be useful when there are two agents with contrasting functionality. Or take, for example, a scenario where agents autonomously look after certain parts of a system. Perhaps there are a few lines where their working boundaries overlap, or their functions are called within another agent's working environment. At times, agents will be forced to work together, and when they do, we want to ensure that they can do so to their maximum capability and, efficiently.
 
+\subsection{Terminology}
+
+We use the vocabulary of the CooperBench dataset. In this paper we will refer to a ``task'' --- a set of features from one real pull request, with the repository pinned at its base commit and a container image to build and test it (30 tasks, 12 repositories, 199 features, two to twelve per task); a ``feature'' --- one unit of that pull request, given to an agent as a natural-language spec and graded by a held-out test suite no agent ever sees; a ``pair of features'' --- any two features of the same task, one per agent, and the unit at which the solo and cooperative conditions are compared, since both run on the identical pair. Of the 652 pairs the dataset admits, 499 (76.5\%) conflict when their gold patches are naively merged. A ``pool'' generalises this beyond two features and is the workload in Sections~\ref{sec:growth} and~\ref{sec:supervisor}: $K$ features of one task in which all $\binom{K}{2}$ pairs conflict, so however the work is split, every boundary is a real conflict site. A ``run'' is one execution of one pair or pool by one team under one condition; reported values are means over runs, with the pool as the replication unit.
+
+To make this concrete: \texttt{dspy\_task/task8635} is a task built from pull request \#8635 to \texttt{stanfordnlp/dspy}, which reworked the MIPROv2 teleprompter. Features 1, 3 and 4 of that task --- deterministic prompt caching, weighted tip selection, and a configurable program description length --- form a pool, because all three gold patches conflict with one another pairwise. One run of that pool gives the three features to three agents, one each, and lets them message freely while integrating on a shared repository. This particular run cost \$3.30, took 4.3 minutes of wall clock and 14 messages, and ended with a single integrated tree on which two of the three held-out suites passed: a score of $2/3$, and not an \texttt{all\_passed}. It is one of four such runs of that pool at three agents, and those four are averaged before the pool contributes a single point to any figure.
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %
 %    Hypothesis
@@ -135,7 +141,13 @@ This paper aims to isolate the failures of multi-agent systems and, through our 
 
 ``CooperBench: Why Coding Agents Cannot be Your Teammates Yet''~\cite{khatua2026cooperbench} introduces a comprehensive benchmarking suite that isolates communication failures in multi-agent systems. CooperBench is a benchmark that tests whether two LLM coding agents can work in parallel on the same codebase. The paper's headline finding is the ``curse of coordination'' --- agents average ${\sim}30\%$ lower success working together than one agent doing both tasks alone. CooperBench works by spinning up two isolated containerised environments from which agents work within. Each agent is given a spec, access to its own copy of the code base and a tool to message with the other agent. (This can be from 1, up to a whole team of agents). The agents are then tasked with individually implementing their own features.
 
-CooperBench provides a built-in evaluation pipeline, applied automatically as each task pair completes. Evaluation takes place in a fresh container, isolated from the agents' working environments. Any modifications to test files are first stripped from the submitted patches, preventing agents from passing by altering the grading tests. Each patch is then applied to its own branch off of the base commit, and the two branches are naively merged (\texttt{git merge}, with no conflict-resolution fallback). If the merge is clean, each feature's test suite is run against the merged tree. A pair succeeds (\texttt{both\_passed}) only if both suites pass; a conflicted merge fails outright.
+\subsection{Evaluation}
+
+After the agents have finished working on their features, or the step or time cap has been reached, the features are naively merged. A naive merge is a pure textual merge: it combines changes based on the lines of code each agent modified, without any understanding of the code's structure or logic. Overlapping edits are flagged as conflicts, while non-overlapping edits are merged automatically (even if they break each other semantically).
+
+The merge is performed by CooperBench automatically, in a fresh container isolated from the agents. Test-file edits are stripped from the submitted patches first, so no agent can pass by rewriting its own grader. Each patch is then applied to its own branch off the base commit, and those two branches are what \texttt{git merge} combines. A conflict is aborted rather than repaired: there is no manual resolution and no union fallback, which would concatenate both sides into broken code and reward lucky non-overlap over genuine coordination. A clean merge is run against both features' held-out suites and passes (\texttt{both\_passed}) only if both do --- which is where semantically incompatible but textually clean edits are caught. That verdict is authoritative: a feature that worked alone but broke in the merge counts as failed. A conflicted merge leaves no usable tree, and is credited only when the integrator's patch alone satisfies both suites --- a solo rescue, not a collaboration.
+
+\paragraph{Pre-merge capability (our extension).} Merge-first evaluation cannot separate an agent that never solved its feature from one whose work the merge destroyed. We add a pre-merge pass: each agent's patch against its own suite, in isolation, in the same sandbox, enabled by default. Capability and integration are therefore reported separately, and the pre-merge result is diagnostic only --- it never substitutes for the merged-tree verdict.
 
 Preliminary (pilot) tests were run to determine a suitable model for our experiments. Problems to consider were cost, individual model capability, and token throughput. \texttt{claude-sonnet-5} was ultimately selected.
 
@@ -836,5 +848,28 @@ conflicting -- and each patch already satisfies both features there.
 Messages are not magic -- your peers only know what you tell them.
 \end{verbatim}
 \end{quote}
+
+\section*{Appendix B: Calculations}
+\addcontentsline{toc}{section}{Appendix B}
+
+This appendix walks through the arithmetic behind each headline result, so every reported number can be reproduced by hand from the run data.
+
+\subsection*{B.1 \quad Calculation 1: the replication gap (44.2\% vs 12.3\%, Wilcoxon $W = 2.5$, $p < .001$)}
+
+\textbf{Data.} 46 matched feature pairs, each run 3 times under each condition: $46 \times 3 = 138$ runs per condition. Each run yields a binary \texttt{both\_passed}.
+
+\textbf{Step 1 --- per-pair pass rate.} For each pair and condition, average its 3 repeats: a pair that passed $s$ of 3 runs scores $s/3 \in \{0, \tfrac{1}{3}, \tfrac{2}{3}, 1\}$.
+
+\textbf{Step 2 --- condition mean.} Average the 46 per-pair rates. Solo: 17 pairs at 1, 4 at $\tfrac{2}{3}$, 2 at $\tfrac{1}{3}$, 23 at 0, giving $\tfrac{20.33}{46} = 44.2\%$. Messaging: 4 pairs at 1, 1 at $\tfrac{2}{3}$, 3 at $\tfrac{1}{3}$, 38 at 0, giving $\tfrac{5.67}{46} = 12.3\%$. Because the design is balanced (every pair has exactly 3 repeats), this equals the raw run-level count: $61/138$ and $17/138$.
+
+\textbf{Step 3 --- Wilcoxon signed-rank test} on the 46 paired differences $d_i = \text{solo}_i - \text{msg}_i$:
+\begin{enumerate}
+    \item Discard the 26 pairs with $d_i = 0$ (both conditions identical, mostly $0$--$0$), leaving $n = 20$.
+    \item Rank $|d_i|$ from smallest to largest, tied values sharing the average rank: five differences of $\tfrac{1}{3}$ (ranks 1--5), four of $\tfrac{2}{3}$ (ranks 6--9), eleven of $1$ (ranks 10--20, each assigned 15).
+    \item Sum ranks by sign. Solo wins 19 of the 20 pairs: $W^{+} = 207.5$. Messaging wins one (a $\tfrac{1}{3}$-difference in the smallest tie group): $W^{-} = 2.5$. Check: $W^{+} + W^{-} = 210 = n(n+1)/2$.
+    \item The statistic is $W = \min(W^{+}, W^{-}) = 2.5$: of 210 available rank points, messaging earned 2.5 against an expected 105 under the null. The tie-corrected normal approximation gives $z = (2.5 - 105)/26.2 = -3.91$, two-sided $p = 9.3 \times 10^{-5} < .001$.
+\end{enumerate}
+
+The same procedure on per-pair cost efficiency (passes summed over the 3 repeats, divided by summed dollar cost) gives the cost-normalised result: $0.675$ vs $0.107$ passes per dollar, $W = 2.0$, $p = 2.4 \times 10^{-5}$.
 
 \end{document}
