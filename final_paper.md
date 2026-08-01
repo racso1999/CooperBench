@@ -67,4 +67,8 @@ Recommended workflow:
 
 Messages are not magic -- your peers only know what you tell them.
 ```
+# Replicating the Curse of Coordination - The Findings
+
+Consistent with the reported "Curse of coordination", we observe a substantial drop in task success from the solo agent to it's two agent counterpart. Across 46 matched feature pairs the average pass rate fell from 44.2% under the Solo condition to 12.3% under the Messaging condition. (See Calc 1 in the appendix).
+
 
