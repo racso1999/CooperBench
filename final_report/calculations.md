@@ -41,8 +41,6 @@ Count in thirds throughout — d ∈ {0, ±⅓, ±⅔, ±1} exactly. First 10 of
 3. **Total the ranks by sign.** Solo wins 19 pairs — four of the five ⅓s, all four ⅔s, all eleven 1s → W⁺ = 4(3) + 4(7.5) + 11(15) = 12 + 30 + 165 = **207**. Messaging wins 1, the fifth ⅓ (pair 1559/f4_f8) → W⁻ = **3**. Check: W⁺ + W⁻ = 210 = n(n+1)/2.
 4. **W = min(W⁺, W⁻) = 3** — of 210 available rank points, messaging earned 3 against 105 expected under the null. Normal approximation: μ = n(n+1)/4 = 105; σ² = n(n+1)(2n+1)/24 − Σ(t³−t)/48 = 717.5 − 31.25 = 686.25 (tie groups t = 5, 4, 11), so σ = 26.20; z = (3 − 105)/26.20 = −3.89 → two-sided **p = 9.9×10⁻⁵**.
 
-**Cost-normalised companion.** Per pair: passes summed over 3 repeats ÷ dollars summed over 3 repeats. Aggregate: solo 61 passes / $90.33 = **0.675 per $**; messaging 17 / $158.28 = **0.107 per $** — a 6.3× gap. Same Wilcoxon procedure on the 46 per-pair efficiencies: **W = 2.0, p = 2.4×10⁻⁵**.
-
 ## Calculation 1.5 — capability vs integration
 
 **Claim.** Pairing costs nothing in individual capability; the loss happens at merge. Same data as Calculation 1 (46 pairs × 3 repeats, pooled at run level, n = 138 per condition).
@@ -65,3 +63,35 @@ Count in thirds throughout — d ∈ {0, ±⅓, ±⅔, ±1} exactly. First 10 of
 All 17 survivors are genuine clean naive merges (no solo-rescues), and every cooperative success was capability-complete (17 = Calculation 1's messaging total). So the entire solo→messaging drop beyond capability noise, 44.9% → 12.3%, is textual merge conflict — zero functional incompatibilities.
 
 **Checks.** No error rows, no missing independent results; 4 runs with `no_patch` and 12 with zero tests executed all count as failures (none as passes); no pass was recorded with zero tests run.
+
+## Calculation 2 — the cost gap
+
+**Claim.** Solo achieves 0.675 passes per dollar vs 0.107 under messaging — a 6.3× gap, versus 3.6× in raw pass rate.
+
+**Data.** Same 46 pairs × 3 repeats. Cost of a run = `total_cost` (the CLI's `total_cost_usd`, summed over the run's agents; see Appendix B.2 for the price table).
+
+**Aggregate passes per dollar** = total passes ÷ total dollars:
+
+|  | passes | cost | passes/$ |
+|---|---|---|---|
+| solo | 61 | $90.33 | 61/90.33 = **0.675** |
+| messaging | 17 | $158.28 | 17/158.28 = **0.107** |
+
+Gap = 0.675/0.107 = **6.29×**.
+
+**Why it widens from 3.6× to 6.3×.** The ratio factorises exactly:
+
+$$\frac{0.675}{0.107} = \underbrace{\frac{61}{17}}_{3.59\times \text{ fewer passes}} \times \underbrace{\frac{158.28}{90.33}}_{1.75\times \text{ more spent}} = 6.29$$
+
+Messaging fails more often *and* each run costs more (mean $1.147 vs $0.655 per run — two agents, plus message traffic). The cost-normalised gap is the product of the two penalties.
+
+## Calculation 2.5 — Wilcoxon on per-pair cost efficiency
+
+**Claim.** The efficiency gap is significant: W = 2.0, p < .001.
+
+**Per-pair efficiency** = passes over the pair's 3 repeats ÷ dollars over the same 3 repeats. Test the 46 paired differences d = eff(solo) − eff(msg):
+
+1. **Drop the zeros.** 22 pairs have d = 0 — exactly the pairs with 0 passes in both arms (0/cost = 0 on both sides) → n = 24. Note this n exceeds Calculation 1's 20: the 4 pairs that pass 3/3 in both arms tie on pass rate but *not* on efficiency, because their costs differ.
+2. **Rank |d| ascending.** The 24 differences are distinct real numbers — **no ties** (unlike Calculation 1, no shared ranks and no tie correction; the float-tie hazard cannot arise).
+3. **Total ranks by sign.** Solo wins 23 of 24. Messaging's one win is again pair 1559/f4_f8 (d = −0.185, rank 2) → W⁻ = **2**, W⁺ = **298**. Check: 300 = n(n+1)/2.
+4. **W = min = 2.0.** Normal approximation: μ = n(n+1)/4 = 150, σ = √(n(n+1)(2n+1)/24) = 35.0, z = (2 − 150)/35 = −4.23 → two-sided **p = 2.4×10⁻⁵** (scipy agrees exactly).

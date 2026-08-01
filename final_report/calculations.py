@@ -18,8 +18,7 @@ def calculation_1() -> None:
     """Appendix B.1 — the replication gap.
 
     44.2% (solo) vs 12.3% (messaging) over 46 matched pairs,
-    Wilcoxon W = 2.5, p < .001; cost-normalised 0.675 vs 0.107
-    passes per dollar, W = 2.0, p < .001.
+    Wilcoxon W = 3, p < .001.
     """
     df = pd.read_csv(DATA)
 
@@ -73,21 +72,6 @@ def calculation_1() -> None:
         cells += ["0", "-", "-"] if d == 0 else [f"{d:+.0f}/3", f"{abs(d):.0f}/3", f"{ranks[key]:.1f}"]
         print("  {:<12}{:>6}{:>6}{:>7}{:>7}{:>7}".format(*cells))
 
-    # Cost-normalised companion: per-pair passes summed over the 3 repeats,
-    # divided by summed dollar cost.
-    solo_eff = solo.groupby(["task_id", "pair"]).agg(passed=("both_passed", "sum"), cost=("total_cost", "sum"))
-    msg_eff = msg.groupby(["task_id", "pair"]).agg(passed=("both_passed", "sum"), cost=("total_cost", "sum"))
-    solo_ppd = solo_eff["passed"].sum() / solo_eff["cost"].sum()
-    msg_ppd = msg_eff["passed"].sum() / msg_eff["cost"].sum()
-    stat2, p2 = wilcoxon(
-        (solo_eff["passed"] / solo_eff["cost"]).astype(float).to_numpy(),
-        (msg_eff["passed"] / msg_eff["cost"]).astype(float).to_numpy(),
-    )
-    print(f"\ncost-normalised (passes per dollar):")
-    print(f"  solo: {solo_ppd:.3f}   messaging: {msg_ppd:.3f}   ratio: {solo_ppd / msg_ppd:.1f}x")
-    print(f"  W = {stat2}, p = {p2:.3e}")
-
-
 def calculation_1_5() -> None:
     """Appendix B.1.5 — capability vs integration.
 
@@ -123,7 +107,67 @@ def calculation_1_5() -> None:
     print(f"  merge strategy of the successes: {won['merge_strategy'].value_counts().to_dict()}")
 
 
+def calculation_2() -> None:
+    """Appendix B — the cost gap.
+
+    Solo 0.675 vs messaging 0.107 passes per dollar: a 6.3x gap, versus
+    3.6x in raw pass rate, because messaging runs also cost 1.75x more.
+    """
+    df = pd.read_csv(DATA)
+    excluded = (df["repo"] == "typst_task") & (df["task_id"] == 6554)
+    solo = df[(df["arm"] == "flash_solo") & ~excluded]
+    msg = df[(df["arm"] == "flash_msg") & ~excluded]
+
+    print("=== Calculation 2: the cost gap ===\n")
+    solo_p, solo_c = int(solo["both_passed"].sum()), solo["total_cost"].sum()
+    msg_p, msg_c = int(msg["both_passed"].sum()), msg["total_cost"].sum()
+    solo_ppd, msg_ppd = solo_p / solo_c, msg_p / msg_c
+    print(f"solo:      {solo_p} passes / ${solo_c:.2f} = {solo_ppd:.3f} passes per dollar")
+    print(f"messaging: {msg_p} passes / ${msg_c:.2f} = {msg_ppd:.3f} passes per dollar")
+    print(f"gap: {solo_ppd / msg_ppd:.2f}x  (raw pass rate alone: {solo_p / msg_p:.2f}x)")
+    # The widening is exactly the extra spend: ppd ratio = pass ratio x cost ratio.
+    print(f"decomposition: {solo_p / msg_p:.3f} (pass ratio) x {msg_c / solo_c:.3f} (cost ratio) = {(solo_p / msg_p) * (msg_c / solo_c):.3f}")
+    print(f"mean cost per run: solo ${solo['total_cost'].mean():.3f}, messaging ${msg['total_cost'].mean():.3f}")
+
+
+def calculation_2_5() -> None:
+    """Appendix B — Wilcoxon on per-pair cost efficiency.
+
+    W = 2.0, p = 2.4e-05. Unlike calculation 1, the 24 informative
+    differences are distinct reals, so there are no rank ties.
+    """
+    df = pd.read_csv(DATA)
+    excluded = (df["repo"] == "typst_task") & (df["task_id"] == 6554)
+    solo = df[(df["arm"] == "flash_solo") & ~excluded]
+    msg = df[(df["arm"] == "flash_msg") & ~excluded]
+
+    # Per-pair efficiency: passes summed over the 3 repeats / dollars summed.
+    solo_eff = solo.groupby(["task_id", "pair"]).agg(p=("both_passed", "sum"), c=("total_cost", "sum"))
+    msg_eff = msg.groupby(["task_id", "pair"]).agg(p=("both_passed", "sum"), c=("total_cost", "sum"))
+    diffs = (solo_eff["p"] / solo_eff["c"] - msg_eff["p"] / msg_eff["c"]).astype(float)
+
+    informative = diffs[diffs != 0]
+    ranks = pd.Series(rankdata(informative.abs()), index=informative.index)
+    n = len(informative)
+    w_plus = ranks[informative > 0].sum()
+    w_minus = ranks[informative < 0].sum()
+
+    print("=== Calculation 2.5: Wilcoxon on per-pair cost efficiency ===\n")
+    print(f"zero differences discarded: {(diffs == 0).sum()} (pairs with 0 passes in both arms)")
+    print(f"informative pairs: {n}   tied |d| values: {n - informative.abs().nunique()}")
+    print(f"solo better: {(informative > 0).sum()}   messaging better: {(informative < 0).sum()}")
+    for pair in informative[informative < 0].index:
+        print(f"  messaging's win: {pair[0]}/{pair[1]}, d = {informative[pair]:.4f}, rank {ranks[pair]:.0f}")
+    print(f"W+ = {w_plus:.0f}, W- = {w_minus:.0f}, sum = {w_plus + w_minus:.0f} = n(n+1)/2")
+    stat, p = wilcoxon(diffs.to_numpy())
+    print(f"W = {stat:.1f}, p = {p:.3e}")
+
+
 if __name__ == "__main__":
     calculation_1()
     print()
     calculation_1_5()
+    print()
+    calculation_2()
+    print()
+    calculation_2_5()
