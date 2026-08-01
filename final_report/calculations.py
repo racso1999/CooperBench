@@ -88,5 +88,42 @@ def calculation_1() -> None:
     print(f"  W = {stat2}, p = {p2:.3e}")
 
 
+def calculation_1_5() -> None:
+    """Appendix B.1.5 — capability vs integration.
+
+    Pooled over the same 46 pairs x 3 repeats: both paired agents pass
+    their own suite pre-merge in 62/138 runs vs the solo condition's
+    61/138; only 17 of the 62 survive the merge, and all 45 losses are
+    textual merge conflicts.
+    """
+    df = pd.read_csv(DATA)
+    excluded = (df["repo"] == "typst_task") & (df["task_id"] == 6554)
+    solo = df[(df["arm"] == "flash_solo") & ~excluded]
+    msg = df[(df["arm"] == "flash_msg") & ~excluded].copy()
+
+    # Capability: in the coop condition, each agent's patch tested against its
+    # OWN suite in isolation, pre-merge (our --eval extension); in the solo
+    # condition, the single agent's patch against both suites.
+    msg["both_indep"] = msg["a_indep_passed"].astype(bool) & msg["b_indep_passed"].astype(bool)
+
+    print("=== Calculation 1.5: capability vs integration ===\n")
+    coop_cap = int(msg["both_indep"].sum())
+    solo_cap = int(solo["both_passed"].sum())
+    print(f"coop runs where BOTH agents' independent work passed own suite: {coop_cap}/138 ({coop_cap / 138 * 100:.1f}%)")
+    print(f"solo runs where the single agent solved the whole pair:         {solo_cap}/138 ({solo_cap / 138 * 100:.1f}%)")
+
+    # Integration funnel: what happened to the capability-complete coop runs.
+    cap = msg[msg["both_indep"]]
+    won = cap[cap["both_passed"]]
+    lost = cap[~cap["both_passed"].astype(bool)]
+    print(f"\nof the {len(cap)} capability-complete coop runs:")
+    print(f"  survived the merge (both_passed): {len(won)} ({len(won) / len(cap) * 100:.0f}%)")
+    print(f"  merge status of the {len(lost)} losses: {lost['merge_status'].value_counts().to_dict()}")
+    print(f"  successes not capability-complete: {int((msg['both_passed'] & ~msg['both_indep']).sum())}")
+    print(f"  merge strategy of the successes: {won['merge_strategy'].value_counts().to_dict()}")
+
+
 if __name__ == "__main__":
     calculation_1()
+    print()
+    calculation_1_5()

@@ -42,3 +42,26 @@ Count in thirds throughout — d ∈ {0, ±⅓, ±⅔, ±1} exactly. First 10 of
 4. **W = min(W⁺, W⁻) = 3** — of 210 available rank points, messaging earned 3 against 105 expected under the null. Normal approximation: μ = n(n+1)/4 = 105; σ² = n(n+1)(2n+1)/24 − Σ(t³−t)/48 = 717.5 − 31.25 = 686.25 (tie groups t = 5, 4, 11), so σ = 26.20; z = (3 − 105)/26.20 = −3.89 → two-sided **p = 9.9×10⁻⁵**.
 
 **Cost-normalised companion.** Per pair: passes summed over 3 repeats ÷ dollars summed over 3 repeats. Aggregate: solo 61 passes / $90.33 = **0.675 per $**; messaging 17 / $158.28 = **0.107 per $** — a 6.3× gap. Same Wilcoxon procedure on the 46 per-pair efficiencies: **W = 2.0, p = 2.4×10⁻⁵**.
+
+## Calculation 1.5 — capability vs integration
+
+**Claim.** Pairing costs nothing in individual capability; the loss happens at merge. Same data as Calculation 1 (46 pairs × 3 repeats, pooled at run level, n = 138 per condition).
+
+**Capability.** A run is *capability-complete* when all the pair's code was individually written correctly:
+
+- cooperative: both agents' patches pass their **own** suite pre-merge (`a_indep_passed ∧ b_indep_passed`, from our `--eval` extension) → **62/138 = 44.9%**
+- solo: the single agent passes **both** suites (`both_passed`) → **61/138 = 44.2%**
+
+62 ≈ 61: splitting the work does not reduce the amount of working code written.
+
+**Integration funnel.** Of the 62 capability-complete cooperative runs:
+
+| outcome | runs |
+|---|---|
+| survived the merge (`both_passed`) | **17** (27%) |
+| lost — `merge_status = conflicts` | **45** (100% of losses) |
+| lost — clean merge, tests fail | 0 |
+
+All 17 survivors are genuine clean naive merges (no solo-rescues), and every cooperative success was capability-complete (17 = Calculation 1's messaging total). So the entire solo→messaging drop beyond capability noise, 44.9% → 12.3%, is textual merge conflict — zero functional incompatibilities.
+
+**Checks.** No error rows, no missing independent results; 4 runs with `no_patch` and 12 with zero tests executed all count as failures (none as passes); no pass was recorded with zero tests run.
