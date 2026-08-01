@@ -13,6 +13,28 @@ The apparatus, workload, and evaluation are held fixed at the values used in *Gr
 
 In the **supervised** arm, a leader agent (Claude Opus 5) is the only participant that receives the K feature specifications. It writes a decomposition plan, materialises each specification into a shared scratchpad, assigns features to workers (Claude Sonnet 5) through a shared task list, monitors progress, and performs the integration itself. Workers begin with no specification at all and implement only what they are assigned. The round-robin partition — a fixed, benchmark-imposed allocation in the flat arm — is thus replaced by an allocation the leader chooses. Its choices are recorded: across 148 runs the leader delegated 3.2 features on average and kept 0.3, and it never once kept the whole workload for itself. Above one worker it delegated *everything* in all but two of 104 runs, so this is genuine supervision rather than a leader quietly doing the work alone; only at a single worker — where there is little to supervise — does it routinely implement a feature itself (it kept one in 29 of 44 such runs).
 
+**What is enforced versus what is asked for.** The hierarchy is not purely a matter of
+instruction, and the distinction matters for interpreting the result. Three things are
+structural, enforced by the harness rather than requested of the model. First and most
+important, the **knowledge asymmetry**: the leader's prompt is constructed with all K
+specifications inlined, and each worker's prompt is constructed with none — a worker
+cannot read a specification unless the leader first writes it into the shared volume, so
+the division of labour is the leader's to make in a literal sense, not merely by
+convention. Second, the **roles are bound to models and to the grading**: the leader is
+spawned on Opus, workers on Sonnet, and the evaluator scores the leader's integrated tree.
+Third, the **coordination primitives are real** — a Redis-backed task list with ownership
+semantics exposed as in-container commands, a shared scratchpad volume, and the same git
+remote the flat arm uses. Only a single meta-task is pre-seeded, instructing the leader to
+allocate and integrate; no feature is pre-assigned to anyone.
+
+What is *asked for*, and therefore not guaranteed, is the policy: that the leader reads
+every specification before deciding, writes a plan, materialises the specs, assigns rather
+than implements, monitors, and merges at the end. Nothing prevents a leader from ignoring
+its brief and writing all K features itself, which is precisely why the allocation is
+measured rather than assumed. The task-list audit trail records every task created,
+assigned, claimed and closed, and it is that record — not the prompt — which establishes
+that the leaders delegated.
+
 Because the leader is a real agent consuming real tokens and real time, a supervised run with N workers is reported at **N + 1 agents**. This is what makes the arms comparable: "four agents" means four peers in the flat arm and one supervisor plus three workers in the supervised arm. Reporting the supervised arm at worker-count would conceal the cost of supervision, which is the quantity under test. The dataset is 148 supervised runs (~$721 list-price-equivalent) against the 148 flat runs of that study — a complete matched design.
 
 ## Results: Supervision Changes the Exponent, Not the Level
