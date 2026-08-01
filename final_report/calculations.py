@@ -9,7 +9,7 @@ Data: all_runs.csv (copied from results_csv/), one row per run.
 from pathlib import Path
 
 import pandas as pd
-from scipy.stats import wilcoxon
+from scipy.stats import rankdata, wilcoxon
 
 DATA = Path(__file__).parent / "all_runs.csv"
 
@@ -44,12 +44,34 @@ def calculation_1() -> None:
         print(f"  balanced-design check: {int(runs['both_passed'].sum())}/{len(runs)} runs = {runs['both_passed'].mean():.4f}")
 
     # Step 3 — paired Wilcoxon signed-rank test on the 46 per-pair rates.
-    diffs = solo_rates - msg_rates
-    stat, p = wilcoxon(solo_rates.to_numpy(), msg_rates.to_numpy())
-    print(f"\nWilcoxon signed-rank on per-pair rates:")
-    print(f"  zero differences discarded: {(diffs == 0).sum()}   informative pairs: {(diffs != 0).sum()}")
-    print(f"  solo better: {(diffs > 0).sum()}   messaging better: {(diffs < 0).sum()}")
-    print(f"  W = {stat}, p = {p:.3e}")
+    #
+    # Counted in passes-out-of-3 (whole numbers), not in thirds-as-decimals:
+    # 1 - 2/3 is 0.33333333333333337 in binary, a hair above 1/3, which splits
+    # rank ties that are genuinely tied. Whole numbers keep the ties exact.
+    solo_passes = solo.groupby(["task_id", "pair"])["both_passed"].sum()
+    msg_passes = msg.groupby(["task_id", "pair"])["both_passed"].sum()
+    diffs = (solo_passes - msg_passes).astype(float)
+    informative = diffs[diffs != 0]
+    ranks = pd.Series(rankdata(informative.abs()), index=informative.index)
+
+    w_plus = ranks[informative > 0].sum()
+    w_minus = ranks[informative < 0].sum()
+    n = len(informative)
+    stat, p = wilcoxon(diffs.to_numpy())
+    print("\nWilcoxon signed-rank on per-pair rates (differences in units of 1/3):")
+    print(f"  zero differences discarded: {(diffs == 0).sum()}   informative pairs: {n}")
+    print(f"  solo better: {(informative > 0).sum()}   messaging better: {(informative < 0).sum()}")
+    for size, grp in sorted(informative.abs().groupby(informative.abs())):
+        print(f"  |d| = {size:.0f}/3: {len(grp)} pairs, shared rank {ranks[grp.index].iloc[0]:.1f}")
+    print(f"  W+ = {w_plus:.1f}, W- = {w_minus:.1f}, sum = {w_plus + w_minus:.0f} = n(n+1)/2")
+    print(f"  W = {stat:.1f}, p = {p:.3e}")
+    # First 10 pairs in data order — the worked table reproduced in Appendix B.1.
+    print("\n  pair          solo   msg      d    |d|   rank")
+    for key in list(diffs.index)[:10]:
+        d = diffs[key]
+        cells = [f"{key[0]}/{key[1]}", f"{solo_passes[key]:.0f}/3", f"{msg_passes[key]:.0f}/3"]
+        cells += ["0", "-", "-"] if d == 0 else [f"{d:+.0f}/3", f"{abs(d):.0f}/3", f"{ranks[key]:.1f}"]
+        print("  {:<12}{:>6}{:>6}{:>7}{:>7}{:>7}".format(*cells))
 
     # Cost-normalised companion: per-pair passes summed over the 3 repeats,
     # divided by summed dollar cost.
