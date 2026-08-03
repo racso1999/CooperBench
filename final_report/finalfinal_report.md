@@ -4,11 +4,16 @@ Large language models (LLMs) are stateless predictors. When given a sequence of 
 
 After one has realized the benfits of a single agent, the appeal for a team of several is obvious. Multi agent systems have risen in popularity accordingly. The intuition borrows from human organisations: divide the work and let multiple workers share the load and collaborate - in theory, several agents should provide the parallelism that a single model instance cannot. Frameworks built on this premise have proliferated, from conversational multi-agent toolkits such as AutoGen [2] to software company simulations such as MetaGPT [3] and ChatDev [4] which spawn teams of agents with focused tasks such as engineers, testers and product managers.
 
+Popular frameworks for integration of these agents have also risen in popularity. Google released its ADK, langchain and langgraph provide infrastructure for building out complex multiagent systems.
+
+
 What this intuition quietly assumes, however, is that dividing the work provides additional benefit. For code editing specifically that intuition is largely untested and the little evidence that does exist, raises some concerns. In "CooperBench: Why Coding Agents Cannot be Your Teammates Yet" [5], the authors found that solo agents solved coding tasks at substantially higher rates than their multiagent counterparts. This result is surprising, given the increased compute budget and context provided by a larger team.
 
 To understand the issue with team scaling, one must understand two fatal flaws of communication. First of all, the re ingestion of context: sharing context with another agent means compounding the context size. Secondly, and to further compound the cost, messages may be overworded, inconclusive or incorrect. Decisions that a solo agent would make alone against a coherent whole are instead made against a fragmented many. Consequently a multi-agent system will spend more to reach the same outcome and surely no ammount of additional spending can recover the coherence a single context provides. In this paper, we refer to the compound communication overhead as the "Communication Tax".
 
 Why then would we consider improving a system that is doomed to underperform? Ultimately, efficiency and success rate are not the only measures of value. Multi agent systems despite being less effective, may at times be more useful or perhaps neccessary. Some tasks pair agents with contrasting abilities, and in other settings, agents may be forced to work together whether or not collaboration is optimal. When they do, we want to make sure they do so to their maximum capability while paying as little of the "communication tax" as possible.
+
+
 
 # Hypothesis
 
@@ -27,6 +32,9 @@ After the agents have finished working on their features, or the step or time ca
 # Extending the evaluation
 
 Evaluation at post merge fails to seperate instances where an agent never solved it's feature, from one whose work didn't successfully merge. In such cases the original evaluation pipeline does not descriminate between an agents ability to code and an agents ability to write code that integrates. We fix this through with the addition pre-merge testing to CooperBench Each agent's individual feature is tested against it's own suite in isolation, in the same sandbox. We still measure post the post merge signal - the original evaluation metric. Capability and integration are therefore reported separately giving us finer granularity. 
+
+
+# Replicating the Curse of Coordination
 
 To establish that the coordination gap report in "CooperBench: Why Coding Agents Cannot be Your Teammates Yet" reproduces, we opted to use the 50-pair flash subset of tasks. Preliminary pilot tests were run to determine a suitable model for our experiments. Problems to consider were cost, individual model capability, and token throughput. Claude Sonnet-5 was ultimately selected. The experiment was run under two conditions: a Solo condition, in which a single agent implements both features of a pair, and a Co-op condition, in which two isolated agents implement one feature each, optionally exchanging messages via the built-in "free-msg" protocol. Both conditions are run on the identical set of feature pairs - every feature pair has one Solo result and one Co-op result. This yields a matched design in which the two settings are compared within each feature pair rather than across aggregate scores, removing variance in task difficulty as a confound.
 
@@ -76,3 +84,13 @@ In the Co-op condition, both agents' independent work passed their own test suit
 Across the same 46 matched feature pairs, the Solo condition achieved 0.675 passes per dollar spent, compared to 0.107 passes per dollar under the Co-op condition — a roughly 6.3-fold gap, versus the 3.6-fold gap observed in raw pass rate alone. A paired Wilcoxon signed-rank test on per-pair cost efficiency confirms this difference is statistically significant (W = 2.0, p < .001). This widening indicates that the coordination penalty is not limited to lower success rates: Co-op runs are also less cost-efficient per successful outcome, compounding the disadvantage relative to Solo.
 
 When adjusting for compute, the gap grows substantially. Across the same 46 features pairs, the Solo condition averages 0.675 passes (both_passed) per dollar spent, compared to 0.107 passes per dollar from the Co-op condition. That's a 6.29-fold gap versus the original 3.59-fold gap calculated using pass rate alone. A paired Wilcoxon signed-rank test on per-pair cost efficiency confirms this difference is statistically significant (W=2.0, p < .001).
+
+# Bridging the Gap - Reducing Communication Overhead with Focused Prompts
+
+Our replication successfully reproduced the "coordination gap" and further localised it to patch-integration failures: paired agents write working code, but fail to write code that integrates cleanly at the merge. This raises a direct question, can the coordination protocol itself close the gap? To investigate, we ran a comparison of six cooperation protocols. Each protocol comprises the cooperation block of the agent's prompt and, in the structured arms, the message-field validation the container enforces. \footnote
+
+**Adjusting the dataset.** To sharpen the signal and reduce token wastage, we screened the full feature set shipped with CooperBench for pairs that are both highly conflicting and solvable by a single Claude Sonnet 5 agent. The resulting capability-screened dataset consists of 20 feature pairs. \footnote
+
+# Bridging the Gap - The Protocols
+
+The six arms span from interventions
