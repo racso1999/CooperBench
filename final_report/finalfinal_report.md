@@ -4,7 +4,7 @@ Large language models (LLMs) are stateless predictors. When given a sequence of 
 
 After one has realized the benfits of a single agent, the appeal for a team of several is obvious. Multi agent systems have risen in popularity accordingly. The intuition borrows from human organisations: divide the work and let multiple workers share the load and collaborate - in theory, several agents should provide the parallelism that a single model instance cannot. Frameworks built on this premise have proliferated, from conversational multi-agent toolkits such as AutoGen [2] to software company simulations such as MetaGPT [3] and ChatDev [4] which spawn teams of agents with focused tasks such as engineers, testers and product managers.
 
-Popular frameworks for integration of these agents have also risen in popularity. Google released its ADK, langchain and langgraph provide infrastructure for building out complex multiagent systems.
+Popular frameworks for orchestrating these agents have risen in popularity alongside them, and they differ mainly in how coordination is expressed. Google's Agent Development Kit (ADK) [7] arranges agents into a hierarchical tree, while LangChain [8] and its graph-based successor LangGraph [9] provide infrastructure for building complex multi-agent systems with explicit state management. CrewAI [10] assigns agents named roles within a "crew", closely mirroring the divide-the-work intuition described above. The OpenAI Agents SDK [11] instead coordinates through explicit handoffs, and the Claude Agent SDK [12] through delegation to sub-agents. AutoGen [2] has since been absorbed into the Microsoft Agent Framework [13]. Parallel to these engineering efforts, a research line has studied agent collaboration directly, including CAMEL [14] on role-playing communication and AgentVerse [15] on emergent behaviour in agent groups.
 
 
 What this intuition quietly assumes, however, is that dividing the work provides additional benefit. For code editing specifically that intuition is largely untested and the little evidence that does exist, raises some concerns. In "CooperBench: Why Coding Agents Cannot be Your Teammates Yet" [5], the authors found that solo agents solved coding tasks at substantially higher rates than their multiagent counterparts. This result is surprising, given the increased compute budget and context provided by a larger team.
@@ -12,7 +12,6 @@ What this intuition quietly assumes, however, is that dividing the work provides
 To understand the issue with team scaling, one must understand two fatal flaws of communication. First of all, the re ingestion of context: sharing context with another agent means compounding the context size. Secondly, and to further compound the cost, messages may be overworded, inconclusive or incorrect. Decisions that a solo agent would make alone against a coherent whole are instead made against a fragmented many. Consequently a multi-agent system will spend more to reach the same outcome and surely no ammount of additional spending can recover the coherence a single context provides. In this paper, we refer to the compound communication overhead as the "Communication Tax".
 
 Why then would we consider improving a system that is doomed to underperform? Ultimately, efficiency and success rate are not the only measures of value. Multi agent systems despite being less effective, may at times be more useful or perhaps neccessary. Some tasks pair agents with contrasting abilities, and in other settings, agents may be forced to work together whether or not collaboration is optimal. When they do, we want to make sure they do so to their maximum capability while paying as little of the "communication tax" as possible.
-
 
 
 # Hypothesis
@@ -94,3 +93,39 @@ Our replication successfully reproduced the "coordination gap" and further local
 # Bridging the Gap - The Protocols
 
 The six arms span from interventions
+
+
+
+
+
+
+
+[1]  A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, Ł. Kaiser, and I. Polosukhin. "Attention Is All You Need." Advances in Neural Information Processing Systems 30 (NeurIPS), 2017. arXiv:1706.03762.
+
+[2]  Q. Wu, G. Bansal, J. Zhang, Y. Wu, B. Li, E. Zhu, L. Jiang, X. Zhang, S. Zhang, J. Liu, A. H. Awadallah, R. W. White, D. Burger, and C. Wang. "AutoGen: Enabling Next-Gen LLM Applications via Multi-Agent Conversation." 2023. arXiv:2308.08155.
+
+[3]  S. Hong, X. Zheng, J. Chen, Y. Cheng, J. Wang, C. Zhang, Z. Wang, S. K. S. Yau, Z. Lin, L. Zhou, C. Ran, L. Xiao, C. Wu, and J. Schmidhuber. "MetaGPT: Meta Programming for a Multi-Agent Collaborative Framework." 2023. arXiv:2308.00352.
+
+[4]  C. Qian, W. Liu, H. Liu, N. Chen, Y. Dang, J. Li, C. Yang, W. Chen, Y. Su, X. Cong, J. Xu, D. Li, Z. Liu, and M. Sun. "ChatDev: Communicative Agents for Software Development." Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (ACL), 2024. arXiv:2307.07924.
+
+[5]  A. Khatua, H. Zhu, P. Tran, A. Prabhudesai, F. Sadrieh, J. K. Lieberwirth, X. Yu, Y. Fu, M. J. Ryan, J. Pei, and D. Yang. "CooperBench: Why Coding Agents Cannot be Your Teammates Yet." Stanford University & SAP Labs US, 2026. https://cooperbench.com
+
+[6]  Y. Fu, R. Fang, J. Shao, H. Zheng, Z. Zhu, B. Luo, and T. Lin. "Do more agents help? Controlled and protocol-aligned evaluation of LLM agent workflows." arXiv preprint, 2026. arXiv:2606.05670.
+
+[7]  Google. Agent Development Kit (ADK). https://github.com/google/adk-python, 2025.
+
+[8]  H. Chase. LangChain. https://github.com/langchain-ai/langchain, 2022.
+
+[9]  LangChain. LangGraph. https://github.com/langchain-ai/langgraph, 2024.
+
+[10] CrewAI. CrewAI Documentation. https://docs.crewai.com
+
+[11] OpenAI. OpenAI Agents SDK. https://github.com/openai/openai-agents-python, 2025.
+
+[12] Anthropic. Claude Agent SDK. https://github.com/anthropics/claude-agent-sdk-python, 2025.
+
+[13] Microsoft. Microsoft Agent Framework. https://github.com/microsoft/agent-framework, 2026.
+
+[14] G. Li, H. A. A. K. Hammoud, H. Itani, D. Khizbullin, and B. Ghanem. "CAMEL: Communicative Agents for 'Mind' Exploration of Large Language Model Society." Advances in Neural Information Processing Systems 36 (NeurIPS), 2023. arXiv:2303.17760.
+
+[15] W. Chen, Y. Su, J. Zuo, C. Yang, C. Yuan, C. Qian, C. Chan, Y. Qin, Y. Lu, R. Xie, Z. Liu, M. Sun, and J. Zhou. "AgentVerse: Facilitating Multi-Agent Collaboration and Exploring Emergent Behaviors in Agents." arXiv:2308.10848, 2023.
