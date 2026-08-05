@@ -253,8 +253,11 @@ def figure2a(recs):
     # two series, two bar colours: blue bars belong to the graded score, rust
     # bars to the all-pass rate. The intervals overlap vertically at several N,
     # so a shared grey left them unattributable.
+    # the orange is lifted (darken 0.82, not the default 0.60) so it reads as
+    # the warm series at a glance — the brightest value that still clears the
+    # 4.5:1 contrast floor on white, at 4.7
     score_bar = _bar_colour(_score_shade(0.95))
-    allp_bar = _bar_colour(_allpass_shade(0.88))
+    allp_bar = _bar_colour(_allpass_shade(0.88), darken=0.82)
     ax.errorbar(ns, score, yerr=[ci[N]["score_hw"] for N in ns], fmt="none",
                 ecolor=score_bar, elinewidth=0.9, capsize=2.2, capthick=0.9, zorder=3)
     ax.errorbar(ns, allp, yerr=[[ci[N]["allp_lo"] for N in ns],
@@ -307,11 +310,10 @@ def figure2b(recs):
     # one hue (violet); markers deepen/brighten with cost but read as one series
     lo, hi = min(cost), max(cost)
     cvals = [_mono_shade(c, COST_HUE, lo, hi) for c in cost]
-    # bars in the series' own violet rather than grey, so they read as part of
-    # the same series instead of as unrelated chrome
+    # single series, so there is nothing to disambiguate by hue: black gives the
+    # bars maximum contrast and keeps them distinct from the grey linear fit
     ax.errorbar(ns, cost, yerr=[ci[N]["cost_hw"] for N in ns], fmt="none",
-                ecolor=_bar_colour(_mono_shade(hi, COST_HUE, lo, hi)),
-                elinewidth=0.9, capsize=2.2, capthick=0.9, zorder=3)
+                ecolor="black", elinewidth=0.9, capsize=2.2, capthick=0.9, zorder=3)
     ax.scatter(ns, cost, s=34, marker="o", zorder=4, linewidths=0.3,
                edgecolors="black", c=cvals)
     for x, y in zip(ns, cost):
@@ -450,11 +452,10 @@ def figure2e(recs):
     # one hue (warm red); markers deepen as time inflates but read as one series
     lo, hi = min(walls), max(walls)
     cvals = [_mono_shade(w, TIME_HUE, lo, hi) for w in walls]
-    # bars in the series' own red, so they are not confused with the grey
-    # dashed T1/N ideal running through the same region
+    # single series: black, for maximum contrast and a clean separation from
+    # the grey dashed T1/N ideal running through the same region
     ax.errorbar(ns, walls, yerr=[ci[N]["wall_hw"] for N in ns], fmt="none",
-                ecolor=_bar_colour(_mono_shade(hi, TIME_HUE, lo, hi)),
-                elinewidth=0.9, capsize=2.2, capthick=0.9, zorder=3)
+                ecolor="black", elinewidth=0.9, capsize=2.2, capthick=0.9, zorder=3)
     ax.scatter(ns, walls, s=34, marker="o", zorder=4, linewidths=0.3,
                edgecolors="black", c=cvals)
     for x, y in zip(ns, walls):

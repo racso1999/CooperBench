@@ -162,6 +162,14 @@ def _bar_colour(colour, darken=0.60, sat_boost=1.15):
     return colorsys.hsv_to_rgb(h, min(1.0, s * sat_boost), max(0.0, v * darken))
 
 
+# Per-arm bar brightness. The supervised red is lifted well above the default
+# so it reads as red rather than maroon; the flat teal stays dark because it
+# is already the lighter-looking of the two at equal value. Contrast on white
+# is 8.2 (leader) and 10.2 (flat), and lifting the red widens their separation
+# to dE 89.
+BAR_DARKEN = {"flat": 0.60, "leader": 0.92}
+
+
 # fig2d's four-account ramp, reused verbatim so fig3c reads as its sibling:
 # cool = the base work you would pay anyway, warm = the coordination tax.
 ACCOUNTS = [("Context", "context", "#cfe6ef"), ("Task", "task", "#1b7ba0"),
@@ -269,7 +277,8 @@ def figure3b(recs):
             centre = (p + z * z / (2 * k)) / den
             half = z * np.sqrt(p * (1 - p) / k + z * z / (4 * k * k)) / den
             los.append(max(p - (centre - half), 0)); his.append(max((centre + half) - p, 0))
-        ax.errorbar(ns, ys, yerr=[los, his], fmt="none", ecolor=_bar_colour(colour),
+        ax.errorbar(ns, ys, yerr=[los, his], fmt="none",
+                    ecolor=_bar_colour(colour, BAR_DARKEN[arm]),
                     elinewidth=0.9, capsize=2.2, capthick=0.9, zorder=3)
         ax.plot(ns, ys, "-", color="black", lw=0.7, zorder=3)
         ax.scatter(ns, ys, s=34, marker="o", zorder=4, linewidths=0.3, edgecolors="black", c=colour)
@@ -353,7 +362,8 @@ def figure3d(recs):
         ns = sorted(n for (a, n) in t if a == arm)
         ys = [t[(arm, n)]["mean_wall_s"] / 60 for n in ns]
         errs = [_ci(recs, arm, "wall_seconds", n) / 60 for n in ns]
-        ax.errorbar(ns, ys, yerr=errs, fmt="none", ecolor=_bar_colour(colour),
+        ax.errorbar(ns, ys, yerr=errs, fmt="none",
+                    ecolor=_bar_colour(colour, BAR_DARKEN[arm]),
                     elinewidth=0.9, capsize=2.2, capthick=0.9, zorder=3)
         ax.plot(ns, ys, "-", color="black", lw=0.7, zorder=3)
         ax.scatter(ns, ys, s=34, marker="o", zorder=4, linewidths=0.3, edgecolors="black", c=colour)
