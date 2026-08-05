@@ -22,6 +22,7 @@ import matplotlib
 matplotlib.use("Agg")  # headless: write files, never open a window
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
+from matplotlib.colors import to_rgb  # noqa: E402
 from matplotlib.lines import Line2D  # noqa: E402
 from matplotlib.patches import Patch  # noqa: E402
 
@@ -113,6 +114,20 @@ def _mono_shade(v, hue, lo, hi):
 COST_HUE = 0.74   # violet — fig2b cost markers
 EFF_HUE = 0.42    # green  — fig2c efficiency markers
 TIME_HUE = 0.99   # warm red — fig2e wall-clock markers
+
+
+def _bar_colour(colour, darken=0.60, sat_boost=1.15):
+    """Error-bar colour derived from the colour of the series it belongs to.
+
+    Bars were previously a single shared grey ("0.4") for every series. At
+    0.7pt that grey is both low-contrast on white and, where two series overlap
+    (fig2a), ambiguous — there is no way to tell whose interval is whose.
+    Deriving the bar from its own series fixes both: each set of bars is the
+    same hue as its markers, so attribution is immediate, and darkening the
+    value keeps a hairline legible.
+    """
+    h, s, v = colorsys.rgb_to_hsv(*to_rgb(colour))
+    return colorsys.hsv_to_rgb(h, min(1.0, s * sat_boost), max(0.0, v * darken))
 
 
 # two-sided t critical values at 95% by degrees of freedom (small-sample honest)
@@ -235,11 +250,16 @@ def figure2a(recs):
     ax.plot(ns, allp, "-", color="black", lw=0.7, zorder=3)
     # 95% CI error bars (score: pool-clustered t; all-pass: Wilson)
     ci = _correctness_ci(recs)
+    # two series, two bar colours: blue bars belong to the graded score, rust
+    # bars to the all-pass rate. The intervals overlap vertically at several N,
+    # so a shared grey left them unattributable.
+    score_bar = _bar_colour(_score_shade(0.95))
+    allp_bar = _bar_colour(_allpass_shade(0.88))
     ax.errorbar(ns, score, yerr=[ci[N]["score_hw"] for N in ns], fmt="none",
-                ecolor="0.4", elinewidth=0.7, capsize=2, capthick=0.7, zorder=3)
+                ecolor=score_bar, elinewidth=0.9, capsize=2.2, capthick=0.9, zorder=3)
     ax.errorbar(ns, allp, yerr=[[ci[N]["allp_lo"] for N in ns],
                                 [ci[N]["allp_hi"] for N in ns]], fmt="none",
-                ecolor="0.4", elinewidth=0.7, capsize=2, capthick=0.7, zorder=3)
+                ecolor=allp_bar, elinewidth=0.9, capsize=2.2, capthick=0.9, zorder=3)
     ax.scatter(ns, score, s=32, marker="o", zorder=4, linewidths=0.3,
                edgecolors="black", c=[_score_shade(v) for v in score])
     ax.scatter(ns, allp, s=32, marker="s", zorder=4, linewidths=0.3,
@@ -284,11 +304,14 @@ def figure2b(recs):
     ax.plot(ns, cost, "-", color="black", lw=0.7, zorder=3)
     # 95% CI of mean cost, clustered by pool (matches fig2a)
     ci = _cost_ci(recs)
-    ax.errorbar(ns, cost, yerr=[ci[N]["cost_hw"] for N in ns], fmt="none",
-                ecolor="0.4", elinewidth=0.7, capsize=2, capthick=0.7, zorder=3)
     # one hue (violet); markers deepen/brighten with cost but read as one series
     lo, hi = min(cost), max(cost)
     cvals = [_mono_shade(c, COST_HUE, lo, hi) for c in cost]
+    # bars in the series' own violet rather than grey, so they read as part of
+    # the same series instead of as unrelated chrome
+    ax.errorbar(ns, cost, yerr=[ci[N]["cost_hw"] for N in ns], fmt="none",
+                ecolor=_bar_colour(_mono_shade(hi, COST_HUE, lo, hi)),
+                elinewidth=0.9, capsize=2.2, capthick=0.9, zorder=3)
     ax.scatter(ns, cost, s=34, marker="o", zorder=4, linewidths=0.3,
                edgecolors="black", c=cvals)
     for x, y in zip(ns, cost):
@@ -424,11 +447,14 @@ def figure2e(recs):
     ax.plot(ns, walls, "-", color="black", lw=0.7, zorder=3)
     # 95% CI of mean wall time, clustered by pool (matches fig2a/2b)
     ci = _time_ci(recs)
-    ax.errorbar(ns, walls, yerr=[ci[N]["wall_hw"] for N in ns], fmt="none",
-                ecolor="0.4", elinewidth=0.7, capsize=2, capthick=0.7, zorder=3)
     # one hue (warm red); markers deepen as time inflates but read as one series
     lo, hi = min(walls), max(walls)
     cvals = [_mono_shade(w, TIME_HUE, lo, hi) for w in walls]
+    # bars in the series' own red, so they are not confused with the grey
+    # dashed T1/N ideal running through the same region
+    ax.errorbar(ns, walls, yerr=[ci[N]["wall_hw"] for N in ns], fmt="none",
+                ecolor=_bar_colour(_mono_shade(hi, TIME_HUE, lo, hi)),
+                elinewidth=0.9, capsize=2.2, capthick=0.9, zorder=3)
     ax.scatter(ns, walls, s=34, marker="o", zorder=4, linewidths=0.3,
                edgecolors="black", c=cvals)
     for x, y in zip(ns, walls):

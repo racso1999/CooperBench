@@ -23,6 +23,7 @@ import matplotlib
 matplotlib.use("Agg")  # headless: write files, never open a window
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
+from matplotlib.colors import to_rgb  # noqa: E402
 from matplotlib.lines import Line2D  # noqa: E402
 from matplotlib.patches import Patch  # noqa: E402
 
@@ -149,6 +150,18 @@ def _mono_shade(v, hue, lo, hi):
     return colorsys.hsv_to_rgb(hue, 0.45 + 0.45 * t, 0.55 + 0.40 * t)
 
 
+def _bar_colour(colour, darken=0.60, sat_boost=1.15):
+    """Error-bar colour derived from the arm whose interval it is.
+
+    fig3b and fig3d overlay both topologies on one axis, and their intervals
+    overlap at several team sizes. Drawing every bar in one shared grey ("0.45")
+    made it impossible to tell a flat interval from a supervised one; each arm
+    now carries bars in its own hue, darkened so a 0.9pt line stays legible.
+    """
+    h, s, v = colorsys.rgb_to_hsv(*to_rgb(colour))
+    return colorsys.hsv_to_rgb(h, min(1.0, s * sat_boost), max(0.0, v * darken))
+
+
 # fig2d's four-account ramp, reused verbatim so fig3c reads as its sibling:
 # cool = the base work you would pay anyway, warm = the coordination tax.
 ACCOUNTS = [("Context", "context", "#cfe6ef"), ("Task", "task", "#1b7ba0"),
@@ -256,8 +269,8 @@ def figure3b(recs):
             centre = (p + z * z / (2 * k)) / den
             half = z * np.sqrt(p * (1 - p) / k + z * z / (4 * k * k)) / den
             los.append(max(p - (centre - half), 0)); his.append(max((centre + half) - p, 0))
-        ax.errorbar(ns, ys, yerr=[los, his], fmt="none", ecolor="0.45",
-                    elinewidth=0.7, capsize=2, capthick=0.7, zorder=3)
+        ax.errorbar(ns, ys, yerr=[los, his], fmt="none", ecolor=_bar_colour(colour),
+                    elinewidth=0.9, capsize=2.2, capthick=0.9, zorder=3)
         ax.plot(ns, ys, "-", color="black", lw=0.7, zorder=3)
         ax.scatter(ns, ys, s=34, marker="o", zorder=4, linewidths=0.3, edgecolors="black", c=colour)
         for x, y in zip(ns, ys):
@@ -340,8 +353,8 @@ def figure3d(recs):
         ns = sorted(n for (a, n) in t if a == arm)
         ys = [t[(arm, n)]["mean_wall_s"] / 60 for n in ns]
         errs = [_ci(recs, arm, "wall_seconds", n) / 60 for n in ns]
-        ax.errorbar(ns, ys, yerr=errs, fmt="none", ecolor="0.45", elinewidth=0.7,
-                    capsize=2, capthick=0.7, zorder=3)
+        ax.errorbar(ns, ys, yerr=errs, fmt="none", ecolor=_bar_colour(colour),
+                    elinewidth=0.9, capsize=2.2, capthick=0.9, zorder=3)
         ax.plot(ns, ys, "-", color="black", lw=0.7, zorder=3)
         ax.scatter(ns, ys, s=34, marker="o", zorder=4, linewidths=0.3, edgecolors="black", c=colour)
         for x, y in zip(ns, ys):
