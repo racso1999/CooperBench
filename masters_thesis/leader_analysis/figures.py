@@ -54,9 +54,8 @@ SURFACE = "#fffdfb"   # faint warm off-white surface
 # module named `figures` (and one named `analyze`), so cross-importing collides;
 # self-containment is the same property the fig2 suite advertises.
 
-# two-sided t critical values at 95% by degrees of freedom (small-sample honest)
-_T975 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365,
-         8: 2.306, 9: 2.262, 10: 2.228, 11: 2.201, 12: 2.179, 13: 2.160}
+# (the 95% t table that used to live here went with the CI bars — every figure
+#  now draws +/-1 SD across pool means instead; see _sd)
 
 
 def _style():
@@ -176,20 +175,36 @@ ACCOUNTS = [("Context", "context", "#cfe6ef"), ("Task", "task", "#1b7ba0"),
             ("Comm", "comm", "#ef8080"), ("Rework", "rework", "#b01e28")]
 
 
-def _ci(recs, arm, field, agents):
-    """95% CI half-width of the mean, clustered by pool (matches fig2a/2b)."""
+def _sd(recs, arm, field, agents):
+    """+/-1 SD across POOL means — the single construction behind every bar.
+
+    Matches fig2a/2b/2e: average the runs within each pool, then take the plain
+    standard deviation across those pool means. This is descriptive spread
+    between pools, not a confidence interval, so it makes no inferential claim
+    and is not a significance test. The pool is the unit because runs inside one
+    share a repo, a task and a feature clique, and because for a binary outcome
+    the run-level SD is just sqrt(p(1-p)) — fixed by the rate already plotted.
+    """
     from collections import defaultdict
     by_pool = defaultdict(list)
     for r in recs:
         if r["arm"] == arm and r["agents"] == agents and r.get(field) is not None:
-            by_pool[r["pool_id"]].append(r[field])
-    if not by_pool:
-        return 0.0
+            by_pool[r["pool_id"]].append(float(r[field]))
     pool_means = np.array([np.mean(v) for v in by_pool.values()])
-    k = len(pool_means)
-    if k < 2:
+    if len(pool_means) < 2:
         return 0.0
-    return _T975.get(k - 1, 1.96) * pool_means.std(ddof=1) / np.sqrt(k)
+    return float(pool_means.std(ddof=1))
+
+
+def _clip_bars(points, sds, lo=None, hi=None):
+    """Split symmetric SD bars into [down, up] distances, clipped to a range."""
+    down, up = [], []
+    for p, s in zip(points, sds):
+        d = s if lo is None else min(s, p - lo)
+        u = s if hi is None else min(s, hi - p)
+        down.append(max(d, 0.0))
+        up.append(max(u, 0.0))
+    return [down, up]
 
 
 def _save(fig, name, facecolor="white"):
@@ -268,16 +283,12 @@ def figure3b(recs):
     handles = []
     for arm, colour, label, ly in (("flat", FLAT, "Flat peers", 7), ("leader", LEADER, "Supervised", -11)):
         ns, ys = _arm_points(agg, arm, "all_pass_rate")
-        # Wilson 95% interval for a binomial proportion (matches fig2a)
-        los, his = [], []
-        for n, p in zip(ns, ys):
-            k = agg[(arm, n)]["n_runs"]
-            z = 1.96
-            den = 1 + z * z / k
-            centre = (p + z * z / (2 * k)) / den
-            half = z * np.sqrt(p * (1 - p) / k + z * z / (4 * k * k)) / den
-            los.append(max(p - (centre - half), 0)); his.append(max((centre + half) - p, 0))
-        ax.errorbar(ns, ys, yerr=[los, his], fmt="none",
+        # +/-1 SD across pool means, clipped to [0, 1] (matches fig2a)
+        errs = [_sd(recs, arm, "all_passed", n) for n in ns]
+        # dodge the bars so the two arms' SD bars do not sit on top of each
+        # other at the sizes N where both are present (markers stay on true N)
+        dx = 0.055 if arm == "leader" else -0.055
+        ax.errorbar([n + dx for n in ns], ys, yerr=_clip_bars(ys, errs, 0.0, 1.0), fmt="none",
                     ecolor=_bar_colour(colour, BAR_DARKEN[arm]),
                     elinewidth=0.9, capsize=2.2, capthick=0.9, zorder=3)
         ax.plot(ns, ys, "-", color="black", lw=0.7, zorder=3)
@@ -358,11 +369,14 @@ def figure3d(recs):
     xline = np.linspace(1, 5, 100)
     ax.plot(xline, t1 / xline, "--", color="0.5", lw=1.0, zorder=2)
     handles = []
+    bar_top = 0.0  # tallest point+SD, so the ylim below leaves room for the bars
     for arm, colour, label in (("flat", FLAT, "Flat peers"), ("leader", LEADER, "Supervised")):
         ns = sorted(n for (a, n) in t if a == arm)
         ys = [t[(arm, n)]["mean_wall_s"] / 60 for n in ns]
-        errs = [_ci(recs, arm, "wall_seconds", n) / 60 for n in ns]
-        ax.errorbar(ns, ys, yerr=errs, fmt="none",
+        errs = [_sd(recs, arm, "wall_seconds", n) / 60 for n in ns]
+        bar_top = max(bar_top, max(y + e for y, e in zip(ys, errs)))
+        dx = 0.055 if arm == "leader" else -0.055
+        ax.errorbar([n + dx for n in ns], ys, yerr=_clip_bars(ys, errs, lo=0.0), fmt="none",
                     ecolor=_bar_colour(colour, BAR_DARKEN[arm]),
                     elinewidth=0.9, capsize=2.2, capthick=0.9, zorder=3)
         ax.plot(ns, ys, "-", color="black", lw=0.7, zorder=3)
@@ -373,8 +387,7 @@ def figure3d(recs):
         handles.append(Line2D([0], [0], color="black", lw=0.7, marker="o", markersize=5,
                               markerfacecolor=colour, markeredgecolor="black", markeredgewidth=0.3, label=label))
     handles.append(Line2D([0], [0], color="0.5", lw=1.0, ls="--", label="Perfect parallelism  $T_1/N$"))
-    top = max(t[k]["mean_wall_s"] / 60 for k in t)
-    ax.set_ylim(0, top * 1.3)
+    ax.set_ylim(0, bar_top * 1.08)
     _fig2_chrome(fig, ax, [1, 2, 3, 4, 5], "Minutes to completion")
     _fig2_legend(ax, handles, loc="upper left", bbox=(0.03, 0.97))
     return _save(fig, "fig3d_wallclock_topology.png", facecolor="white")
