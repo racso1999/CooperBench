@@ -130,21 +130,31 @@ def _bar_colour(colour, darken=0.60, sat_boost=1.15):
     return colorsys.hsv_to_rgb(h, min(1.0, s * sat_boost), max(0.0, v * darken))
 
 
-def _pool_sd(recs, field, key_n="N", scale=1.0):
-    """Per-N mean and +/-1 SD across POOL means, for every error bar we draw.
+# two-sided t critical values at 95% by degrees of freedom (small-sample honest)
+_T975 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365,
+         8: 2.306, 9: 2.262, 10: 2.228, 11: 2.201, 12: 2.179, 13: 2.160}
 
-    One construction for every series in every figure: average the runs within
-    each pool, then take the plain standard deviation across those pool means.
-    Bars are the *spread between pools*, not a confidence interval — they make
-    no inferential claim and are not a significance test.
 
-    The pool is the unit rather than the run for two reasons. Runs inside a
-    pool share a repo, a task and a feature clique, so they are not independent
-    observations; and for a binary outcome (all-pass) the run-level SD is just
-    sqrt(p(1-p)), which is fixed by the rate itself and carries no information
-    beyond the point already plotted.
+def _pool_ci(recs, field, key_n="N", scale=1.0):
+    """Per-N mean and 95% CI half-width of that mean, clustered by POOL.
 
-    Returns {N: {"mean", "sd", "n_pools"}}, with values multiplied by `scale`
+    ONE construction for every series in every figure: average the runs within
+    each pool, then take a t interval across those pool means,
+
+        half-width = t*(k-1) . SD(pool means) / sqrt(k)
+
+    so the bar answers "how precisely is this average known", and two points
+    whose bars clear each other differ by more than sampling noise.
+
+    The pool is the replication unit, not the run: runs inside a pool share a
+    repo, a task and a feature clique, so they are not independent and counting
+    them as such would overstate precision. This applies to the binary all-pass
+    series too, which is why it is no longer drawn as an unclustered Wilson
+    interval — that treated 44 correlated runs as 44 independent ones and came
+    out 1.3-2.6x too narrow, and it was inconsistent with the graded-score bars
+    sitting on the same axis.
+
+    Returns {N: {"mean", "hw", "sd", "n_pools"}}, values scaled by `scale`
     (used to convert seconds to minutes).
     """
     from collections import defaultdict
@@ -159,22 +169,23 @@ def _pool_sd(recs, field, key_n="N", scale=1.0):
     for N, by_pool in by_n.items():
         pool_means = np.array([np.mean(v) for v in by_pool.values()])
         k = len(pool_means)
-        out[N] = {"mean": float(pool_means.mean()),
-                  "sd": float(pool_means.std(ddof=1)) if k > 1 else 0.0,
-                  "n_pools": k}
+        sd = float(pool_means.std(ddof=1)) if k > 1 else 0.0
+        hw = _T975.get(k - 1, 1.96) * sd / np.sqrt(k) if k > 1 else 0.0
+        out[N] = {"mean": float(pool_means.mean()), "hw": float(hw),
+                  "sd": sd, "n_pools": k}
     return out
 
 
-def _clip_bars(points, sds, lo=None, hi=None):
-    """Split symmetric SD bars into [down, up] distances, clipped to a range.
+def _clip_bars(points, hws, lo=None, hi=None):
+    """Split symmetric bars into [down, up] distances, clipped to a range.
 
     Graded score and all-pass are fractions, so a bar may not extend past 0 or
-    1; wall-clock and cost may not go below 0. Clipping at the logical bound is
-    honest — the quantity genuinely cannot live outside it — and keeps the bars
-    inside the axes.
+    1; wall-clock and cost may not go below 0. A normal-theory interval has no
+    such knowledge, so clipping at the logical bound is what keeps the drawing
+    honest — the quantity genuinely cannot live outside it.
     """
     down, up = [], []
-    for p, s in zip(points, sds):
+    for p, s in zip(points, hws):
         d = s if lo is None else min(s, p - lo)
         u = s if hi is None else min(s, hi - p)
         down.append(max(d, 0.0))
@@ -238,10 +249,10 @@ def figure2a(recs):
     # carry its own fraction-scaled colour (green = score, orange = all-pass)
     ax.plot(ns, score, "-", color="black", lw=0.7, zorder=3)
     ax.plot(ns, allp, "-", color="black", lw=0.7, zorder=3)
-    # +/-1 SD across pool means — the same construction for BOTH series, so the
-    # two sets of bars are directly comparable
-    ci = _pool_sd(recs, "score")
-    ap = _pool_sd(recs, "all_passed")
+    # 95% CI of the mean, clustered by pool — the same construction for BOTH
+    # series, so the two sets of bars are directly comparable
+    ci = _pool_ci(recs, "score")
+    ap = _pool_ci(recs, "all_passed")
     # two series, two bar colours: blue bars belong to the graded score, rust
     # bars to the all-pass rate. The bars overlap vertically at several N, so a
     # shared grey left them unattributable.
@@ -250,16 +261,15 @@ def figure2a(recs):
     # 4.5:1 contrast floor on white, at 4.7
     score_bar = _bar_colour(_score_shade(0.95))
     allp_bar = _bar_colour(_allpass_shade(0.88), darken=0.82)
-    # SD bars are far taller than the old CIs and both series share an x, so the
-    # all-pass bar would sit exactly on top of the score bar and hide it. Dodge
-    # the BARS a hair apart; markers and lines stay on the true N.
+    # both series share an x, so one bar can sit on top of the other and hide
+    # it. Dodge the BARS a hair apart; markers and lines stay on the true N.
     dx = 0.055
     ax.errorbar([n - dx for n in ns], score,
-                yerr=_clip_bars(score, [ci[N]["sd"] for N in ns], 0.0, 1.0),
+                yerr=_clip_bars(score, [ci[N]["hw"] for N in ns], 0.0, 1.0),
                 fmt="none", ecolor=score_bar, elinewidth=0.9, capsize=2.2,
                 capthick=0.9, zorder=3)
     ax.errorbar([n + dx for n in ns], allp,
-                yerr=_clip_bars(allp, [ap[N]["sd"] for N in ns], 0.0, 1.0),
+                yerr=_clip_bars(allp, [ap[N]["hw"] for N in ns], 0.0, 1.0),
                 fmt="none", ecolor=allp_bar, elinewidth=0.9, capsize=2.2,
                 capthick=0.9, zorder=3)
     ax.scatter(ns, score, s=32, marker="o", zorder=4, linewidths=0.3,
@@ -273,7 +283,7 @@ def figure2a(recs):
     for x, y in zip(ns, allp):
         ax.annotate(f"{y:.0%}", (x, y), textcoords="offset points", xytext=(8, -8),
                     ha="left", fontsize=4.7, color="black", fontname="Helvetica")
-    # pool count behind each N's error bars (the SD is taken across these)
+    # pool count behind each N's error bars (these drive the CI width)
     for N in ns:
         ax.text(N, 1.10, f"{ci[N]['n_pools']} pools", ha="center", va="bottom",
                 fontsize=4.3, color="0.45", fontname="Helvetica")
@@ -305,13 +315,13 @@ def figure2b(recs):
     ax.plot(xline, slope * xline + intercept, "--", color="0.5", lw=1.0, zorder=2)
     ax.plot(ns, cost, "-", color="black", lw=0.7, zorder=3)
     # 95% CI of mean cost, clustered by pool (matches fig2a)
-    ci = _pool_sd(recs, "cost")  # +/-1 SD across pool means
+    ci = _pool_ci(recs, "cost")  # 95% CI of the mean, clustered by pool
     # one hue (violet); markers deepen/brighten with cost but read as one series
     lo, hi = min(cost), max(cost)
     cvals = [_mono_shade(c, COST_HUE, lo, hi) for c in cost]
     # single series, so there is nothing to disambiguate by hue: black gives the
     # bars maximum contrast and keeps them distinct from the grey linear fit
-    ax.errorbar(ns, cost, yerr=_clip_bars(cost, [ci[N]["sd"] for N in ns], lo=0.0),
+    ax.errorbar(ns, cost, yerr=_clip_bars(cost, [ci[N]["hw"] for N in ns], lo=0.0),
                 fmt="none", ecolor="black", elinewidth=0.9, capsize=2.2,
                 capthick=0.9, zorder=3)
     ax.scatter(ns, cost, s=34, marker="o", zorder=4, linewidths=0.3,
@@ -324,7 +334,7 @@ def figure2b(recs):
         ax.annotate(f"{ci[N]['n_pools']} pools", (N, y + ci[N]["sd"]),
                     textcoords="offset points", xytext=(0, 4), ha="center",
                     va="bottom", fontsize=4.3, color="0.45", fontname="Helvetica")
-    top = max(c + ci[N]["sd"] for N, c in zip(ns, cost))
+    top = max(c + ci[N]["hw"] for N, c in zip(ns, cost))
     ax.set_ylim(0, top * 1.16)
     _fig2_chrome(fig, ax, ns, "US dollars")
     return _save(fig, "fig2b_cost.png", facecolor="white")
@@ -448,13 +458,13 @@ def figure2e(recs):
     ax.plot(xline, t1 / xline, "--", color="0.5", lw=1.0, zorder=2)
     ax.plot(ns, walls, "-", color="black", lw=0.7, zorder=3)
     # 95% CI of mean wall time, clustered by pool (matches fig2a/2b)
-    ci = _pool_sd(recs, "wall_seconds", scale=1.0 / 60)  # +/-1 SD across pool means
+    ci = _pool_ci(recs, "wall_seconds", scale=1.0 / 60)  # 95% CI, clustered by pool
     # one hue (warm red); markers deepen as time inflates but read as one series
     lo, hi = min(walls), max(walls)
     cvals = [_mono_shade(w, TIME_HUE, lo, hi) for w in walls]
     # single series: black, for maximum contrast and a clean separation from
     # the grey dashed T1/N ideal running through the same region
-    ax.errorbar(ns, walls, yerr=_clip_bars(walls, [ci[N]["sd"] for N in ns], lo=0.0),
+    ax.errorbar(ns, walls, yerr=_clip_bars(walls, [ci[N]["hw"] for N in ns], lo=0.0),
                 fmt="none", ecolor="black", elinewidth=0.9, capsize=2.2,
                 capthick=0.9, zorder=3)
     ax.scatter(ns, walls, s=34, marker="o", zorder=4, linewidths=0.3,
@@ -468,7 +478,7 @@ def figure2e(recs):
             ax.annotate(f"{t[x]['speedup_mean']:.2f}×", (x, y),
                         textcoords="offset points", xytext=(7, -8), ha="left",
                         fontsize=4.3, color="0.45", fontname="Helvetica")
-    top = max(w + ci[N]["sd"] for N, w in zip(ns, walls))
+    top = max(w + ci[N]["hw"] for N, w in zip(ns, walls))
     ax.set_ylim(0, top * 1.16)
     handles = [
         Line2D([0], [0], color="black", lw=0.7, marker="o", markersize=5,
