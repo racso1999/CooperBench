@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
-"""Render 'Why These Six Protocols' as a slide-ready PDF in three sections.
+"""Render the protocol study as a three-page slide pack, one page per slide.
 
-Laid out as discrete blocks, each sized to become one PowerPoint slide and
-labelled with its slide number, a headline, bullets, and a takeaway line.
-Every figure quoted is produced by ``replication_messages.py``; this module
-only lays them out.  No LaTeX toolchain required.
+    1. Semantic patterns  — how the agents' messages were read and coded
+    2. The protocols      — the six arms and what each one aims to fix
+    3. The findings       — the two figures, and what they show
+
+Written to be followable by someone who has never seen the benchmark: the setup
+is stated before any result, and every term is defined at the point it is first
+used (see SETUP on slide 1 and the JARGON box on slide 3).
+
+Every number quoted is produced by ``replication_messages.py`` (message themes,
+patch forensics) and ``analyze.py`` (arm endpoints); this module only lays them
+out. No LaTeX toolchain required.
 
     uv run --with reportlab python masters_thesis/protocol_analysis/protocol_rationale_pdf.py
 """
@@ -20,7 +27,7 @@ from reportlab.lib.units import mm
 from reportlab.platypus import (
     BaseDocTemplate,
     Frame,
-    KeepTogether,
+    Image,
     PageBreak,
     PageTemplate,
     Paragraph,
@@ -29,7 +36,9 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-OUT = "masters_thesis/protocol_analysis/protocol_rationale.pdf"
+HERE = os.path.dirname(os.path.abspath(__file__))
+OUT = os.path.join(HERE, "protocol_rationale.pdf")
+FIGS = os.path.join(HERE, "figures")
 
 INK = colors.HexColor("#1a1a1a")
 MUTED = colors.HexColor("#6b7280")
@@ -37,7 +46,6 @@ RULE = colors.HexColor("#d8dbe0")
 BAND = colors.HexColor("#f4f5f7")
 ACCENT = colors.HexColor("#1f4e79")
 FAIL = colors.HexColor("#a33a2a")
-GREY = colors.HexColor("#4b5563")
 WIN = colors.HexColor("#1d6b45")
 
 _ss = getSampleStyleSheet()
@@ -49,84 +57,54 @@ def _p(name, size, leading, **kw):
 
 
 S = {
-    "title": _p("title", 22, 26, font="Helvetica-Bold", spaceAfter=3),
-    "sub": _p("sub", 10, 14, color=MUTED, spaceAfter=4),
-    "slideno": _p("slideno", 7.6, 10, font="Helvetica-Bold", color=colors.white),
-    "slidetitle": _p("slidetitle", 12, 15, font="Helvetica-Bold", color=colors.white),
-    "bullet": _p("bullet", 9.4, 13.4, leftIndent=12, bulletIndent=2, spaceAfter=3.5),
-    "take": _p("take", 9.2, 12.6, font="Helvetica-Oblique"),
-    "takeb": _p("takeb", 8, 10, font="Helvetica-Bold", color=WIN),
-    "cell": _p("cell", 8.5, 11, font="Times-Roman"),
-    "cellb": _p("cellb", 8.5, 11, font="Helvetica-Bold"),
-    "cellh": _p("cellh", 8.2, 10.4, font="Helvetica-Bold", color=colors.white),
-    "quote": _p("quote", 8.9, 12.6, font="Times-Roman"),
-    "small": _p("small", 7.6, 10.4, color=MUTED, spaceAfter=4),
-    "secno": _p("secno", 26, 28, font="Helvetica-Bold", color=colors.white),
-    "sectitle": _p("sectitle", 14, 17, font="Helvetica-Bold", color=colors.white),
-    "seclead": _p("seclead", 9, 12, color=colors.HexColor("#c8d4e0")),
+    "slideno": _p("slideno", 8.5, 11, font="Helvetica-Bold", color=colors.white),
+    "slidetitle": _p("slidetitle", 15, 18, font="Helvetica-Bold", color=colors.white),
+    "slidesub": _p("slidesub", 8.6, 11, color=colors.HexColor("#c3d2e0")),
+    "h2": _p("h2", 9.5, 12, font="Helvetica-Bold", color=ACCENT, spaceBefore=2, spaceAfter=3),
+    "bullet": _p("bullet", 8.6, 12, leftIndent=11, bulletIndent=2, spaceAfter=2.5),
+    "cell": _p("cell", 7.9, 10.2, font="Times-Roman"),
+    "cellb": _p("cellb", 7.9, 10.2, font="Helvetica-Bold"),
+    "cellh": _p("cellh", 7.7, 9.8, font="Helvetica-Bold", color=colors.white),
+    "setup": _p("setup", 8.4, 11.4),
+    "setuph": _p("setuph", 8.4, 11, font="Helvetica-Bold", color=ACCENT),
+    "quote": _p("quote", 8.1, 11, font="Times-Italic"),
+    "figcap": _p("figcap", 7.5, 9.8, color=MUTED),
+    "stat": _p("stat", 14.5, 16, font="Helvetica-Bold", color=ACCENT),
+    "statlab": _p("statlab", 7.0, 8.8, color=MUTED),
+    "take": _p("take", 9.0, 12, font="Helvetica-Oblique"),
+    "takeb": _p("takeb", 7.6, 10, font="Helvetica-Bold", color=WIN),
+    "small": _p("small", 7.1, 9.4, color=MUTED),
 }
 
-MONO = "<font face='Courier' size='8'>{}</font>"
+MONO = "<font face='Courier' size='7.5'>{}</font>"
+W = A4[0] - 36 * mm
 
 
-def bullets(items, style="bullet"):
-    return [Paragraph(t, S[style], bulletText="•") for t in items]
+def bullets(items):
+    return [Paragraph(t, S["bullet"], bulletText="•") for t in items]
 
 
-def takeaway(text, colour=WIN):
-    """The one line to put in bold at the bottom of the slide."""
-    return Table([[Paragraph("TAKEAWAY", S["takeb"]), Paragraph(text, S["take"])]],
-                 colWidths=[20 * mm, None], hAlign="LEFT", style=TableStyle([
-                     ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                     ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#eef4f0")),
-                     ("LINEBEFORE", (0, 0), (0, -1), 2.5, colour),
-                     ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-                     ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7),
-                 ]))
-
-
-def slide(num, title, body, width, colour=ACCENT):
-    """One slide-sized block: numbered header bar + body flowables."""
-    head = Table([[Paragraph(f"SLIDE {num}", S["slideno"]), Paragraph(title, S["slidetitle"])]],
-                 colWidths=[19 * mm, width - 19 * mm], style=TableStyle([
-                     ("BACKGROUND", (0, 0), (-1, -1), colour),
-                     ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                     ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-                     ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-                 ]))
-    inner = Table([[b] for b in body], colWidths=[width], style=TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-        ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-        ("BOX", (0, 0), (-1, -1), 0.6, RULE),
-    ]))
-    return KeepTogether([head, inner, Spacer(1, 11)])
-
-
-def section(num, title, lead, width):
-    band = Table([[Paragraph(num, S["secno"]),
-                   Table([[Paragraph(title, S["sectitle"])], [Paragraph(lead, S["seclead"])]],
-                         colWidths=[width - 24 * mm], style=TableStyle([
-                             ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                             ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-                             ("TOPPADDING", (0, 0), (-1, -1), 1),
-                             ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
-                         ]))]],
-                 colWidths=[24 * mm, width - 24 * mm], style=TableStyle([
+def header(num, title, sub):
+    inner = Table([[Paragraph(title, S["slidetitle"])], [Paragraph(sub, S["slidesub"])]],
+                  colWidths=[W - 22 * mm], style=TableStyle([
+                      ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                      ("TOPPADDING", (0, 0), (-1, -1), 1), ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+                  ]))
+    return Table([[Paragraph(num, S["slideno"]), inner]],
+                 colWidths=[22 * mm, W - 22 * mm], style=TableStyle([
                      ("BACKGROUND", (0, 0), (-1, -1), INK),
                      ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                     ("TOPPADDING", (0, 0), (-1, -1), 9), ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
+                     ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
                      ("LEFTPADDING", (0, 0), (-1, -1), 9), ("RIGHTPADDING", (0, 0), (-1, -1), 9),
                  ]))
-    return KeepTogether([band, Spacer(1, 10)])
 
 
 def grid(data, widths, centre_from=1):
     st = [
         ("BACKGROUND", (0, 0), (-1, 0), ACCENT),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 3.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 3.5),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6), ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5), ("RIGHTPADDING", (0, 0), (-1, -1), 5),
         ("LINEBELOW", (0, 0), (-1, -2), 0.4, RULE),
         ("LINEBELOW", (0, -1), (-1, -1), 0.8, INK),
         ("ALIGN", (centre_from, 0), (-1, -1), "CENTER"),
@@ -137,330 +115,291 @@ def grid(data, widths, centre_from=1):
     return Table(data, colWidths=widths, style=TableStyle(st), hAlign="LEFT")
 
 
+def statstrip(items):
+    cells = [Table([[Paragraph(v, S["stat"])], [Paragraph(lab, S["statlab"])]],
+                   style=TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 0),
+                                     ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                                     ("TOPPADDING", (0, 0), (-1, -1), 1),
+                                     ("BOTTOMPADDING", (0, 0), (-1, -1), 1)]))
+            for v, lab in items]
+    w = W / len(items)
+    return Table([cells], colWidths=[w] * len(items), style=TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), BAND),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("LINEAFTER", (0, 0), (-2, -1), 0.5, RULE),
+    ]))
+
+
+def boxed(rows, title, colour=ACCENT, bg="#f4f7fa"):
+    """A labelled definition box: [(term, meaning), ...]."""
+    body = [[Paragraph(f"<b>{t}</b>", S["setup"]), Paragraph(d, S["setup"])] for t, d in rows]
+    inner = Table(body, colWidths=[34 * mm, W - 52 * mm], style=TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 1.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5),
+    ]))
+    return Table([[Paragraph(title, S["setuph"])], [inner]], colWidths=[W], style=TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(bg)),
+        ("LINEBEFORE", (0, 0), (0, -1), 3, colour),
+        ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 9), ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+    ]))
+
+
+def takeaway(text, colour=WIN):
+    return Table([[Paragraph("TAKEAWAY", S["takeb"]), Paragraph(text, S["take"])]],
+                 colWidths=[19 * mm, W - 19 * mm], style=TableStyle([
+                     ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                     ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#eef4f0")),
+                     ("LINEBEFORE", (0, 0), (0, -1), 2.5, colour),
+                     ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                     ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+                 ]))
+
+
+def banner(text, colour=FAIL, bg="#fdf3f1"):
+    return Table([[Paragraph(text, _p("b", 10.5, 14, font="Helvetica-Bold"))]],
+                 colWidths=[W], style=TableStyle([
+                     ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(bg)),
+                     ("LINEBEFORE", (0, 0), (0, -1), 3, colour),
+                     ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                     ("LEFTPADDING", (0, 0), (-1, -1), 9), ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+                 ]))
+
+
 # --------------------------------------------------------------------------- #
-# Data
-# --------------------------------------------------------------------------- #
+
+SETUP = [
+    ("The task", "Two AI agents are each given <b>one feature to add to the same codebase</b> "
+                 "— for example, two new options on the same function."),
+    ("The catch", "Each works in its <b>own private copy</b>. Neither can see the other's edits. "
+                  "They <b>can send each other messages</b> while they work."),
+    ("The join", "At the end, their two sets of edits are combined <b>automatically</b>, with no "
+                 "human to resolve disagreements."),
+    ("What can fail", "If both rewrote the <b>same lines</b>, the automatic combine gives up — a "
+                      "<b>clash</b>. The work is done, but it cannot be assembled."),
+]
 
 THEMES = [
-    ("T1", "Coordination is <b>file-scoped</b> — every run names the files it will touch", "100%", "—"),
-    ("T2", "Ownership is explicitly proposed (“you take X, I take Y”)", "1%", "—"),
-    ("T3", "<b>Both</b> agents say they will append their parameter <b>last</b>", "20%", "97%"),
-    ("T4", "Sequencing illusion (“I’ll go first”, “layer yours on top”)", "24%", "77%"),
-    ("T5", "Workspace isolation discovered mid-run (“separate sandboxes”)", "27%", "—"),
-    ("T6", "A clean merge is self-certified (“additive”, “no overlap”)", "63%", "63%"),
-    ("T7", "A question is actually asked of the partner", "9%", "—"),
-    ("T8", "<b>Verbatim code</b> is exchanged", "3%", "—"),
-    ("T9", "Ends with a terminal “done / submitting” announcement", "50%", "—"),
+    ("They name the <b>files</b> they will touch", "100%", "—"),
+    ("They actually <b>divide up</b> who owns what (“you take X”)", "1%", "—"),
+    ("<b>Both</b> say they will add their change <b>last</b> in the same place", "20%", "97%"),
+    ("They agree an order of work their setup cannot deliver "
+     "(“I’ll go first”, “layer yours on top”)", "24%", "77%"),
+    ("They <b>declare it will combine fine</b> (“additive”, “no overlap”)", "63%", "63%"),
+    ("They send each other <b>actual code</b>", "3%", "—"),
 ]
 
-FORENSICS = [
-    ("Conflicting runs analysed", "93"),
-    ("…both patches touch a shared file", "100%"),
-    ("…the colliding file was <b>explicitly named in the chat</b>", "100%"),
-    ("…collision starts at the <b>byte-identical same line</b>", "90%"),
-    ("…both patches rewrite the <b>same function signature</b>", "27%"),
-]
-
-LADDER = [
-    ("1", "control", "Nothing", "13% / 2%"),
-    ("2", "free-text", "Prose intent", "21% / 3%"),
-    ("3", "semi-structured", "Validated metadata about intent", "16% / 3%"),
-    ("4", "plan-handshake", "A binding partition of files", "20% / 10%"),
-    ("5", "designated-coder", "A single writer per shared file", "18% / 58%"),
-    ("6", "coauthor-overlap", "<b>The merged bytes themselves</b>", "<b>78% / 69%</b>"),
-]
-
-# num, arm, rung, targets, why (bullets), result, verdict, colour
 ARMS = [
-    ("3.1", "control — no messaging", "Must agree: nothing", "The floor", FAIL,
-     ["Establishes the conflict rate when the channel is <b>removed entirely</b>.",
-      "In 63% of replication runs the pair self-certifies a clean merge (T6). If that talk "
-      "were load-bearing, deleting it should visibly hurt.",
-      "<i>Prediction:</i> if messaging does real work, control should be clearly worse."],
-     "13% merge-clean · 2% both-passed",
-     "Free-text beats it by 8 points — <b>not significant</b> (p = 0.105). The talk was never load-bearing."),
-    ("3.2", "free-text — unconstrained messaging", "Must agree: prose intent",
-     "The replication’s own condition", GREY,
-     ["Carries the replication protocol down to the screened 18-pair subset.",
-      "Guarantees every other arm is measured against the <b>same population</b> in which "
-      "themes T1–T9 were observed.",
-      "<i>Prediction:</i> reproduces the replication’s themes and its floor-level merge rate."],
-     "21% merge-clean · 3% both-passed",
-     "Reference arm. Confirms the diagnosis transfers to the nano subset."),
-    ("3.3", "semi-structured — typed, validated fields", "Must agree: metadata about intent",
-     "Targets T1 (100%) · T2 (1%)", FAIL,
-     ["Tests the obvious first hypothesis: the coordination information is <b>present but informal</b>.",
-      "Enforces it as typed " + MONO.format("--type / --files / --summary") +
-      " fields; malformed messages are rejected and never delivered.",
-      "<i>Prediction:</i> T1 = 100% predicts <b>failure</b> — agents already volunteer everything "
-      "the schema asks for."],
-     "16% merge-clean · 3% both-passed",
-     "<b>Not significant</b> (p = 1.00). Rules out “they just needed to say more” — the information "
-     "was never missing."),
-    ("3.4", "plan-handshake — agree a disjoint file split", "Must agree: a binding partition of files",
-     "Targets T2 (1%) · T4 (24%, 77% conflict)", FAIL,
-     ["The pair almost never allocates, and substitutes an <b>unenforceable turn-taking story</b>.",
-      "Replaces it with a mutually " + MONO.format("ACCEPT") + "ed disjoint split and a "
-      "<b>real blocking barrier</b> (" + MONO.format("coop-await") + ") before any edit.",
-      "<i>Prediction:</i> fixes allocation — but the split is still file-level, so merge-clean "
-      "should not move."],
-     "20% merge-clean · <b>10%</b> both-passed",
-     "Merge-clean <b>n.s.</b>; both-passed 2%→10% (p = 8×10⁻⁵). The barrier bought <b>correctness, "
-     "not mergeability</b> — so the residue is not an allocation failure."),
-    ("3.5", "designated-coder — one owner per shared file", "Must agree: a single writer, plus a spec",
-     "Targets the file-granularity ceiling", GREY,
-     ["Median shared files per conflict = 1, and it is always the file <b>both agents named</b> — "
-      "so no disjoint split of it exists.",
-      "Stops splitting: assigns one owner, and routes the other’s needs as a written " +
-      MONO.format("SPEC") + " instead of as conflicting edits.",
-      "<i>Prediction:</i> removing the second writer should collapse the conflict rate."],
-     "18% merge-clean · <b>58%</b> both-passed",
-     "Textual conflict 80%→39%. But the gain arrives as <b>solo-rescue</b> (43%) — one patch carrying "
-     "the pair — and merge-clean stays at the floor."),
-    ("3.6", "coauthor-overlap — byte-identical merged code", "Must agree: the merged bytes themselves",
-     "Targets T3 (20%, 97% conflict) · T8 (3%)", WIN,
-     ["90% of conflicts start at the <b>identical line</b>; 27% rewrite the same " +
-      MONO.format("def") + ".",
-      "Pairs <b>already try</b> to state the merged construct in prose — they just never exchange "
-      "it as code (T8 = 3%).",
-      "So it requires that construct to be agreed and then emitted <b>verbatim, byte-for-byte, "
-      "in both patches</b>.",
-      "<i>Prediction:</i> the only rung reaching the construct — the only one that should work."],
-     "<b>78%</b> merge-clean · <b>69%</b> both-passed",
-     "CMH OR 27.7, p &lt; 10⁻²⁸. Produces <b>26 byte-identical merges</b> against exactly 1 across "
-     "the other five arms’ 1,168 runs combined."),
+    ("1", "control", "Nothing —<br/>no messaging at all",
+     "The baseline. If the talking is doing real work, removing it should hurt.", "13% / 2%"),
+    ("2", "free-text", "Whatever they<br/>choose to say",
+     "The original condition, repeated here so the other five have something to beat.", "21% / 3%"),
+    ("3", "semi-structured", "A filled-in form<br/>about their intent",
+     "Tests whether the problem was just <b>sloppiness</b>: forces every message to name its "
+     "files and intent, or be rejected.", "16% / 3%"),
+    ("4", "plan-handshake", "A split of the files,<br/>agreed up front",
+     "Fixes the missing hand-out of work: they must <b>agree who owns which file and wait for a "
+     "reply</b> before typing anything.", "20% / 10%"),
+    ("5", "designated-coder", "One owner per<br/>shared file",
+     "Accepts that a file both need cannot be split, so <b>only one agent writes it</b>; the "
+     "other sends a written request instead.", "18% / 58%"),
+    ("6", "coauthor-overlap", "<b>The exact merged<br/>code itself</b>",
+     "Goes after the clash directly: they agree the shared code word-for-word, then "
+     "<b>both type the identical text</b>.", "<b>78% / 69%</b>"),
+]
+
+JARGON = [
+    ("Combined cleanly", "The two sets of edits went together automatically, with no clash. "
+                         "<i>The headline measure.</i>"),
+    ("Both features work", "After combining, both agents' features actually pass their tests. "
+                           "<i>The stricter measure.</i>"),
+    ("Clash", "Both agents rewrote the same lines, so the automatic combine refused."),
+    ("One carried the pair", "Both features work, but only because <b>one</b> agent's copy "
+                             "happened to contain both — not because the two combined."),
+]
+
+RESULTS = [
+    ("control", "13%", "2%", "87%"),
+    ("free-text", "21%", "3%", "79%"),
+    ("semi-structured", "16%", "3%", "84%"),
+    ("plan-handshake", "20%", "10%", "80%"),
+    ("designated-coder", "18%", "58%", "39%"),
+    ("coauthor-overlap", "<b>78%</b>", "<b>69%</b>", "<b>17%</b>"),
 ]
 
 
 def build():
     doc = BaseDocTemplate(OUT, pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm,
-                          topMargin=16 * mm, bottomMargin=17 * mm,
-                          title="Why These Six Protocols", author="CooperBench")
-    frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="f")
-
-    def deco(canvas, d):
-        canvas.saveState()
-        canvas.setFont("Helvetica", 7.3)
-        canvas.setFillColor(MUTED)
-        canvas.drawString(doc.leftMargin, 10 * mm,
-                          "CooperBench · Why These Six Protocols · slide pack")
-        canvas.drawRightString(A4[0] - doc.rightMargin, 10 * mm, str(canvas.getPageNumber()))
-        canvas.setStrokeColor(RULE)
-        canvas.setLineWidth(0.5)
-        canvas.line(doc.leftMargin, 13 * mm, A4[0] - doc.rightMargin, 13 * mm)
-        canvas.restoreState()
-
-    doc.addPageTemplates([PageTemplate(id="main", frames=[frame], onPage=deco)])
-    W = doc.width
+                          topMargin=14 * mm, bottomMargin=14 * mm,
+                          title="Messaging Protocols — three-slide pack", author="CooperBench")
+    doc.addPageTemplates([PageTemplate(id="main", frames=[
+        Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="f")])])
     st = []
 
-    # ---- cover ------------------------------------------------------------
-    st.append(Paragraph("Why These Six Protocols", S["title"]))
-    st.append(Paragraph(
-        "The six coordination-protocol arms are not a sample of the protocol space. Each answers a "
-        "specific, measured failure in how the replication’s agents actually talked to each other.",
-        S["sub"]))
-    st.append(Spacer(1, 6))
-    toc = [
-        ("1", "The Problem", "What 703 replication messages reveal", "3 slides"),
-        ("2", "The Design", "One axis, six rungs — and a prediction", "2 slides"),
-        ("3", "The Six Arms", "Why each was chosen, and what happened", "7 slides"),
-    ]
+    # ===================== SLIDE 1 — SEMANTIC PATTERNS =====================
+    st.append(header("SLIDE 1", "What the agents actually said to each other",
+                     "Reading all 703 messages, and testing each habit against whether that "
+                     "attempt succeeded"))
+    st.append(Spacer(1, 7))
+    st.append(boxed(SETUP, "THE SETUP  —  what the two agents are being asked to do"))
+    st.append(Spacer(1, 7))
+
+    st.append(Paragraph("How we read the messages", S["h2"]))
+    st.extend(bullets([
+        "We took <b>every message</b> the agents sent — <b>703 of them, across 147 attempts</b> — "
+        "and tagged each conversation for recurring habits.",
+        "We then <b>linked each conversation to what happened to that attempt</b>, so a habit can "
+        "be tested: of the attempts where they said this, how many still ended in a clash?",
+        "Finally we compared the talk to the <b>actual edits</b>: for every clash, which file and "
+        "which lines the two agents collided on.",
+    ]))
+    st.append(Spacer(1, 4))
+
     st.append(grid(
-        [[Paragraph("§", S["cellh"]), Paragraph("Section", S["cellh"]),
-          Paragraph("Covers", S["cellh"]), Paragraph("Length", S["cellh"])]] +
-        [[Paragraph(f"<b>{a}</b>", S["cell"]), Paragraph(f"<b>{b}</b>", S["cell"]),
-          Paragraph(c, S["cell"]), Paragraph(d, S["cell"])] for a, b, c, d in toc],
-        [10 * mm, 34 * mm, W - 76 * mm, 22 * mm], centre_from=3))
-    st.append(Spacer(1, 14))
+        [[Paragraph("What they habitually do", S["cellh"]),
+          Paragraph("Of attempts", S["cellh"]),
+          Paragraph("…that still clashed", S["cellh"])]] +
+        [[Paragraph(t, S["cell"]), Paragraph(f"<b>{p}</b>", S["cell"]), Paragraph(c, S["cell"])]
+         for t, p, c in THEMES],
+        [W - 56 * mm, 22 * mm, 34 * mm]))
+    st.append(Spacer(1, 6))
 
-    # ======================= SECTION 1 =====================================
-    st.append(section("1", "The Problem", "What 703 replication messages reveal", W))
+    st.append(Paragraph("Where the clashes actually happened", S["h2"]))
+    st.append(statstrip([("100%", "clashed inside a file they<br/>had already discussed"),
+                         ("90%", "clashed on the very<br/>same line"),
+                         ("27%", "both rewrote the same<br/>function’s definition"),
+                         ("114s", "median length of the<br/>entire conversation")]))
+    st.append(Spacer(1, 6))
 
-    st.append(slide("1.1", "The agents coordinate — exhaustively, and at the wrong grain", [
-        Spacer(1, 5),
-        *bullets([
-            "We extracted <b>every message</b> sent in the replication’s messaging condition: "
-            "<b>703 messages across 147 pair-runs</b>.",
-            "Each run’s dialogue was coded against nine themes, then joined to the "
-            "<b>patch-level outcome</b> of the same run.",
-            "The exchange is a pair of announcements, not a negotiation: a question is asked in "
-            "<b>9%</b> of runs, the median run sends <b>5 messages</b>, and the whole conversation "
-            "is over in <b>114 seconds</b> — after which both agents work alone.",
-        ]),
-        Spacer(1, 4),
-        takeaway("They talk. They just don’t negotiate — and they stop talking almost immediately.", ACCENT),
-    ], W))
-
-    st.append(slide("1.2", "Nine themes in the replication’s messages", [
-        Spacer(1, 5),
-        grid([[Paragraph("", S["cellh"]), Paragraph("Theme", S["cellh"]),
-               Paragraph("Prevalence", S["cellh"]), Paragraph("Conflict rate", S["cellh"])]] +
-             [[Paragraph(f"<b>{c}</b>", S["cell"]), Paragraph(t, S["cell"]),
-               Paragraph(f"<b>{p}</b>" if c in ("T1", "T3", "T6", "T8") else p, S["cell"]),
-               Paragraph(f"<b>{x}</b>" if x != "—" else x, S["cell"])]
-              for c, t, p, x in THEMES],
-             [10 * mm, W - 78 * mm, 24 * mm, 28 * mm]),
-        Paragraph("Prevalence = share of the 147 messaged pair-runs. Conflict rate = share of those runs "
-                  "that nonetheless ended in a textual merge conflict.", S["small"]),
-        takeaway("Files are named in every run (T1) — but almost nobody allocates them (T2), "
-                 "and almost nobody sends code (T8).", ACCENT),
-    ], W))
-
-    st.append(PageBreak())
-
-    st.append(slide("1.3", "Where the conflicts actually happen", [
-        Spacer(1, 5),
-        grid([[Paragraph("Patch forensics, conflicting runs", S["cellh"]),
-               Paragraph("Share", S["cellh"])]] +
-             [[Paragraph(a, S["cell"]), Paragraph(f"<b>{b}</b>", S["cell"])] for a, b in FORENSICS],
-             [W - 46 * mm, 30 * mm]),
-        Spacer(1, 4),
-        *bullets([
-            "Every collision happened inside a file the agents had <b>already discussed</b>.",
-            "The information needed to avoid it was <b>never missing</b> — it was volunteered in "
-            "every single run, and it was insufficient.",
-        ]),
-        Spacer(1, 3),
-        takeaway("The conflicts live <b>below the file</b>. File-level coordination cannot reach them.", FAIL),
-    ], W))
-
-    st.append(slide("1.4", "The dialogue that proves it — pallets_jinja #1465", [
-        Spacer(1, 5),
-        Table([[Paragraph(f"<b>{w}</b>", S["quote"]), Paragraph(t, S["quote"])] for w, t in [
-            ("agent1", "“ack — we’re both touching " + MONO.format("sync_do_groupby") +
-                       "… <i>Let’s agree on final param order/placement to avoid merge clashes.</i>”"),
-            ("agent2", "“<i>Suggest final combined order:</i> " +
-                       MONO.format("(environment, value, attribute, default=None, separator='.', reverse=False)") +
-                       " — just append your reverse param after mine… will let you know when I’m fully "
-                       "done so you can layer your edit on top.”"),
-            ("agent1", "“my working copy doesn’t show your separator changes… we appear to be in "
-                       "<b>separate sandboxes</b>, not a shared filesystem. Since each of us submits our "
-                       "own " + MONO.format("patch.txt") + " independently, <i>this should be fine — no "
-                       "actual clobbering.</i> Good luck with yours!”"),
-        ]], colWidths=[16 * mm, W - 34 * mm], hAlign="LEFT", style=TableStyle([
-            ("BACKGROUND", (0, 0), (-1, -1), BAND),
-            ("LINEBEFORE", (0, 0), (0, -1), 2.5, ACCENT),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-            ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7),
-        ])),
-        Spacer(1, 5),
-        *bullets([
-            "agent2 states the <b>correct merged signature explicitly</b>. agent1 agrees to it. "
-            "<b>Neither writes it.</b>",
-            "Each emits only its own half into its own checkout — the patches collide at " +
-            MONO.format("filters.py:1163") + ".",
-        ]),
-        Spacer(1, 3),
-        takeaway("The agreement existed as <b>prose</b> and never became <b>bytes</b>.", FAIL),
-    ], W))
+    st.append(Paragraph("The whole problem in one exchange "
+                        "<font size='7.4' color='#6b7280'>(this attempt ended in a clash)</font>",
+                        S["h2"]))
+    st.append(Table([[Paragraph(w, S["cellb"]), Paragraph(t, S["quote"])] for w, t in [
+        ("agent 2", "“Suggest final combined order: " + MONO.format(
+            "(environment, value, attribute, default=None, separator='.', reverse=False)") +
+         " — just append your reverse param after mine.”"),
+        ("agent 1", "“my working copy doesn’t show your separator changes… we appear to be in "
+                    "separate sandboxes. Since each of us submits our own work independently, "
+                    "this should be fine — no actual clobbering.”"),
+    ]], colWidths=[16 * mm, W - 16 * mm], style=TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), BAND),
+        ("LINEBEFORE", (0, 0), (0, -1), 2.5, ACCENT),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+    ])))
+    st.append(Paragraph("Agent 2 spells out the correct combined line. Agent 1 agrees to it. "
+                        "<b>Neither of them types it.</b> Each writes only its own half into its "
+                        "own copy — and the two halves clash.", S["small"]))
+    st.append(Spacer(1, 5))
+    st.append(banner("They agree on a <b>description</b> of the answer. "
+                     "But the combine is decided by the <b>exact characters</b> they type."))
 
     st.append(PageBreak())
 
-    # ======================= SECTION 2 =====================================
-    st.append(section("2", "The Design", "One axis, six rungs — and a prediction", W))
+    # ===================== SLIDE 2 — THE PROTOCOLS =========================
+    st.append(header("SLIDE 2", "Six sets of rules, and what each one tries to fix",
+                     "Each rung forces the pair to agree on more of the final code than the "
+                     "rung below"))
+    st.append(Spacer(1, 7))
 
-    st.append(slide("2.1", "The diagnosis, and the variable it names", [
-        Spacer(1, 5),
-        Table([[Paragraph(
-            "The protocol lets agents converge on a <b>description</b> of the merged code, "
-            "while the merge is decided by the <b>bytes</b>.",
-            _p("diag", 11, 15, font="Helvetica-Bold"))]],
-            colWidths=[W - 16 * mm], hAlign="LEFT", style=TableStyle([
-                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fdf3f1")),
-                ("LINEBEFORE", (0, 0), (0, -1), 3, FAIL),
-                ("TOPPADDING", (0, 0), (-1, -1), 8), ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-                ("LEFTPADDING", (0, 0), (-1, -1), 9), ("RIGHTPADDING", (0, 0), (-1, -1), 9),
-            ])),
-        Spacer(1, 6),
-        *bullets([
-            "So the six arms sweep exactly one variable: <b>how much of the final merged artifact "
-            "the protocol obliges the pair to converge on</b>.",
-            "Nothing else changes — same model, same tasks, same evaluation, same integration model. "
-            "Only the protocol block in the prompt and the message-field validation.",
-            "That makes any difference between arms a <b>protocol effect</b>, not a model or "
-            "scaffold effect.",
-        ]),
-        Spacer(1, 3),
-        takeaway("Six rungs on one ladder, not six unrelated ideas.", ACCENT),
-    ], W))
+    st.extend(bullets([
+        "We re-ran the same task six times over, changing <b>only the rules the agents are given "
+        "for working together</b>. Same AI model, same tasks, same marking, same automatic "
+        "combine — so any difference is caused by the <b>rules</b>, nothing else.",
+        "The six form a ladder: from agreeing on <b>nothing</b> at the bottom, to agreeing on "
+        "<b>the exact code</b> at the top.",
+    ]))
+    st.append(Spacer(1, 4))
 
-    st.append(slide("2.2", "The ladder — and the prediction it makes in advance", [
-        Spacer(1, 5),
-        grid([[Paragraph("Rung", S["cellh"]), Paragraph("Protocol", S["cellh"]),
-               Paragraph("What the pair must converge on", S["cellh"]),
-               Paragraph("Merge-clean / both-passed", S["cellh"])]] +
-             [[Paragraph(f"<b>{n}</b>", S["cell"]), Paragraph(f"<b>{a}</b>", S["cell"]),
-               Paragraph(r, S["cell"]), Paragraph(res, S["cell"])] for n, a, r, res in LADDER],
-             [12 * mm, 30 * mm, W - 94 * mm, 42 * mm], centre_from=3),
-        Spacer(1, 5),
-        *bullets([
-            "Because the conflicts are measurably <b>sub-file</b> (slide 1.3), the ladder is "
-            "falsifiable <i>before any arm is run</i>:",
-            "→ arms stopping <b>at or above file granularity</b> should not move the merge-clean rate;",
-            "→ only arms reaching <b>the construct</b> should.",
-        ]),
-        Spacer(1, 3),
-        takeaway("Rungs 1–4 should fail, 5–6 should work. That is exactly what happens.", WIN),
-    ], W))
+    st.append(grid(
+        [[Paragraph("", S["cellh"]), Paragraph("Rule set", S["cellh"]),
+          Paragraph("They must agree on…", S["cellh"]),
+          Paragraph("What it is trying to fix", S["cellh"]),
+          Paragraph("Combined /<br/>both work", S["cellh"])]] +
+        [[Paragraph(f"<b>{n}</b>", S["cell"]), Paragraph(f"<b>{a}</b>", S["cell"]),
+          Paragraph(m, S["cell"]), Paragraph(f, S["cell"]), Paragraph(r, S["cell"])]
+         for n, a, m, f, r in ARMS],
+        [7 * mm, 26 * mm, 30 * mm, W - 88 * mm, 25 * mm], centre_from=4))
+    st.append(Spacer(1, 7))
+
+    st.append(Paragraph("Why these six, and why in this order", S["h2"]))
+    st.extend(bullets([
+        "Slide 1 showed the clashes happen <b>inside</b> a file the agents had already talked "
+        "about, on the <b>same line</b>. Talking about <i>files</i> is therefore too coarse to "
+        "prevent them.",
+        "That lets us <b>predict the result before running anything</b>: rules 1–4 only ever get "
+        "the pair to agree at the level of files or intentions, so they should fail. Only rules "
+        "5–6 reach the actual lines of code, so only they should work.",
+        "Rules 3 and 4 are the useful failures. <b>3</b> shows the agents were not being vague — "
+        "they already named their files every single time. <b>4</b> shows the problem is not poor "
+        "division of labour — forcing a real agreed split made the code more <i>correct</i>, but "
+        "no easier to combine.",
+    ]))
+    st.append(Spacer(1, 5))
+    st.append(takeaway("Each rung takes away one more thing the two agents can disagree about. "
+                       "The top rung takes away all of them.", ACCENT))
 
     st.append(PageBreak())
 
-    # ======================= SECTION 3 =====================================
-    st.append(section("3", "The Six Arms", "Why each was chosen, and what happened", W))
+    # ===================== SLIDE 3 — THE FINDINGS ==========================
+    st.append(header("SLIDE 3", "What happened",
+                     "18 tasks chosen because the two features genuinely overlap · "
+                     "~1,250 attempts · Claude Sonnet 5"))
+    st.append(Spacer(1, 6))
+    st.append(boxed(JARGON, "READING THE NUMBERS  —  the two things being measured"))
+    st.append(Spacer(1, 6))
 
-    for i, (num, arm, rung, targets, colour, why, result, verdict) in enumerate(ARMS):
-        body = [
-            Spacer(1, 4),
-            Table([[Paragraph(rung, S["cellb"]), Paragraph(targets, S["cell"])]],
-                  colWidths=[62 * mm, W - 78 * mm], hAlign="LEFT", style=TableStyle([
-                      ("BACKGROUND", (0, 0), (-1, -1), BAND),
-                      ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                      ("TOPPADDING", (0, 0), (-1, -1), 3.5),
-                      ("BOTTOMPADDING", (0, 0), (-1, -1), 3.5),
-                      ("LEFTPADDING", (0, 0), (-1, -1), 6), ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-                  ])),
-            Spacer(1, 4),
-            *bullets(why),
-            Spacer(1, 3),
-            Table([[Paragraph("RESULT", S["takeb"]), Paragraph(result, S["cellb"])]],
-                  colWidths=[20 * mm, None], hAlign="LEFT", style=TableStyle([
-                      ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                      ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-                      ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7),
-                  ])),
-            takeaway(verdict, colour),
-        ]
-        st.append(slide(num, arm, body, W, colour))
-        if i in (1, 3):
-            st.append(PageBreak())
+    fw = (W - 6 * mm) / 2
+    st.append(Table([[
+        Image(os.path.join(FIGS, "fig1_endpoints.png"), width=fw, height=fw / 1.42),
+        Image(os.path.join(FIGS, "fig2_failure_taxonomy.png"), width=fw, height=fw / 1.35),
+    ], [
+        Paragraph("<b>How often each rule set worked.</b> Taller is better. Five of the six sit "
+                  "in the same low band — only the last one (coauthor-overlap) breaks out.",
+                  S["figcap"]),
+        Paragraph("<b>How the attempts failed.</b> Each attempt in exactly one bucket. The dark "
+                  "band is clashes: it dominates everywhere except the last rule set.",
+                  S["figcap"]),
+    ]], colWidths=[fw, fw], style=TableStyle([
+        ("VALIGN", (0, 0), (-1, 0), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 1), (-1, 1), 4),
+    ])))
+    st.append(Spacer(1, 6))
 
-    st.append(slide("3.7", "What the ladder shows", [
-        Spacer(1, 5),
-        *bullets([
-            "<b>Five of six arms fail — in the order the messaging evidence predicts.</b>",
-            "Enriching the channel (semi-structured) and planning a file-level split (plan-handshake) "
-            "leave merge-clean at the <b>no-messaging floor</b>: neither reaches the granularity at "
-            "which the patches actually collide.",
-            "Designated-coder concedes the point and removes the second writer, halving textual "
-            "conflict — but rescues correctness through <b>one agent carrying the pair</b>, not "
-            "through a clean merge.",
-            "Only coauthor-overlap changes <b>what the merge receives</b> rather than how much the "
-            "agents talk. It is the only arm to separate from control on the primary endpoint after "
-            "Holm correction.",
-        ]),
-        Spacer(1, 3),
-        takeaway("Protocol design works — but only when it changes the bytes, not the conversation.", WIN),
-    ], W))
+    st.append(grid(
+        [[Paragraph("Rule set", S["cellh"]), Paragraph("Combined cleanly", S["cellh"]),
+          Paragraph("Both features work", S["cellh"]), Paragraph("Clashed", S["cellh"])]] +
+        [[Paragraph(a, S["cell"]), Paragraph(m, S["cell"]),
+          Paragraph(b, S["cell"]), Paragraph(c, S["cell"])] for a, m, b, c in RESULTS],
+        [W - 102 * mm, 34 * mm, 34 * mm, 34 * mm]))
+    st.append(Spacer(1, 6))
 
-    st.append(Spacer(1, 2))
-    st.append(Paragraph(
-        "Message themes and patch forensics: " + MONO.format(
-            "uv run python masters_thesis/protocol_analysis/replication_messages.py") +
-        " over " + MONO.format("logs/flash_msg_*") + ". &nbsp;Arm endpoints and inference: " +
-        MONO.format("analyze.py") + ", frozen in " + MONO.format("data/nano_study.json") +
-        ". &nbsp;This pack: " + MONO.format("protocol_rationale_pdf.py") + ".", S["small"]))
+    st.append(Paragraph("Key findings", S["h2"]))
+    st.extend(bullets([
+        "<b>The rules matter enormously — but only one set of rules worked.</b> Making the pair "
+        "co-write the shared code took clean combining from <b>13% to 78%</b>, and both-features-"
+        "working from <b>2% to 69%</b>. It is the only one that beats the baseline once you "
+        "account for having tried six things.",
+        "<b>Talking more achieved nothing.</b> Tidying up the messages, or planning who owns which "
+        "file, left the result no better than <b>giving them no way to talk at all</b> — exactly "
+        "as slide 1 predicted.",
+        "<b>It works by changing what gets typed, not how much gets said.</b> The winning rule set "
+        "produced <b>26</b> cases where both agents wrote byte-for-byte identical code; the other "
+        "five produced <b>1</b> between them across more than a thousand attempts.",
+        "<b>Working code and combinable code are different problems.</b> designated-coder gets "
+        "both features working 58% of the time while still clashing as often as the baseline — "
+        "one agent quietly carried the pair.",
+        "<b>Still not solved.</b> Even the best rule set clashes 17% of the time, and another 10% "
+        "combine cleanly but are broken. One AI model, one setup, one style of automatic combine.",
+    ]))
+    st.append(Spacer(1, 4))
+    st.append(takeaway("Rules for cooperation only help when they constrain <b>what the agents "
+                       "type</b> — not how much they say to each other."))
 
     doc.build(st)
     print(f"wrote {OUT} ({os.path.getsize(OUT) / 1024:.0f} KB)")
