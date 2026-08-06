@@ -20,16 +20,18 @@ and each is labelled on the slide with which one:
                               taxonomy and the CMH tests, frozen in
                               data/nano_study.json
 
-Numbers that only a hand-written regex over natural language could produce have
-been REMOVED, not softened: the phrase-list theme prevalences (ownership talk,
+The pack presents two kinds of figure and labels each: literal counts over the
+message text (does a filename token appear, does a question mark appear, does a
+code block appear, how many messages, how long the exchange) and direct
+comparisons of the two agents' diffs. Both are settled mechanically, so every
+number reproduces by rerunning the script.
+
+The phrase-list theme prevalences that earlier drafts carried (ownership talk,
 "append mine last", sequencing talk, self-certified clean merges) and the
-conflict rates conditional on them. Those depend on the author's choice of
-phrases, are lower bounds by construction, and were never second-coded, so they
-are not presented as measurements. What survives from the message side is only
-what a machine can settle without interpretation: does a filename token appear,
-does a question mark appear, does a code block appear, when were the messages
-sent. The argument rests on the diff forensics, which do not depend on reading
-the language at all.
+conflict rates conditional on them are computed by replication_messages.py but
+are deliberately not presented here: they depend on the author's choice of
+phrases and are lower bounds by construction, so they belong to a coding study
+with its own reliability check. The argument stands on the diff forensics.
 
 This module only lays those numbers out. No LaTeX toolchain required.
 
@@ -275,18 +277,18 @@ def build():
     st.append(Spacer(1, 7))
     st.append(notebox(
         "HOW IT IS DONE  —  " + MONO.format("replication_messages.py"),
-        "Every message feature is a <b>literal search, not a judgement</b>: we join an attempt\u2019s "
-        "messages into one string and ask whether a marker is present \u2014 a filename token such as "
-        + MONO.format("loaders.py") + " for \u201cnames a file\u201d, a " + MONO.format("?") +
+        "Each message feature is a <b>literal string search</b>: we join an attempt\u2019s messages "
+        "into one string and test for a marker \u2014 a filename token such as " +
+        MONO.format("loaders.py") + " for \u201cnames a file\u201d, a " + MONO.format("?") +
         " for \u201casks a question\u201d, a code fence or " + MONO.format("def name(") +
-        " for \u201csends code\u201d. Separately, for every attempt that clashed, we compare the two "
-        "agents\u2019 diffs directly \u2014 filenames from " + MONO.format("diff --git") + ", line ranges "
-        "from " + MONO.format("@@ -start,len @@") + " \u2014 so collisions are read off the edits, not "
-        "the conversation. Matching those filenames back against the text is what lets us say the "
-        "agents had discussed the file they collided in."))
+        " for \u201csends code\u201d. For every attempt that clashed we then compare the two agents\u2019 "
+        "diffs directly \u2014 filenames from " + MONO.format("diff --git") + ", line ranges from " +
+        MONO.format("@@ -start,len @@") + " \u2014 which locates each collision in the code itself. "
+        "Matching those filenames back against the conversation establishes the central claim "
+        "below: the agents had already discussed the file they collided in."))
     st.append(Spacer(1, 6))
 
-    st.append(Paragraph("① Counted, not interpreted", S["h2"]))
+    st.append(Paragraph("① Measured from the message logs", S["h2"]))
     st.append(grid(
         [[Paragraph("Measure", S["cellh"]), Paragraph("Value", S["cellh"]),
           Paragraph("What the machine literally looks for", S["cellh"])]] +
@@ -295,14 +297,14 @@ def build():
         [W - 96 * mm, 18 * mm, 78 * mm]))
     st.append(Spacer(1, 6))
 
-    st.append(Paragraph("② Read off the edits — the load-bearing evidence", S["h2"]))
+    st.append(Paragraph("② Measured from the code the agents wrote — the evidence the argument rests on", S["h2"]))
     st.append(grid(
         [[Paragraph("On the attempts that failed to combine", S["cellh"]),
           Paragraph("Value", S["cellh"]), Paragraph("How it is computed", S["cellh"])]] +
         [[Paragraph(t, S["cell"]), Paragraph(f"<b>{v}</b>", S["cell"]), Paragraph(h, S["cell"])]
          for t, v, h in FORENSICS],
         [W - 96 * mm, 18 * mm, 78 * mm]))
-    st.append(Paragraph("None of these depend on reading the agents’ language.", S["small"]))
+    st.append(Paragraph("Each row is a direct comparison of the two diffs.", S["small"]))
     st.append(Spacer(1, 6))
 
     st.append(Paragraph("One attempt, verbatim "
@@ -322,15 +324,16 @@ def build():
         ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7),
     ])))
     st.append(Paragraph("Agent 2 spells out the correct combined line; agent 1 agrees; <b>neither "
-                        "types it</b>. One example of the mechanism — not a frequency.", S["small"]))
+                        "types it</b>. One documented instance of the mechanism.", S["small"]))
     st.append(Spacer(1, 5))
     st.append(banner("They agree on a <b>description</b> of the answer. "
                      "But the combine is decided by the <b>exact characters</b> they type."))
     st.append(Spacer(1, 5))
-    st.append(Paragraph("<b>Excluded on purpose.</b> Scoring conversations for habits like "
-                        "\u201cboth said they\u2019d add theirs last\u201d needs a hand-written phrase list: "
-                        "lower bounds by construction, never second-coded. Left out rather than "
-                        "quoted as measurement.", S["small"]))
+    st.append(Paragraph("<b>Scope.</b> Every figure here is a literal count or a diff "
+                        "comparison, so each one is reproducible from the logs by rerunning the "
+                        "script. Scoring conversations for habits like \u201cboth said they\u2019d add "
+                        "theirs last\u201d would need a hand-written phrase list, which belongs to a "
+                        "separate coding study with its own reliability check.", S["small"]))
 
     st.append(PageBreak())
 
@@ -365,9 +368,9 @@ def build():
         "line</b>. Agreeing about <i>files</i> is too coarse to prevent them.",
         "So the result is <b>predictable before running anything</b>: rules 1–4 agree only at the "
         "level of files or intentions and should fail; only 5–6 reach the code itself.",
-        "Rules 3 and 4 are the useful failures — <b>3</b>: they were never vague (they named files "
-        "every time). <b>4</b>: a real agreed split made the code more <i>correct</i>, but no "
-        "easier to combine.",
+        "Rules 3 and 4 are the useful failures — <b>3</b>: they already named their files every "
+        "time, so imposing structure on the message adds nothing. <b>4</b>: a real agreed split "
+        "made the code more <i>correct</i>, and no easier to combine.",
     ]))
     st.append(Spacer(1, 5))
     st.append(takeaway("Each rung takes away one more thing the two agents can disagree about. "
