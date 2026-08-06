@@ -218,11 +218,11 @@ COUNTABLE = [
 
 # Computed from the two agents' diffs, not from the language.
 FORENSICS = [
-    ("Clashing attempts examined", "93", "combine failed, both diffs present"),
-    ("…the diffs touch a <b>shared file</b>", "100%", "filenames intersected"),
-    ("…that file was <b>named in the chat</b>", "100%", "filename matched against the text"),
-    ("…they collide on the <b>same line</b>", "90%", "hunk start lines compared"),
-    ("…both rewrote the <b>same function</b>", "27%", "“def name(” lines intersected"),
+    ("Clashing attempts examined", "93", "the combine failed and both agents’ work was saved"),
+    ("…both changed the <b>same file</b>", "100%", "compare the two file lists for a name in both"),
+    ("…that file was <b>named in the chat</b>", "100%", "search the conversation for that filename"),
+    ("…they changed the <b>same lines</b>", "90%", "compare the two line ranges for an overlap"),
+    ("…both rewrote the <b>same function</b>", "27%", "compare the function names each one edited"),
 ]
 
 ARMS = [
@@ -281,11 +281,12 @@ def build():
         "into one string and test for a marker \u2014 a filename token such as " +
         MONO.format("loaders.py") + " for \u201cnames a file\u201d, a " + MONO.format("?") +
         " for \u201casks a question\u201d, a code fence or " + MONO.format("def name(") +
-        " for \u201csends code\u201d. For every attempt that clashed we then compare the two agents\u2019 "
-        "diffs directly \u2014 filenames from " + MONO.format("diff --git") + ", line ranges from " +
-        MONO.format("@@ -start,len @@") + " \u2014 which locates each collision in the code itself. "
-        "Matching those filenames back against the conversation establishes the central claim "
-        "below: the agents had already discussed the file they collided in."))
+        " for \u201csends code\u201d. When an agent finishes, its work is saved as a <b>diff</b>: a "
+        "machine-readable list of which files it changed and which line numbers it touched \u2014 so "
+        "for every attempt that clashed, we open <i>both</i> agents\u2019 diffs and look for line "
+        "ranges that overlap, which pinpoints the collision in the code. Checking those filenames "
+        "against the conversation establishes the central claim below: the agents had already "
+        "discussed the file they collided in."))
     st.append(Spacer(1, 6))
 
     st.append(Paragraph("① Measured from the message logs", S["h2"]))
@@ -304,7 +305,8 @@ def build():
         [[Paragraph(t, S["cell"]), Paragraph(f"<b>{v}</b>", S["cell"]), Paragraph(h, S["cell"])]
          for t, v, h in FORENSICS],
         [W - 96 * mm, 18 * mm, 78 * mm]))
-    st.append(Paragraph("Each row is a direct comparison of the two diffs.", S["small"]))
+    st.append(Paragraph("Each row compares the two agents’ saved changes against each other.",
+                        S["small"]))
     st.append(Spacer(1, 6))
 
     st.append(Paragraph("One attempt, verbatim "
