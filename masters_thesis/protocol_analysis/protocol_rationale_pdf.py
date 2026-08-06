@@ -206,29 +206,21 @@ def banner(text, colour=FAIL, bg="#fdf3f1"):
 # Only features a machine can settle without interpreting the language.
 # (term, value, what the machine literally looks for)
 COUNTABLE = [
-    ("Attempts in which they name at least one <b>file</b>",
-     "100%", "a filename token (<i>something</i>.py, .go, .rs …) appears"),
-    ("Attempts in which either agent asks a <b>question</b>",
-     "9%", "a “?” appears anywhere in the conversation"),
-    ("Attempts in which they exchange <b>actual code</b>",
-     "3%", "a code block or a function definition appears — a lower bound"),
-    ("Messages sent per attempt (median)",
-     "5", "count of messages in the run’s log"),
-    ("Length of the whole conversation (median)",
-     "114s", "last message timestamp minus first"),
+    ("They name at least one <b>file</b>", "100%", "text contains <i>x</i>.py / .go / .rs …"),
+    ("Either agent asks a <b>question</b>", "9%", "text contains “?”"),
+    ("They exchange <b>actual code</b>", "3%",
+     "text contains ``` or “def <i>name</i>(” — a lower bound"),
+    ("Messages per attempt (median)", "5", "count of messages in the log"),
+    ("Whole conversation (median)", "114s", "last timestamp minus first"),
 ]
 
 # Computed from the two agents' diffs, not from the language.
 FORENSICS = [
-    ("Conflicting attempts examined", "93", "runs whose combine failed, with both diffs present"),
-    ("…the two diffs touch a <b>shared file</b>", "100%",
-     "filenames parsed from both diffs, intersected"),
-    ("…that file was <b>named in the chat</b>", "100%",
-     "colliding filename matched against the conversation text"),
-    ("…they collide on the <b>same starting line</b>", "90%",
-     "diff hunk headers (@@ -start,len @@) compared between the two diffs"),
-    ("…both rewrote the <b>same function definition</b>", "27%",
-     "“def name(” lines extracted from both diffs, intersected"),
+    ("Clashing attempts examined", "93", "combine failed, both diffs present"),
+    ("…the diffs touch a <b>shared file</b>", "100%", "filenames intersected"),
+    ("…that file was <b>named in the chat</b>", "100%", "filename matched against the text"),
+    ("…they collide on the <b>same line</b>", "90%", "hunk start lines compared"),
+    ("…both rewrote the <b>same function</b>", "27%", "“def name(” lines intersected"),
 ]
 
 ARMS = [
@@ -251,13 +243,11 @@ ARMS = [
 ]
 
 JARGON = [
-    ("Combined cleanly", "The two sets of edits went together automatically, with no clash. "
-                         "<i>The headline measure.</i>"),
-    ("Both features work", "After combining, both agents' features actually pass their tests. "
-                           "<i>The stricter measure.</i>"),
-    ("Clash", "Both agents rewrote the same lines, so the automatic combine refused."),
-    ("One carried the pair", "Both features work, but only because <b>one</b> agent's copy "
-                             "happened to contain both — not because the two combined."),
+    ("Combined cleanly", "The two sets of edits went together automatically. <i>Headline measure.</i>"),
+    ("Both features work", "After combining, both features pass their tests. <i>Stricter measure.</i>"),
+    ("Clash", "Both rewrote the same lines, so the combine refused."),
+    ("One carried the pair", "Both features work only because <b>one</b> agent’s copy already "
+                             "contained both — not because the two combined."),
 ]
 
 RESULTS = [
@@ -280,25 +270,23 @@ def build():
 
     # ===================== SLIDE 1 — SEMANTIC PATTERNS =====================
     st.append(header("SLIDE 1", "What the agents actually said to each other",
-                     "Every figure on this page is emitted by one script over the raw logs: "
-                     "replication_messages.py"))
+                     "703 messages across 147 attempts \u2014 every figure below emitted by one "
+                     "script over the raw logs: replication_messages.py"))
     st.append(Spacer(1, 7))
     st.append(notebox(
-        "HOW IT IS DONE  —  " + MONO.format("replication_messages.py") + ", one pass over the raw logs",
-        "It walks every " + MONO.format("agent*_sent.jsonl") + " under " +
-        MONO.format("logs/flash_msg_*") + ", keys each conversation by (repeat, repository, task, "
-        "feature-pair) and joins it to that run\u2019s " + MONO.format("eval.json") + " verdict, so "
-        "every message is tied to whether its own attempt combined or clashed. For each attempt "
-        "that clashed it then parses <i>both</i> agents\u2019 unified diffs \u2014 taking filenames from the "
-        + MONO.format("diff --git") + " headers and line ranges from the " +
-        MONO.format("@@ -start,len @@") + " hunk headers \u2014 and intersects them, so a collision is "
-        "identified from the edits themselves rather than from anything the agents said about "
-        "them. Finally it matches those colliding filenames back against the conversation text, "
-        "which is what licenses the central claim below: the agents had already discussed the very "
-        "file they went on to collide inside."))
-    st.append(Spacer(1, 7))
+        "HOW IT IS DONE  —  " + MONO.format("replication_messages.py"),
+        "Every message feature is a <b>literal search, not a judgement</b>: we join an attempt\u2019s "
+        "messages into one string and ask whether a marker is present \u2014 a filename token such as "
+        + MONO.format("loaders.py") + " for \u201cnames a file\u201d, a " + MONO.format("?") +
+        " for \u201casks a question\u201d, a code fence or " + MONO.format("def name(") +
+        " for \u201csends code\u201d. Separately, for every attempt that clashed, we compare the two "
+        "agents\u2019 diffs directly \u2014 filenames from " + MONO.format("diff --git") + ", line ranges "
+        "from " + MONO.format("@@ -start,len @@") + " \u2014 so collisions are read off the edits, not "
+        "the conversation. Matching those filenames back against the text is what lets us say the "
+        "agents had discussed the file they collided in."))
+    st.append(Spacer(1, 6))
 
-    st.append(Paragraph("① What can be counted without interpretation", S["h2"]))
+    st.append(Paragraph("① Counted, not interpreted", S["h2"]))
     st.append(grid(
         [[Paragraph("Measure", S["cellh"]), Paragraph("Value", S["cellh"]),
           Paragraph("What the machine literally looks for", S["cellh"])]] +
@@ -307,20 +295,18 @@ def build():
         [W - 96 * mm, 18 * mm, 78 * mm]))
     st.append(Spacer(1, 6))
 
-    st.append(Paragraph("② What the two sets of edits show — the load-bearing evidence", S["h2"]))
+    st.append(Paragraph("② Read off the edits — the load-bearing evidence", S["h2"]))
     st.append(grid(
         [[Paragraph("On the attempts that failed to combine", S["cellh"]),
           Paragraph("Value", S["cellh"]), Paragraph("How it is computed", S["cellh"])]] +
         [[Paragraph(t, S["cell"]), Paragraph(f"<b>{v}</b>", S["cell"]), Paragraph(h, S["cell"])]
          for t, v, h in FORENSICS],
         [W - 96 * mm, 18 * mm, 78 * mm]))
-    st.append(Paragraph("These come from parsing the diffs, so they do not depend on reading the "
-                        "agents' language at all.", S["small"]))
+    st.append(Paragraph("None of these depend on reading the agents’ language.", S["small"]))
     st.append(Spacer(1, 6))
 
-    st.append(Paragraph("The pattern in one attempt "
-                        "<font size='7.4' color='#6b7280'>(quoted verbatim; this attempt failed "
-                        "to combine)</font>", S["h2"]))
+    st.append(Paragraph("One attempt, verbatim "
+                        "<font size='7.4' color='#6b7280'>(it clashed)</font>", S["h2"]))
     st.append(Table([[Paragraph(w, S["cellb"]), Paragraph(t, S["quote"])] for w, t in [
         ("agent 2", "\u201cSuggest final combined order: " + MONO.format(
             "(environment, value, attribute, default=None, separator='.', reverse=False)") +
@@ -336,19 +322,15 @@ def build():
         ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7),
     ])))
     st.append(Paragraph("Agent 2 spells out the correct combined line; agent 1 agrees; <b>neither "
-                        "types it</b>. One documented example, shown to illustrate the mechanism "
-                        "\u2014 not offered as a frequency.", S["small"]))
+                        "types it</b>. One example of the mechanism — not a frequency.", S["small"]))
     st.append(Spacer(1, 5))
     st.append(banner("They agree on a <b>description</b> of the answer. "
                      "But the combine is decided by the <b>exact characters</b> they type."))
     st.append(Spacer(1, 5))
-    st.append(Paragraph("<b>What we deliberately do not claim.</b> An earlier pass scored the "
-                        "conversations for habits like \u201cboth said they\u2019d add theirs last\u201d or "
-                        "\u201cdeclared it would combine fine\u201d. Those depend on a hand-written list of "
-                        "phrases, are lower bounds by construction, and were never checked by a "
-                        "second coder \u2014 so they are excluded here rather than quoted as "
-                        "measurements. Every figure above is either a literal count or derived "
-                        "from the diffs.", S["small"]))
+    st.append(Paragraph("<b>Excluded on purpose.</b> Scoring conversations for habits like "
+                        "\u201cboth said they\u2019d add theirs last\u201d needs a hand-written phrase list: "
+                        "lower bounds by construction, never second-coded. Left out rather than "
+                        "quoted as measurement.", S["small"]))
 
     st.append(PageBreak())
 
@@ -359,11 +341,10 @@ def build():
     st.append(Spacer(1, 7))
 
     st.extend(bullets([
-        "We re-ran the same task six times over, changing <b>only the rules the agents are given "
-        "for working together</b>. Same AI model, same tasks, same marking, same automatic "
-        "combine — so any difference is caused by the <b>rules</b>, nothing else.",
-        "The six form a ladder: from agreeing on <b>nothing</b> at the bottom, to agreeing on "
-        "<b>the exact code</b> at the top.",
+        "Same model, tasks, marking and automatic combine throughout — <b>only the cooperation "
+        "rules change</b>, so any difference is caused by the rules.",
+        "They form a ladder: agree on <b>nothing</b> at the bottom, on <b>the exact code</b> at "
+        "the top.",
     ]))
     st.append(Spacer(1, 4))
 
@@ -380,24 +361,20 @@ def build():
 
     st.append(Paragraph("Why these six, and why in this order", S["h2"]))
     st.extend(bullets([
-        "Slide 1 showed the clashes happen <b>inside</b> a file the agents had already talked "
-        "about, on the <b>same line</b>. Talking about <i>files</i> is therefore too coarse to "
-        "prevent them.",
-        "That lets us <b>predict the result before running anything</b>: rules 1–4 only ever get "
-        "the pair to agree at the level of files or intentions, so they should fail. Only rules "
-        "5–6 reach the actual lines of code, so only they should work.",
-        "Rules 3 and 4 are the useful failures. <b>3</b> shows the agents were not being vague — "
-        "they already named their files every single time. <b>4</b> shows the problem is not poor "
-        "division of labour — forcing a real agreed split made the code more <i>correct</i>, but "
-        "no easier to combine.",
+        "Slide 1: clashes happen <b>inside</b> a file they already discussed, on the <b>same "
+        "line</b>. Agreeing about <i>files</i> is too coarse to prevent them.",
+        "So the result is <b>predictable before running anything</b>: rules 1–4 agree only at the "
+        "level of files or intentions and should fail; only 5–6 reach the code itself.",
+        "Rules 3 and 4 are the useful failures — <b>3</b>: they were never vague (they named files "
+        "every time). <b>4</b>: a real agreed split made the code more <i>correct</i>, but no "
+        "easier to combine.",
     ]))
     st.append(Spacer(1, 5))
     st.append(takeaway("Each rung takes away one more thing the two agents can disagree about. "
                        "The top rung takes away all of them.", ACCENT))
     st.append(Spacer(1, 4))
-    st.append(Paragraph("Result columns are the same figures as slide 3, produced by " +
-                        MONO.format("analyze.py") + " over the run logs and frozen in " +
-                        MONO.format("data/nano_study.json") + ".", S["small"]))
+    st.append(Paragraph("Result column = slide 3\u2019s figures, from " + MONO.format("analyze.py") +
+                        " over the run logs.", S["small"]))
 
     st.append(PageBreak())
 
@@ -414,12 +391,10 @@ def build():
         Image(os.path.join(FIGS, "fig1_endpoints.png"), width=fw, height=fw / 1.42),
         Image(os.path.join(FIGS, "fig2_failure_taxonomy.png"), width=fw, height=fw / 1.35),
     ], [
-        Paragraph("<b>How often each rule set worked.</b> Taller is better. Five of the six sit "
-                  "in the same low band — only the last one (coauthor-overlap) breaks out.",
-                  S["figcap"]),
-        Paragraph("<b>How the attempts failed.</b> Each attempt in exactly one bucket. The dark "
-                  "band is clashes: it dominates everywhere except the last rule set.",
-                  S["figcap"]),
+        Paragraph("<b>How often each rule set worked.</b> Taller is better. Five sit in the same "
+                  "low band; only coauthor-overlap breaks out.", S["figcap"]),
+        Paragraph("<b>How attempts failed.</b> One bucket each. The clash band dominates "
+                  "everywhere except the last rule set.", S["figcap"]),
     ]], colWidths=[fw, fw], style=TableStyle([
         ("VALIGN", (0, 0), (-1, 0), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 6),
@@ -437,33 +412,28 @@ def build():
 
     st.append(Paragraph("Key findings", S["h2"]))
     st.extend(bullets([
-        "<b>The rules matter enormously — but only one set of rules worked.</b> Making the pair "
-        "co-write the shared code took clean combining from <b>13% to 78%</b>, and both-features-"
-        "working from <b>2% to 69%</b>. It is the only one that beats the baseline once you "
-        "account for having tried six things.",
-        "<b>Talking more achieved nothing.</b> Tidying up the messages, or planning who owns which "
-        "file, left the result no better than <b>giving them no way to talk at all</b> — exactly "
-        "as slide 1 predicted.",
-        "<b>It works by changing what gets typed, not how much gets said.</b> The winning rule set "
-        "produced <b>26</b> cases where both agents wrote byte-for-byte identical code; the other "
-        "five produced <b>1</b> between them across more than a thousand attempts.",
-        "<b>Working code and combinable code are different problems.</b> designated-coder gets "
-        "both features working 58% of the time while still clashing as often as the baseline — "
-        "one agent quietly carried the pair.",
-        "<b>Still not solved.</b> Even the best rule set clashes 17% of the time, and another 10% "
-        "combine cleanly but are broken. One AI model, one setup, one style of automatic combine.",
+        "<b>Only one rule set worked.</b> Co-writing the shared code took clean combining "
+        "<b>13% → 78%</b> and both-features-working <b>2% → 69%</b> — the only arm to beat the "
+        "baseline once you account for having tried six things.",
+        "<b>Talking more achieved nothing.</b> Tidier messages, or planning who owns which file, "
+        "scored no better than <b>no messaging at all</b> — as slide 1 predicted.",
+        "<b>It works by changing what gets typed.</b> The winner produced <b>26</b> byte-identical "
+        "results; the other five produced <b>1</b> between them across 1,168 attempts.",
+        "<b>Working code ≠ combinable code.</b> designated-coder reaches 58% both-working while "
+        "clashing as often as the baseline — one agent quietly carried the pair.",
+        "<b>Not solved.</b> The best rule set still clashes 17% of the time and breaks another 10%. "
+        "One model, one setup, one style of automatic combine.",
     ]))
     st.append(Spacer(1, 4))
     st.append(takeaway("Rules for cooperation only help when they constrain <b>what the agents "
                        "type</b> — not how much they say to each other."))
     st.append(Spacer(1, 4))
-    st.append(Paragraph("<b>Source.</b> Every number and both figures on this page come from " +
-                        MONO.format("analyze.py") + ", which reads the per-run evaluation records "
-                        "under " + MONO.format("logs/") + " and writes " +
-                        MONO.format("data/nano_study.json") + "; the figures are drawn from that "
-                        "JSON by " + MONO.format("figures.py") + ". \u201cBeats the baseline\u201d means "
-                        "significant under a Cochran\u2013Mantel\u2013Haenszel test stratified by task, "
-                        "Holm-corrected across the eight comparisons made.", S["small"]))
+    st.append(Paragraph("<b>Source.</b> All numbers and both figures from " +
+                        MONO.format("analyze.py") + " over " + MONO.format("logs/") + ", frozen in "
+                        + MONO.format("data/nano_study.json") + "; charts drawn by " +
+                        MONO.format("figures.py") + ". \u201cBeats the baseline\u201d = significant under a "
+                        "Cochran\u2013Mantel\u2013Haenszel test stratified by task, Holm-corrected across "
+                        "the eight comparisons.", S["small"]))
 
     doc.build(st)
     print(f"wrote {OUT} ({os.path.getsize(OUT) / 1024:.0f} KB)")
