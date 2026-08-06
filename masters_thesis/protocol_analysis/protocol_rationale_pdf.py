@@ -271,12 +271,22 @@ def build():
     st = []
 
     # ===================== SLIDE 1 — SEMANTIC PATTERNS =====================
-    st.append(header("SLIDE 1", "What the agents actually said to each other",
-                     "703 messages across 147 attempts \u2014 every figure below emitted by one "
-                     "script over the raw logs: replication_messages.py"))
+    st.append(header("SLIDE 1", "Diagnosis: what the replication\u2019s agents said to each other",
+                     "The 150 two-agent runs of the REPLICATION study \u2014 free-text messaging, "
+                     "before any protocol existed. 703 messages over 147 attempts."))
     st.append(Spacer(1, 7))
     st.append(notebox(
-        "HOW IT IS DONE  —  " + MONO.format("replication_messages.py"),
+        "WHY WE LOOKED  —  the replication left a question open",
+        "The replication put two agents on one codebase and found they write working code but "
+        "cannot combine it: <b>12% of paired runs delivered both features, against 41% when a "
+        "single agent did the same work alone</b>. The pairs could message each other freely the "
+        "whole time. So the six protocols on slide 2 are not guesses \u2014 they are chosen from what "
+        "those conversations, and the code the agents actually wrote, show about <i>why</i> the "
+        "messaging did not help.", colour=FAIL, bg="#fdf3f1"))
+    st.append(Spacer(1, 6))
+    st.append(notebox(
+        "HOW IT IS DONE  —  " + MONO.format("replication_messages.py") +
+        " over " + MONO.format("logs/flash_msg_*") + " (the replication\u2019s messaging runs)",
         "Each message feature is a <b>literal string search</b>: we join an attempt\u2019s messages "
         "into one string and test for a marker \u2014 a filename token such as " +
         MONO.format("loaders.py") + " for \u201cnames a file\u201d, a " + MONO.format("?") +
@@ -340,14 +350,15 @@ def build():
     st.append(PageBreak())
 
     # ===================== SLIDE 2 — THE PROTOCOLS =========================
-    st.append(header("SLIDE 2", "Six sets of rules, and what each one tries to fix",
-                     "Each rung forces the pair to agree on more of the final code than the "
-                     "rung below"))
+    st.append(header("SLIDE 2", "The six protocols the diagnosis selects",
+                     "Each answers a specific finding from slide 1, and each forces the pair to "
+                     "agree on more of the final code than the rung below"))
     st.append(Spacer(1, 7))
 
     st.extend(bullets([
-        "Same model, tasks, marking and automatic combine throughout — <b>only the cooperation "
-        "rules change</b>, so any difference is caused by the rules.",
+        "Slide 1 diagnosed the replication\u2019s failure; each rule set here is built to remove one "
+        "cause it identified. Same model, tasks, marking and automatic combine throughout — "
+        "<b>only the cooperation rules change</b>, so any difference is caused by the rules.",
         "They form a ladder: agree on <b>nothing</b> at the bottom, on <b>the exact code</b> at "
         "the top.",
     ]))
