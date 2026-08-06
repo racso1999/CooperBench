@@ -168,6 +168,17 @@ def boxed(rows, title, colour=ACCENT, bg="#f4f7fa"):
     ]))
 
 
+def notebox(title, text, colour=ACCENT, bg="#f4f7fa"):
+    """A labelled box holding one block of prose."""
+    return Table([[Paragraph(title, S["setuph"])], [Paragraph(text, S["setup"])]],
+                 colWidths=[W], style=TableStyle([
+                     ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(bg)),
+                     ("LINEBEFORE", (0, 0), (0, -1), 3, colour),
+                     ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                     ("LEFTPADDING", (0, 0), (-1, -1), 9), ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+                 ]))
+
+
 def takeaway(text, colour=WIN):
     return Table([[Paragraph("TAKEAWAY", S["takeb"]), Paragraph(text, S["take"])]],
                  colWidths=[19 * mm, W - 19 * mm], style=TableStyle([
@@ -191,16 +202,6 @@ def banner(text, colour=FAIL, bg="#fdf3f1"):
 
 # --------------------------------------------------------------------------- #
 
-SETUP = [
-    ("The task", "Two AI agents are each given <b>one feature to add to the same codebase</b> "
-                 "— for example, two new options on the same function."),
-    ("The catch", "Each works in its <b>own private copy</b>. Neither can see the other's edits. "
-                  "They <b>can send each other messages</b> while they work."),
-    ("The join", "At the end, their two sets of edits are combined <b>automatically</b>, with no "
-                 "human to resolve disagreements."),
-    ("What can fail", "If both rewrote the <b>same lines</b>, the automatic combine gives up — a "
-                      "<b>clash</b>. The work is done, but it cannot be assembled."),
-]
 
 # Only features a machine can settle without interpreting the language.
 # (term, value, what the machine literally looks for)
@@ -282,19 +283,20 @@ def build():
                      "Every figure on this page is emitted by one script over the raw logs: "
                      "replication_messages.py"))
     st.append(Spacer(1, 7))
-    st.append(boxed(SETUP, "THE SETUP  —  what the two agents are being asked to do"))
+    st.append(notebox(
+        "HOW IT IS DONE  —  " + MONO.format("replication_messages.py") + ", one pass over the raw logs",
+        "It walks every " + MONO.format("agent*_sent.jsonl") + " under " +
+        MONO.format("logs/flash_msg_*") + ", keys each conversation by (repeat, repository, task, "
+        "feature-pair) and joins it to that run\u2019s " + MONO.format("eval.json") + " verdict, so "
+        "every message is tied to whether its own attempt combined or clashed. For each attempt "
+        "that clashed it then parses <i>both</i> agents\u2019 unified diffs \u2014 taking filenames from the "
+        + MONO.format("diff --git") + " headers and line ranges from the " +
+        MONO.format("@@ -start,len @@") + " hunk headers \u2014 and intersects them, so a collision is "
+        "identified from the edits themselves rather than from anything the agents said about "
+        "them. Finally it matches those colliding filenames back against the conversation text, "
+        "which is what licenses the central claim below: the agents had already discussed the very "
+        "file they went on to collide inside."))
     st.append(Spacer(1, 7))
-
-    st.append(Paragraph("How the messages were turned into numbers", S["h2"]))
-    st.extend(bullets([
-        "We collected <b>every message</b> the agents sent — <b>703 across 147 attempts</b> — and "
-        "linked each conversation to what happened to that attempt, then compared the talk against "
-        "the <b>actual edits</b> both agents produced.",
-        "One script does all of it: " + MONO.format("replication_messages.py") + ". It reads the "
-        "raw logs, prints every figure below, and can be rerun by anyone. <b>Nothing here is "
-        "hand-counted and nothing is estimated.</b>",
-    ]))
-    st.append(Spacer(1, 4))
 
     st.append(Paragraph("① What can be counted without interpretation", S["h2"]))
     st.append(grid(
