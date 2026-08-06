@@ -9,9 +9,29 @@ Written to be followable by someone who has never seen the benchmark: the setup
 is stated before any result, and every term is defined at the point it is first
 used (see SETUP on slide 1 and the JARGON box on slide 3).
 
-Every number quoted is produced by ``replication_messages.py`` (message themes,
-patch forensics) and ``analyze.py`` (arm endpoints); this module only lays them
-out. No LaTeX toolchain required.
+PROVENANCE RULE. Every number on these pages is emitted by one of two scripts,
+and each is labelled on the slide with which one:
+
+  replication_messages.py  -- message counts, timings, mechanically-detectable
+                              message features, and the patch-level forensics
+                              (which file and which lines the two patches
+                              actually collided on)
+  analyze.py               -- per-arm endpoints, merge-status split, failure
+                              taxonomy and the CMH tests, frozen in
+                              data/nano_study.json
+
+Numbers that only a hand-written regex over natural language could produce have
+been REMOVED, not softened: the phrase-list theme prevalences (ownership talk,
+"append mine last", sequencing talk, self-certified clean merges) and the
+conflict rates conditional on them. Those depend on the author's choice of
+phrases, are lower bounds by construction, and were never second-coded, so they
+are not presented as measurements. What survives from the message side is only
+what a machine can settle without interpretation: does a filename token appear,
+does a question mark appear, does a code block appear, when were the messages
+sent. The argument rests on the diff forensics, which do not depend on reading
+the language at all.
+
+This module only lays those numbers out. No LaTeX toolchain required.
 
     uv run --with reportlab python masters_thesis/protocol_analysis/protocol_rationale_pdf.py
 """
@@ -182,14 +202,32 @@ SETUP = [
                       "<b>clash</b>. The work is done, but it cannot be assembled."),
 ]
 
-THEMES = [
-    ("They name the <b>files</b> they will touch", "100%", "—"),
-    ("They actually <b>divide up</b> who owns what (“you take X”)", "1%", "—"),
-    ("<b>Both</b> say they will add their change <b>last</b> in the same place", "20%", "97%"),
-    ("They agree an order of work their setup cannot deliver "
-     "(“I’ll go first”, “layer yours on top”)", "24%", "77%"),
-    ("They <b>declare it will combine fine</b> (“additive”, “no overlap”)", "63%", "63%"),
-    ("They send each other <b>actual code</b>", "3%", "—"),
+# Only features a machine can settle without interpreting the language.
+# (term, value, what the machine literally looks for)
+COUNTABLE = [
+    ("Attempts in which they name at least one <b>file</b>",
+     "100%", "a filename token (<i>something</i>.py, .go, .rs …) appears"),
+    ("Attempts in which either agent asks a <b>question</b>",
+     "9%", "a “?” appears anywhere in the conversation"),
+    ("Attempts in which they exchange <b>actual code</b>",
+     "3%", "a code block or a function definition appears — a lower bound"),
+    ("Messages sent per attempt (median)",
+     "5", "count of messages in the run’s log"),
+    ("Length of the whole conversation (median)",
+     "114s", "last message timestamp minus first"),
+]
+
+# Computed from the two agents' diffs, not from the language.
+FORENSICS = [
+    ("Conflicting attempts examined", "93", "runs whose combine failed, with both diffs present"),
+    ("…the two diffs touch a <b>shared file</b>", "100%",
+     "filenames parsed from both diffs, intersected"),
+    ("…that file was <b>named in the chat</b>", "100%",
+     "colliding filename matched against the conversation text"),
+    ("…they collide on the <b>same starting line</b>", "90%",
+     "diff hunk headers (@@ -start,len @@) compared between the two diffs"),
+    ("…both rewrote the <b>same function definition</b>", "27%",
+     "“def name(” lines extracted from both diffs, intersected"),
 ]
 
 ARMS = [
@@ -241,49 +279,53 @@ def build():
 
     # ===================== SLIDE 1 — SEMANTIC PATTERNS =====================
     st.append(header("SLIDE 1", "What the agents actually said to each other",
-                     "Reading all 703 messages, and testing each habit against whether that "
-                     "attempt succeeded"))
+                     "Every figure on this page is emitted by one script over the raw logs: "
+                     "replication_messages.py"))
     st.append(Spacer(1, 7))
     st.append(boxed(SETUP, "THE SETUP  —  what the two agents are being asked to do"))
     st.append(Spacer(1, 7))
 
-    st.append(Paragraph("How we read the messages", S["h2"]))
+    st.append(Paragraph("How the messages were turned into numbers", S["h2"]))
     st.extend(bullets([
-        "We took <b>every message</b> the agents sent — <b>703 of them, across 147 attempts</b> — "
-        "and tagged each conversation for recurring habits.",
-        "We then <b>linked each conversation to what happened to that attempt</b>, so a habit can "
-        "be tested: of the attempts where they said this, how many still ended in a clash?",
-        "Finally we compared the talk to the <b>actual edits</b>: for every clash, which file and "
-        "which lines the two agents collided on.",
+        "We collected <b>every message</b> the agents sent — <b>703 across 147 attempts</b> — and "
+        "linked each conversation to what happened to that attempt, then compared the talk against "
+        "the <b>actual edits</b> both agents produced.",
+        "One script does all of it: " + MONO.format("replication_messages.py") + ". It reads the "
+        "raw logs, prints every figure below, and can be rerun by anyone. <b>Nothing here is "
+        "hand-counted and nothing is estimated.</b>",
     ]))
     st.append(Spacer(1, 4))
 
+    st.append(Paragraph("① What can be counted without interpretation", S["h2"]))
     st.append(grid(
-        [[Paragraph("What they habitually do", S["cellh"]),
-          Paragraph("Of attempts", S["cellh"]),
-          Paragraph("…that still clashed", S["cellh"])]] +
-        [[Paragraph(t, S["cell"]), Paragraph(f"<b>{p}</b>", S["cell"]), Paragraph(c, S["cell"])]
-         for t, p, c in THEMES],
-        [W - 56 * mm, 22 * mm, 34 * mm]))
+        [[Paragraph("Measure", S["cellh"]), Paragraph("Value", S["cellh"]),
+          Paragraph("What the machine literally looks for", S["cellh"])]] +
+        [[Paragraph(t, S["cell"]), Paragraph(f"<b>{v}</b>", S["cell"]), Paragraph(h, S["cell"])]
+         for t, v, h in COUNTABLE],
+        [W - 96 * mm, 18 * mm, 78 * mm]))
     st.append(Spacer(1, 6))
 
-    st.append(Paragraph("Where the clashes actually happened", S["h2"]))
-    st.append(statstrip([("100%", "clashed inside a file they<br/>had already discussed"),
-                         ("90%", "clashed on the very<br/>same line"),
-                         ("27%", "both rewrote the same<br/>function’s definition"),
-                         ("114s", "median length of the<br/>entire conversation")]))
+    st.append(Paragraph("② What the two sets of edits show — the load-bearing evidence", S["h2"]))
+    st.append(grid(
+        [[Paragraph("On the attempts that failed to combine", S["cellh"]),
+          Paragraph("Value", S["cellh"]), Paragraph("How it is computed", S["cellh"])]] +
+        [[Paragraph(t, S["cell"]), Paragraph(f"<b>{v}</b>", S["cell"]), Paragraph(h, S["cell"])]
+         for t, v, h in FORENSICS],
+        [W - 96 * mm, 18 * mm, 78 * mm]))
+    st.append(Paragraph("These come from parsing the diffs, so they do not depend on reading the "
+                        "agents' language at all.", S["small"]))
     st.append(Spacer(1, 6))
 
-    st.append(Paragraph("The whole problem in one exchange "
-                        "<font size='7.4' color='#6b7280'>(this attempt ended in a clash)</font>",
-                        S["h2"]))
+    st.append(Paragraph("The pattern in one attempt "
+                        "<font size='7.4' color='#6b7280'>(quoted verbatim; this attempt failed "
+                        "to combine)</font>", S["h2"]))
     st.append(Table([[Paragraph(w, S["cellb"]), Paragraph(t, S["quote"])] for w, t in [
-        ("agent 2", "“Suggest final combined order: " + MONO.format(
+        ("agent 2", "\u201cSuggest final combined order: " + MONO.format(
             "(environment, value, attribute, default=None, separator='.', reverse=False)") +
-         " — just append your reverse param after mine.”"),
-        ("agent 1", "“my working copy doesn’t show your separator changes… we appear to be in "
+         " \u2014 just append your reverse param after mine.\u201d"),
+        ("agent 1", "\u201cmy working copy doesn\u2019t show your separator changes\u2026 we appear to be in "
                     "separate sandboxes. Since each of us submits our own work independently, "
-                    "this should be fine — no actual clobbering.”"),
+                    "this should be fine \u2014 no actual clobbering.\u201d"),
     ]], colWidths=[16 * mm, W - 16 * mm], style=TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), BAND),
         ("LINEBEFORE", (0, 0), (0, -1), 2.5, ACCENT),
@@ -291,12 +333,20 @@ def build():
         ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
         ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7),
     ])))
-    st.append(Paragraph("Agent 2 spells out the correct combined line. Agent 1 agrees to it. "
-                        "<b>Neither of them types it.</b> Each writes only its own half into its "
-                        "own copy — and the two halves clash.", S["small"]))
+    st.append(Paragraph("Agent 2 spells out the correct combined line; agent 1 agrees; <b>neither "
+                        "types it</b>. One documented example, shown to illustrate the mechanism "
+                        "\u2014 not offered as a frequency.", S["small"]))
     st.append(Spacer(1, 5))
     st.append(banner("They agree on a <b>description</b> of the answer. "
                      "But the combine is decided by the <b>exact characters</b> they type."))
+    st.append(Spacer(1, 5))
+    st.append(Paragraph("<b>What we deliberately do not claim.</b> An earlier pass scored the "
+                        "conversations for habits like \u201cboth said they\u2019d add theirs last\u201d or "
+                        "\u201cdeclared it would combine fine\u201d. Those depend on a hand-written list of "
+                        "phrases, are lower bounds by construction, and were never checked by a "
+                        "second coder \u2014 so they are excluded here rather than quoted as "
+                        "measurements. Every figure above is either a literal count or derived "
+                        "from the diffs.", S["small"]))
 
     st.append(PageBreak())
 
@@ -342,6 +392,10 @@ def build():
     st.append(Spacer(1, 5))
     st.append(takeaway("Each rung takes away one more thing the two agents can disagree about. "
                        "The top rung takes away all of them.", ACCENT))
+    st.append(Spacer(1, 4))
+    st.append(Paragraph("Result columns are the same figures as slide 3, produced by " +
+                        MONO.format("analyze.py") + " over the run logs and frozen in " +
+                        MONO.format("data/nano_study.json") + ".", S["small"]))
 
     st.append(PageBreak())
 
@@ -400,6 +454,14 @@ def build():
     st.append(Spacer(1, 4))
     st.append(takeaway("Rules for cooperation only help when they constrain <b>what the agents "
                        "type</b> — not how much they say to each other."))
+    st.append(Spacer(1, 4))
+    st.append(Paragraph("<b>Source.</b> Every number and both figures on this page come from " +
+                        MONO.format("analyze.py") + ", which reads the per-run evaluation records "
+                        "under " + MONO.format("logs/") + " and writes " +
+                        MONO.format("data/nano_study.json") + "; the figures are drawn from that "
+                        "JSON by " + MONO.format("figures.py") + ". \u201cBeats the baseline\u201d means "
+                        "significant under a Cochran\u2013Mantel\u2013Haenszel test stratified by task, "
+                        "Holm-corrected across the eight comparisons made.", S["small"]))
 
     doc.build(st)
     print(f"wrote {OUT} ({os.path.getsize(OUT) / 1024:.0f} KB)")
