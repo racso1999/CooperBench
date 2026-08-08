@@ -99,11 +99,22 @@ def add_scaling_parser(subparsers) -> None:
         "into the same --out as a flat --git sweep to compare the two topologies.",
     )
     p.add_argument(
+        "--leader-integrate",
+        dest="leader_integrate",
+        action="store_true",
+        help="Leader topology with CENTRALISED integration: as --leader, but the workers "
+        "publish their branch instead of merging every peer, so the team integrates once "
+        "(the leader) rather than once per agent. Cells are recorded with condition "
+        "'leader_central' in their own log tree, so this sweeps alongside --leader "
+        "into the same --out for a three-way topology comparison.",
+    )
+    p.add_argument(
         "--leader-model",
         dest="leader_model",
         default=experiment.DEFAULT_LEADER_MODEL,
-        help=f"Model for the leader agent in --leader mode (default {experiment.DEFAULT_LEADER_MODEL}); "
-        "workers use -m.",
+        help=f"Model for the supervisor in --leader / --leader-integrate "
+        f"(default {experiment.DEFAULT_LEADER_MODEL}); the N workers use -m. Recorded per row as "
+        "leader_model, so mixed-model sweeps stay distinguishable in the analysis.",
     )
     p.add_argument("--redis", default="redis://localhost:6379")
     p.add_argument("--agent-config", default=None)
@@ -224,13 +235,26 @@ def scaling_command(args) -> None:
         )
         sys.exit(1)
 
+    if getattr(args, "leader", False) and getattr(args, "leader_integrate", False):
+        print(
+            "error: --leader and --leader-integrate are separate arms; sweep them one at a time "
+            "(both can target the same --out)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     seeds = [int(s) for s in args.seeds.split(",")] if args.seeds else [args.seed]
-    topology = experiment.LEADER_CONDITION if getattr(args, "leader", False) else "flat"
-    conditions = (experiment.LEADER_CONDITION,) if topology == experiment.LEADER_CONDITION else _conditions(args)
+    if getattr(args, "leader_integrate", False):
+        topology = experiment.LEADER_CENTRAL_CONDITION
+    elif getattr(args, "leader", False):
+        topology = experiment.LEADER_CONDITION
+    else:
+        topology = "flat"
+    is_leader = topology in experiment.LEADER_TOPOLOGIES
+    conditions = (topology,) if is_leader else _conditions(args)
     console.print(
         f"[bold]scaling[/bold] pools={len(pool_list)} agents={agents} conditions={conditions} "
-        f"trials={args.trials} seeds={seeds}"
-        + (f" leader_model={args.leader_model}" if topology == experiment.LEADER_CONDITION else "")
+        f"trials={args.trials} seeds={seeds}" + (f" leader_model={args.leader_model}" if is_leader else "")
     )
 
     all_rows: list[dict] = []

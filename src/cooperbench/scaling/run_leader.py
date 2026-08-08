@@ -48,10 +48,17 @@ from cooperbench.utils import console, get_image_name
 DEFAULT_LEADER_MODEL = "claude-opus-5"
 
 
-def _leader_task_text(specs: dict[int, str], workers: list[str]) -> str:
+def _leader_task_text(specs: dict[int, str], workers: list[str], central_integration: bool = False) -> str:
     """The leader's brief: all K specs + the allocation/integration mandate."""
     k = len(specs)
     worker_list = ", ".join(workers)
+    sole = (
+        " You are the ONLY agent that merges: your workers publish their "
+        "branches and do not integrate each other, so the team's single "
+        "integration is yours to perform."
+        if central_integration
+        else ""
+    )
     header = (
         f"You lead a team of {len(workers)} implementation agent(s) ({worker_list}) "
         f"working in this repository. The workload is the {k} feature "
@@ -69,7 +76,7 @@ def _leader_task_text(specs: dict[int, str], workers: list[str]) -> str:
         f"5. Integrate: fetch and merge every worker's branch on the shared git "
         f"remote, resolve conflicts, verify the merged tree, and submit the "
         f"integrated result. The benchmark scores YOUR integrated tree against "
-        f"all {k} feature suites.\n\n"
+        f"all {k} feature suites.{sole}\n\n"
         f"Implement a feature yourself only when a worker is stuck — your value "
         f"is allocation, review, and integration."
     )
@@ -77,8 +84,15 @@ def _leader_task_text(specs: dict[int, str], workers: list[str]) -> str:
     return "\n\n---\n\n".join([header, *spec_blocks])
 
 
-def _worker_task_text(agent_id: str, k: int, leader: str = "agent1") -> str:
+def _worker_task_text(agent_id: str, k: int, leader: str = "agent1", central_integration: bool = False) -> str:
     """A worker's brief: no spec — await the leader's allocation."""
+    publish = (
+        f" Push your branch to the shared git remote when you are done: "
+        f"{leader} performs the team's integration, so do NOT merge your "
+        f"peers' branches into your own tree."
+        if central_integration
+        else ""
+    )
     return (
         f"You are {agent_id}, an implementation agent on a team implementing {k} "
         f"feature(s) in this repository. Your team lead ({leader}) decides which "
@@ -90,7 +104,7 @@ def _worker_task_text(agent_id: str, k: int, leader: str = "agent1") -> str:
         f"/workspace/shared/specs/feature<id>.md.\n"
         f"3. Claim the task (`coop-task-claim`), implement the feature, publish "
         f"your work on the shared git remote, and mark the task done "
-        f"(`coop-task-update`).\n"
+        f"(`coop-task-update`).{publish}\n"
         f"Implement only what the lead assigns you."
     )
 
@@ -109,6 +123,7 @@ def execute_leader_cell(
     agent_name: str = "claude_code",
     leader_model: str = DEFAULT_LEADER_MODEL,
     worker_model: str = "claude-sonnet-5",
+    central_integration: bool = False,
     redis_url: str = "redis://localhost:6379",
     force: bool = False,
     quiet: bool = True,
@@ -124,6 +139,11 @@ def execute_leader_cell(
     team task list, and Redis messaging.  Returns the same result shape as
     :func:`cooperbench.scaling.run_partitioned.execute_partitioned` (or a
     ``skipped`` marker when the cell already completed and ``force`` is off).
+
+    ``central_integration`` makes the leader the sole integrator: workers are
+    told to publish their branch and not to merge their peers, so the team
+    integrates once instead of once per agent.  False reproduces the original
+    supervised arm, where every agent merged every peer.
     """
     leader = "agent1"
     workers = [f"agent{i}" for i in range(2, n_workers + 2)]
@@ -158,7 +178,9 @@ def execute_leader_cell(
 
     run_id = uuid.uuid4().hex[:8]
     namespaced_redis = f"{redis_url}#run:{run_id}"
-    team_features = TeamHarnessConfig()  # full harness: task list, scratchpad, mcp, ...
+    # Full harness: task list, scratchpad, mcp, ...  central_integration only
+    # changes who is told to merge (leader vs everyone).
+    team_features = TeamHarnessConfig(central_integration=central_integration)
     team_volume = f"cb-team-{run_id}"
     session = TeamSession(
         run_id=run_id,
@@ -280,14 +302,19 @@ def execute_leader_cell(
     try:
         t = threading.Thread(
             target=run_thread,
-            args=(leader, "lead", leader_model, _leader_task_text(specs, workers)),
+            args=(leader, "lead", leader_model, _leader_task_text(specs, workers, central_integration)),
         )
         threads.append(t)
         t.start()
         for w in workers:
             t = threading.Thread(
                 target=run_thread,
-                args=(w, "member", worker_model, _worker_task_text(w, len(all_features), leader)),
+                args=(
+                    w,
+                    "member",
+                    worker_model,
+                    _worker_task_text(w, len(all_features), leader, central_integration),
+                ),
             )
             threads.append(t)
             t.start()
@@ -336,6 +363,7 @@ def execute_leader_cell(
         "leader": leader,
         "leader_model": leader_model,
         "worker_model": worker_model,
+        "central_integration": central_integration,
         "condition": condition,
         "git_integrated": True,
         "pool_id": pool_id,

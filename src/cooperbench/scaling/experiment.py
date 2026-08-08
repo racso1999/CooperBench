@@ -34,6 +34,12 @@ from cooperbench.utils import console
 
 DEFAULT_CONDITIONS = ("comm", "nocomm")
 LEADER_CONDITION = "leader"
+# Supervised arm with the leader as *sole* integrator: workers publish their
+# branch instead of merging every peer.  A separate condition (and log tree)
+# from LEADER_CONDITION so the two supervised arms stay directly comparable
+# rather than overwriting one another.
+LEADER_CENTRAL_CONDITION = "leader_central"
+LEADER_TOPOLOGIES = (LEADER_CONDITION, LEADER_CENTRAL_CONDITION)
 
 
 def _run_and_eval_cell(
@@ -69,8 +75,10 @@ def _run_and_eval_cell(
     a leader container (``leader_model``) reads all K specs and allocates them
     to ``n_agents`` workers (``model_name``) via the team task list; integration
     happens over shared git and the leader's integrated tree is scored.
+    ``topology="leader_central"`` is the same arm with the leader as the sole
+    integrator (workers publish rather than merge each other).
     """
-    if topology == LEADER_CONDITION:
+    if topology in LEADER_TOPOLOGIES:
         run = execute_leader_cell(
             repo_name=pool.repo,
             task_id=pool.task_id,
@@ -84,6 +92,7 @@ def _run_and_eval_cell(
             agent_name=agent_name,
             leader_model=leader_model,
             worker_model=model_name,
+            central_integration=(topology == LEADER_CENTRAL_CONDITION),
             redis_url=redis_url,
             force=force,
             backend=backend,
@@ -274,11 +283,13 @@ def _cell_run_name(pool: Pool, git_enabled: bool = False, topology: str = "flat"
 
     The git vs merge eval model gets its own log-dir tree (``_git`` suffix), so a
     shared-git run never reuses an isolated-patch run's cached cells (they produce
-    fundamentally different agent artifacts).  The leader topology likewise gets
-    its own ``_leader`` tree.
+    fundamentally different agent artifacts).  Each leader topology likewise
+    gets its own tree (``_leader`` / ``_leader_central``).
     """
     feats = "_".join(f"f{f}" for f in pool.features)
-    if topology == LEADER_CONDITION:
+    if topology == LEADER_CENTRAL_CONDITION:
+        suffix = "_leader_central"
+    elif topology == LEADER_CONDITION:
         suffix = "_leader"
     else:
         suffix = "_git" if git_enabled else ""
@@ -397,7 +408,9 @@ def run_experiment(
     condition ``"leader"`` (a leader on ``leader_model`` allocating to N workers
     on ``model_name``, shared-git always on) — including N=1, which is leader +
     one worker, NOT the solo baseline; the solo anchor comes from a flat sweep
-    into the same ``out_dir``.
+    into the same ``out_dir``.  ``topology="leader_central"`` sweeps the same
+    arm with the leader as sole integrator, under condition ``"leader_central"``
+    and its own log tree, so both supervised arms coexist in one ``out_dir``.
 
     Rows accumulate in ``<out_dir>/rows.jsonl`` across invocations, upserted by
     (pool, N, condition, trial) — so flat and leader sweeps into the same out
@@ -415,9 +428,9 @@ def run_experiment(
             if n_agents > pool.k:
                 console.print(f"[yellow]skip[/yellow] {pool.pool_id}: N={n_agents} > K={pool.k}")
                 continue
-            if topology == LEADER_CONDITION:
+            if topology in LEADER_TOPOLOGIES:
                 # Leader arm: one condition; N counts workers (leader on top).
-                cell_conditions: tuple[str, ...] = (LEADER_CONDITION,)
+                cell_conditions: tuple[str, ...] = (topology,)
             else:
                 # N=1 is the solo baseline the whole curve anchors on: it has no
                 # peers, so it runs exactly once (labelled nocomm) regardless of

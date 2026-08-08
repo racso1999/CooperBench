@@ -96,6 +96,60 @@ measures coordination, not correctness — correctness comes from
 `patch.txt` containing the union of the team's work."""
 
 
+def _git_publish_block(agent_id: str, integrator: str) -> str:
+    """The worker-side git block for *centralised* integration.
+
+    The counterpart to :func:`_git_block`.  Where that block tells every agent
+    to merge every peer before submitting — correct when the team has no
+    designated integrator — this one tells a worker to publish its own branch
+    and stop.  Used when one agent (the leader) owns the merge, so that the
+    team performs the integration once instead of once per agent.
+    """
+    return f"""## Git collaboration — PUBLISH YOUR BRANCH, DO NOT MERGE
+
+A shared git remote named `team` is already configured in this repo.
+- Your branch: `{agent_id}` (already created and pushed)
+- Base reference: `team/main` (pristine starting state)
+
+### Who integrates
+
+**{integrator} integrates this team's work.**  Your job is to publish your
+own feature so {integrator} can merge it.  Do NOT fetch and merge your
+peers' branches into your tree — {integrator} does that once, for everyone.
+
+### Required final sequence — run this verbatim before exiting
+
+```bash
+# 1. Commit your own work so it's on your branch tip.
+cd /workspace/repo
+git add -A
+git commit -m 'my feature' || true   # ok if nothing to commit
+
+# 2. Push your branch.  REQUIRED — this is the only way your work reaches
+#    {integrator}.  If you skip it, your feature is lost to the team.
+git push team {agent_id} --force
+
+# 3. Write patch.txt from YOUR OWN work only.
+git diff team/main..HEAD > patch.txt
+wc -l patch.txt
+```
+
+`patch.txt` should contain your feature and nothing else.  It is expected
+NOT to pass the other features' suites — those are your peers' work, and
+{integrator}'s integrated tree is what the bench scores for the team.
+
+### During the run
+
+```bash
+git fetch team                                   # see what peers published
+git branch -r                                    # list every team branch
+git show team/{integrator} -- path/to/file       # inspect a peer's change
+```
+
+Reading a peer's branch to understand an interface is fine.  Merging one
+into your own tree is not."""
+
+
 def _coop_block(agent_id: str, partners: list[str]) -> str:
     partner_str = ", ".join(partners)
     return f"""## Cooperation protocol

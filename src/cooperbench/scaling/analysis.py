@@ -468,6 +468,7 @@ def failure_mix(rows: list[dict]) -> dict:
         "comm": mix([r for r in rows if r.get("condition") == "comm"]),
         "nocomm": mix([r for r in rows if r.get("condition") == "nocomm"]),
         "leader": mix([r for r in rows if r.get("condition") == "leader"]),
+        "leader_central": mix([r for r in rows if r.get("condition") == "leader_central"]),
     }
 
 

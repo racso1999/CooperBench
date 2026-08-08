@@ -99,7 +99,21 @@ interface contracts, or member-produced patches there so the whole
 team can see them with `ls /workspace/shared/`."""
 
 
-def _member_block(agent_id: str, lead: str) -> str:
+def _member_block(agent_id: str, lead: str, central_integration: bool = False) -> str:
+    # With central integration the lead owns the merge, so the member's final
+    # tree is its own feature alone; without it the member is also an
+    # integrator and its patch must carry the team's work (see _git_block).
+    if central_integration:
+        final_tree = (
+            f"Your `/workspace/repo/patch.txt` should contain your own feature\n"
+            f"work.  **{lead} integrates the team's branches — do not merge your\n"
+            f"peers into your tree.**  Push your branch so {lead} can fetch it."
+        )
+    else:
+        final_tree = (
+            "Your `/workspace/repo/patch.txt` should reflect your final working\n"
+            "tree.  If the lead asked you to merge in their plan, do so first."
+        )
     return f"""## You are a team member
 
 You are **{agent_id}**.  The team-lead is **{lead}**, who will
@@ -141,8 +155,7 @@ The bench scores per-agent.  Before exiting you MUST write your own
 cd /workspace/repo && git diff > patch.txt && wc -l patch.txt
 ```
 
-Your `/workspace/repo/patch.txt` should reflect your final working
-tree.  If the lead asked you to merge in their plan, do so first.
+{final_tree}
 
 {_TEAM_LIST_USAGE}
 
@@ -157,6 +170,7 @@ def team_task_section(
     agents: list[str] | None,
     agent_id: str | None,
     team_role: str | None,
+    central_integration: bool = False,
 ) -> str:
     """Return JUST the team-task-list section for an adapter to append.
 
@@ -174,7 +188,7 @@ def team_task_section(
     if team_role == "lead":
         return _lead_block(agent_id, members)
     lead = members[0] if members else "team-lead"
-    return _member_block(agent_id, lead)
+    return _member_block(agent_id, lead, central_integration)
 
 
 def build_team_instruction(
@@ -184,6 +198,7 @@ def build_team_instruction(
     agent_id: str | None,
     team_role: str | None,
     git_enabled: bool = False,
+    central_integration: bool = False,
 ) -> str:
     """Compose the full instruction for a team-mode agent run.
 
@@ -196,6 +211,10 @@ def build_team_instruction(
             in team mode — falls back to the coop / solo prompt.
         git_enabled: When True, the shared coop+git block is appended
             (same as coop mode).
+        central_integration: When True, the *lead* owns the merge: members
+            get the publish-only git block instead of the merge-required
+            one, so the team integrates once rather than once per agent.
+            Default False preserves the historical prompts verbatim.
 
     Returns the assembled prompt.  Team mode injects its own block
     INSTEAD of the regular coop messaging block — the coop-task CLI
@@ -210,18 +229,24 @@ def build_team_instruction(
         return base
 
     members = [a for a in agents if a != agent_id]
-    if team_role == "lead":
+    is_lead = team_role == "lead"
+    if is_lead:
         team_section = _lead_block(agent_id, members)
+        lead = agent_id
     else:  # member
         # Pick the first non-self as the implied lead.  The runner always
         # sets agents=[lead, member1, member2, ...] so this is correct.
         lead = members[0] if members else "team-lead"
         # If the caller passed a specific lead via members[0], honour it.
-        team_section = _member_block(agent_id, lead)
+        team_section = _member_block(agent_id, lead, central_integration)
 
     sections = [base, team_section]
     if git_enabled:
-        from cooperbench.agents._coop.prompt import _git_block
+        from cooperbench.agents._coop.prompt import _git_block, _git_publish_block
 
-        sections.append(_git_block(agent_id, members))
+        # Under central integration only the lead merges; members publish.
+        if central_integration and not is_lead:
+            sections.append(_git_publish_block(agent_id, lead))
+        else:
+            sections.append(_git_block(agent_id, members))
     return "\n\n---\n\n".join(sections)

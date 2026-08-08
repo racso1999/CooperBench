@@ -105,6 +105,11 @@ class TeamHarnessConfig:
     mcp: bool = True
     auto_refresh: bool = True
     protocol: bool = True
+    # Not a coordination *mechanism* but a property of the topology: who
+    # performs the git integration.  False (default) = every agent merges
+    # every peer before submitting; True = only the lead merges, members
+    # publish their branch.  Kept out of ``with_only`` for that reason.
+    central_integration: bool = False
 
     @staticmethod
     def with_only(*features: str) -> TeamHarnessConfig:
@@ -246,6 +251,7 @@ class TeamSession:
             agent_id=agent_id,
             team_role=self.role_for(agent_id),
             git_enabled=git_enabled,
+            central_integration=self.config.central_integration,
         )
 
     def prompt_section(self, *, agent_id: str) -> str:
@@ -255,6 +261,7 @@ class TeamSession:
             agents=self.agents,
             agent_id=agent_id,
             team_role=self.role_for(agent_id),
+            central_integration=self.config.central_integration,
         )
 
     def loop_poller(self, *, agent_id: str) -> TeamPoller | None:
