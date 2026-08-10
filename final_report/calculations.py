@@ -314,13 +314,20 @@ def calculation_5() -> None:
                 f"  {arm:16} N={n}  zero {(s == 0).mean():.3f}  partial {((s > 0) & (s < 1)).mean():.3f}"
                 f"  full {(s == 1).mean():.3f}   (n={len(g)})"
             )
+    # Messaging share of run cost.  Dollar-weighted (ratio of mean account
+    # dollars), which is what Figure 3c plots and what "share of the money"
+    # means; the mean of per-run ratios is printed alongside because it weights
+    # a cheap run equally with an expensive one and so reads lower.
     acc = pd.read_csv(ACCOUNTS)
-    acc["total"] = acc[["context_usd", "task_usd", "comm_usd", "rework_usd"]].sum(axis=1)
-    acc["msg_share"] = (acc["comm_usd"] + acc["rework_usd"]) / acc["total"]
-    print("\n     comm+rework share of run cost")
+    cols = ["context_usd", "task_usd", "comm_usd", "rework_usd"]
+    acc["total"] = acc[cols].sum(axis=1)
+    print("\n     comm+rework share of run cost   (dollar-weighted | mean of per-run ratios)")
     for arm in ("flat", "leader_central"):
         for n, g in acc[acc["arm"] == arm].groupby("agents"):
-            print(f"  {arm:16} N={n}  {g['msg_share'].mean():.3f}  (n={len(g)})")
+            m = g[cols].mean()
+            weighted = (m["comm_usd"] + m["rework_usd"]) / m.sum()
+            unweighted = ((g["comm_usd"] + g["rework_usd"]) / g["total"]).mean()
+            print(f"  {arm:16} N={n}  {weighted:.3f} | {unweighted:.3f}   (n={len(g)}, mean run ${m.sum():.2f})")
 
 
 def calculation_6() -> None:
