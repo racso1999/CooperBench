@@ -149,15 +149,7 @@ Across 148 runs the leader delegated 3.2 features on average and kept 0.3, and i
 The communication channel is deliberately not among the things that change: as in the flat arm, every container receives the full team roster and can address any other participant directly. Workers therefore retain the ability to message one another rather than routing through the leader. The hierarchy is a property of the prompt, not of the infrastructure — a topology the agents are free to defect from at any point - allowing us to remove messaging infrastructure as a confound.
 
 
-Because the leader is a real agent consuming real tokens and real time, a supervised run with N
-workers is reported at N + 1 agents. This is what makes the arms comparable: “four agents” means
-four peers in the flat arm and one supervisor plus three workers in the supervised arm. Reporting the
-supervised arm at worker-count would conceal the cost of supervision, which is the quantity under
-test. The dataset is 148 supervised runs (∼$721 list-price-equivalent) against the 148 flat runs of the
-scaling study — a complete matched design. Coverage differs by construction: the flat arm spans
-1–4 agents and the supervised arm 2–5 (a leader with zero workers is not a team), so only 2–4 agents
-are directly comparable, and the endpoints of each curve — the 4-agent flat and 5-agent supervised
-columns — rest on the six K = 4 pools alone.
+B
 
 
 # References
