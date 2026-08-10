@@ -418,6 +418,55 @@ def calculation_7() -> None:
             )
 
 
+def calculation_8() -> None:
+    """Appendix B.10 — the supervised arm's serial critical-path segments.
+
+    A supervised run is a sandwich: a serial startup (workers idle while the
+    supervisor reads the K specs, writes the plan, and creates their tasks),
+    a parallel middle (implementation), and a serial tail (the supervisor
+    integrates alone after the last worker stops).  Both serial segments are
+    measured from the committed logs of every ``leader_central`` run:
+
+    * startup = first worker ``claim`` timestamp minus the bench-runner's seed
+      ``create`` timestamp, from ``task_log.json``;
+    * tail = supervisor duration minus the longest worker duration, from the
+      per-agent ``duration_seconds`` in ``result.json`` (agents launch
+      simultaneously, so the difference is the time the supervisor runs alone).
+    """
+    import json
+    import re
+    from collections import defaultdict
+    from statistics import mean
+
+    startup, tail = defaultdict(list), defaultdict(list)
+    leader_last = runs = 0
+    for d in sorted(LOGS.glob("scaling_*_leader_central/scaling/*/*/*/N*")):
+        try:
+            r = json.loads((d / "result.json").read_text())
+            events = json.loads((d / "task_log.json").read_text())
+        except (FileNotFoundError, json.JSONDecodeError):
+            continue
+        runs += 1
+        n = int(re.search(r"/N(\d)_", str(d)).group(1))
+        agents = r["agents"]
+        lead = agents.get("agent1", {}).get("duration_seconds")
+        workers = [v["duration_seconds"] for k, v in agents.items() if k != "agent1" and v.get("duration_seconds")]
+        if lead and workers:
+            tail[n].append(lead - max(workers))
+            leader_last += lead >= max(workers)
+        if not isinstance(events, list):
+            events = events.get("events", [])
+        seed = [e["ts"] for e in events if e.get("kind") == "create" and e.get("by") == "bench-runner"]
+        claims = [e["ts"] for e in events if e.get("kind") == "claim" and e.get("by") != "agent1"]
+        if seed and claims:
+            startup[n].append(min(claims) - min(seed))
+    print(f"B.10 supervised critical path: {runs} runs, supervisor finished last in {leader_last}/{runs}")
+    print("     workers  startup(min)  tail(min)  serial total")
+    for n in sorted(tail):
+        s, t = mean(startup[n]) / 60, mean(tail[n]) / 60
+        print(f"       {n}       {s:5.1f}        {t:5.1f}      {s + t:5.1f}")
+
+
 if __name__ == "__main__":
     calculation_1()
     print()
@@ -426,6 +475,15 @@ if __name__ == "__main__":
     calculation_2()
     print()
     calculation_2_5()
-    for f in (calculation_3, calculation_3_5, calculation_4, calculation_4_5, calculation_5, calculation_6, calculation_7):
+    for f in (
+        calculation_3,
+        calculation_3_5,
+        calculation_4,
+        calculation_4_5,
+        calculation_5,
+        calculation_6,
+        calculation_7,
+        calculation_8,
+    ):
         print()
         f()
