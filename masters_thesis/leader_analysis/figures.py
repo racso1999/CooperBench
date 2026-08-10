@@ -437,14 +437,30 @@ def figure3e(recs):
     return _save(fig, "fig3e_efficiency_supervised.png", facecolor="white")
 
 
+def _supervised_only(rows):
+    """Keep flat + the centrally-integrated supervised arm, relabelled ``leader``.
+
+    The reported supervised arm is ``leader_central`` (Sonnet supervisor as sole
+    integrator).  The earlier ``leader`` arm let every worker merge every peer,
+    so its integration was not in fact centralised; it is dropped here rather
+    than plotted.  Relabelling keeps every downstream figure — which addresses
+    the supervised arm by the string ``"leader"`` — unchanged.
+    """
+    kept = [r for r in rows if r["arm"] in ("flat", "leader_central")]
+    for r in kept:
+        if r["arm"] == "leader_central":
+            r["arm"] = "leader"
+    return kept
+
+
 def main():
     os.makedirs(OUTDIR, exist_ok=True)
     _style()
-    recs = load_records()
+    recs = _supervised_only(load_records())
     print(f"Loaded {len(recs)} runs across {len({r['pool_id'] for r in recs})} pools.")
     print(f"  wrote {figure3a(recs)}")
     print(f"  wrote {figure3b(recs)}")
-    print(f"  wrote {figure3c(load_accounts())}")
+    print(f"  wrote {figure3c(_supervised_only(load_accounts()))}")
     print(f"  wrote {figure3d(recs)}")
     print(f"  wrote {figure3e(recs)}")
 

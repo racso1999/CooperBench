@@ -3,15 +3,33 @@ Appendix B section. Run from this directory:
 
     uv run --with pandas --with scipy python calculations.py
 
-Data: all_runs.csv (copied from results_csv/), one row per run.
+Data files, all one row per run, all committed alongside this script:
+
+* ``all_runs.csv``       — replication + protocol studies (Sections 3-4).
+* ``leader_records.csv`` — the three topology arms of the scaling and
+  supervision studies (Sections 5-6): ``flat`` (N peers), ``leader``
+  (Opus supervisor, workers merged each other) and ``leader_central``
+  (Sonnet supervisor as sole integrator).  Derived from
+  ``results_topo/runs.csv`` by mapping condition -> arm and, for the
+  supervised arms, reporting ``agents = workers + 1``.
+* ``cost_accounts.csv``  — the four dollar-denominated token accounts per run.
+
+Message-direction and allocation figures are recomputed from the raw agent
+logs under ``logs/`` (also committed), so no number in the report rests on an
+intermediate file that this script cannot rebuild.
 """
 
+from collections import Counter
 from pathlib import Path
 
 import pandas as pd
 from scipy.stats import rankdata, wilcoxon
 
-DATA = Path(__file__).parent / "all_runs.csv"
+HERE = Path(__file__).parent
+DATA = HERE / "all_runs.csv"
+LEADER = HERE / "leader_records.csv"
+ACCOUNTS = HERE / "cost_accounts.csv"
+LOGS = HERE.parent / "logs"
 
 
 def calculation_1() -> None:
@@ -163,6 +181,213 @@ def calculation_2_5() -> None:
     print(f"W = {stat:.1f}, p = {p:.3e}")
 
 
+# ----------------------------------------------------------------------------
+# Section 6 — the supervised (centrally-integrated) topology.
+# ----------------------------------------------------------------------------
+
+
+def _power_law(points: list[tuple[float, float]]) -> tuple[float, float, float]:
+    """Least squares of log y = log a - b log N.  Returns (a, b, R^2)."""
+    import math
+
+    xs = [math.log(n) for n, _ in points]
+    ys = [math.log(y) for _, y in points]
+    n = len(xs)
+    mx, my = sum(xs) / n, sum(ys) / n
+    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    sxx = sum((x - mx) ** 2 for x in xs)
+    slope = sxy / sxx
+    intercept = my - slope * mx
+    ss_res = sum((y - (intercept + slope * x)) ** 2 for x, y in zip(xs, ys))
+    ss_tot = sum((y - my) ** 2 for y in ys)
+    return math.exp(intercept), -slope, 1 - ss_res / ss_tot
+
+
+def calculation_3() -> None:
+    """Appendix B.3 — the supervised arm by team size.
+
+    Cell means over all pools for each (arm, total agent count): graded score,
+    strict all-pass rate, cost, wall-clock, and efficiency = score / cost.
+    """
+    df = pd.read_csv(LEADER)
+    print("B.3  Topology arms by total agent count")
+    print(f"  runs: {dict(Counter(df['arm']))}")
+    print(f"  spend by arm: {df.groupby('arm')['cost'].sum().round(2).to_dict()}")
+    print(f"\n  {'arm':16}{'agents':>7}{'runs':>6}{'score':>8}{'all-pass':>10}{'cost':>9}{'wall/min':>10}{'eff':>8}")
+    for arm in ("flat", "leader", "leader_central"):
+        for n, g in df[df["arm"] == arm].groupby("agents"):
+            score, cost = g["score"].mean(), g["cost"].mean()
+            print(
+                f"  {arm:16}{n:>7}{len(g):>6}{score:>8.3f}"
+                f"{g['all_passed'].astype(str).str.lower().eq('true').mean():>10.3f}"
+                f"{cost:>9.2f}{g['wall_seconds'].mean() / 60:>10.1f}{score / cost:>8.3f}"
+            )
+
+
+def calculation_3_5() -> None:
+    """Appendix B.4 — efficiency power laws and the crossover.
+
+    Fit efficiency(N) = a * N^-b to the per-N cell means of each arm, then
+    solve a1 N^-b1 = a2 N^-b2 for the crossover.
+    """
+    import math
+
+    df = pd.read_csv(LEADER)
+    fits = {}
+    for arm in ("flat", "leader", "leader_central"):
+        g = df[df["arm"] == arm].groupby("agents")
+        pts = [(n, s["score"].mean() / s["cost"].mean()) for n, s in g]
+        a, b, r2 = _power_law(pts)
+        fits[arm] = (a, b)
+        pretty = "  ".join(f"N={n}:{e:.3f}" for n, e in pts)
+        print(f"B.4  {arm:16} eff = {a:.3f} * N^-{b:.3f}   R2 = {r2:.3f}   [{pretty}]")
+    (a1, b1), (a2, b2) = fits["flat"], fits["leader_central"]
+    print(f"     crossover flat vs leader_central: N = {math.exp(math.log(a2 / a1) / (b2 - b1)):.2f} agents")
+    (a3, b3) = fits["leader"]
+    print(f"     crossover flat vs leader (opus):  N = {math.exp(math.log(a3 / a1) / (b3 - b1)):.2f} agents")
+
+
+def calculation_4() -> None:
+    """Appendix B.5 — pool-matched comparison, supervised vs flat.
+
+    Each arm is first averaged within a pool, then compared only on pools both
+    arms cover, so an uneven pool mix cannot drive the ratio.
+    """
+    df = pd.read_csv(LEADER)
+    cell = df.groupby(["arm", "agents", "pool_id"])[["cost", "score", "wall_seconds"]].mean()
+    print("B.5  Pool-matched: leader_central vs flat, equal total agent count")
+    for n in sorted(df[df["arm"] == "leader_central"]["agents"].unique()):
+        try:
+            sup, flat = cell.loc[("leader_central", n)], cell.loc[("flat", n)]
+        except KeyError:
+            continue
+        common = sorted(set(sup.index) & set(flat.index))
+        if not common:
+            continue
+        s, f = sup.loc[common], flat.loc[common]
+        eff = (s["score"].mean() / s["cost"].mean()) / (f["score"].mean() / f["cost"].mean())
+        print(
+            f"  {n} agents ({len(common)} pools): sup ${s['cost'].mean():.2f}/{s['score'].mean():.3f}"
+            f"  flat ${f['cost'].mean():.2f}/{f['score'].mean():.3f}"
+            f"  cost x{s['cost'].mean() / f['cost'].mean():.2f}  eff x{eff:.2f}"
+            f"  cheaper on {(s['cost'] < f['cost']).sum()}/{len(common)}"
+        )
+
+
+def calculation_4_5() -> None:
+    """Appendix B.6 — what centralising integration changed.
+
+    leader_central vs leader on the pools both cover, at equal worker count.
+    The two arms differ in who merges AND in leader model (Sonnet vs Opus).
+    """
+    df = pd.read_csv(LEADER)
+    cell = df.groupby(["arm", "workers", "pool_id"])[["cost", "score"]].mean()
+    print("B.6  leader_central vs leader (Opus), equal worker count")
+    for w in sorted(df[df["arm"] == "leader_central"]["workers"].unique()):
+        try:
+            c, o = cell.loc[("leader_central", w)], cell.loc[("leader", w)]
+        except KeyError:
+            continue
+        common = sorted(set(c.index) & set(o.index))
+        if not common:
+            continue
+        cc, oo = c.loc[common], o.loc[common]
+        print(
+            f"  {w} workers ({len(common)} pools): central ${cc['cost'].mean():.2f}/{cc['score'].mean():.3f}"
+            f"  opus ${oo['cost'].mean():.2f}/{oo['score'].mean():.3f}"
+            f"  cost x{cc['cost'].mean() / oo['cost'].mean():.2f}"
+        )
+
+
+def calculation_5() -> None:
+    """Appendix B.7 — outcome mix and the cost accounts by topology.
+
+    'Partial' = a run scoring strictly between 0 and 1 (some features pass).
+    Account shares are comm+rework as a fraction of the run's four accounts.
+    """
+    df = pd.read_csv(LEADER)
+    print("B.7  Outcome mix (share of runs)")
+    for arm in ("flat", "leader_central"):
+        for n, g in df[df["arm"] == arm].groupby("agents"):
+            s = g["score"]
+            print(
+                f"  {arm:16} N={n}  zero {(s == 0).mean():.3f}  partial {((s > 0) & (s < 1)).mean():.3f}"
+                f"  full {(s == 1).mean():.3f}   (n={len(g)})"
+            )
+    acc = pd.read_csv(ACCOUNTS)
+    acc["total"] = acc[["context_usd", "task_usd", "comm_usd", "rework_usd"]].sum(axis=1)
+    acc["msg_share"] = (acc["comm_usd"] + acc["rework_usd"]) / acc["total"]
+    print("\n     comm+rework share of run cost")
+    for arm in ("flat", "leader_central"):
+        for n, g in acc[acc["arm"] == arm].groupby("agents"):
+            print(f"  {arm:16} N={n}  {g['msg_share'].mean():.3f}  (n={len(g)})")
+
+
+def calculation_6() -> None:
+    """Appendix B.8 — message directions and integration behaviour.
+
+    Recomputed from the committed agent logs.  'agent1' is the supervisor in
+    the supervised arms.  A worker is counted as having merged a peer if its
+    stream contains a `git merge team/<other worker>` invocation.
+    """
+    import json
+    import re
+
+    for arm, glob in (("leader_central", "scaling_*_leader_central"), ("leader", "scaling_*_leader")):
+        dirs = [d for d in LOGS.glob(f"{glob}/scaling/*/*/*/*") if d.is_dir()]
+        if arm == "leader":  # the _leader_central tree also matches scaling_*_leader
+            dirs = [d for d in dirs if "_leader_central" not in str(d)]
+        pairs, merged, workers_seen = Counter(), 0, 0
+        for d in dirs:
+            for f in sorted(d.glob("agent*_sent.jsonl")):
+                sender = f.name.split("_sent")[0]
+                for line in f.read_text(errors="ignore").splitlines():
+                    if not line.strip():
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    role = lambda a: "leader" if a == "agent1" else "worker"  # noqa: E731
+                    pairs[f"{role(sender)}->{role(rec.get('to', '?'))}"] += 1
+            streams = sorted(d.glob("agent*_stream.jsonl"))
+            if len(streams) < 3:  # need >=2 workers for "merged a peer" to mean anything
+                continue
+            for s in streams:
+                aid = s.name.split("_stream")[0]
+                if aid == "agent1":
+                    continue
+                workers_seen += 1
+                tgts = set(re.findall(r"git\s+merge\s+(?:--no-edit\s+)?team/(agent\d+)", s.read_text(errors="ignore")))
+                if tgts - {aid, "agent1"}:
+                    merged += 1
+        total = sum(pairs.values())
+        print(f"B.8  {arm}: {len(dirs)} run dirs, {total} messages")
+        for k, v in pairs.most_common():
+            print(f"       {k:18} {v:5d}  ({v / total:.1%})" if total else f"       {k}: {v}")
+        if workers_seen:
+            print(f"       workers merging a peer: {merged}/{workers_seen} ({merged / workers_seen:.1%})")
+
+
+def calculation_7() -> None:
+    """Appendix B.9 — wall-clock time and realised speedup by topology.
+
+    Speedup is paired within a pool: the flat solo (1-agent) mean time for that
+    pool divided by the arm's mean time for that pool at team size N, then
+    averaged over pools.  Ideal perfect parallelism would give N.
+    """
+    df = pd.read_csv(LEADER)
+    df["wall_min"] = df["wall_seconds"] / 60
+    solo = df[(df["arm"] == "flat") & (df["agents"] == 1)].groupby("pool_id")["wall_min"].mean()
+    print(f"B.9  flat solo baseline: {solo.mean():.1f} min over {len(solo)} pools")
+    for arm in ("flat", "leader_central"):
+        for n, g in df[(df["arm"] == arm) & (df["agents"] > 1)].groupby("agents"):
+            m = g.groupby("pool_id")["wall_min"].mean()
+            common = m.index.intersection(solo.index)
+            sp = (solo[common] / m[common]).mean()
+            print(f"  {arm:16} N={n}  {g['wall_min'].mean():5.1f} min   speedup {sp:.2f}x   (n={len(g)})")
+
+
 if __name__ == "__main__":
     calculation_1()
     print()
@@ -171,3 +396,6 @@ if __name__ == "__main__":
     calculation_2()
     print()
     calculation_2_5()
+    for f in (calculation_3, calculation_3_5, calculation_4, calculation_4_5, calculation_5, calculation_6, calculation_7):
+        print()
+        f()
