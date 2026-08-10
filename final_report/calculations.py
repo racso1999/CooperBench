@@ -392,7 +392,15 @@ def calculation_7() -> None:
             m = g.groupby("pool_id")["wall_min"].mean()
             common = m.index.intersection(solo.index)
             sp = (solo[common] / m[common]).mean()
-            print(f"  {arm:16} N={n}  {g['wall_min'].mean():5.1f} min   speedup {sp:.2f}x   (n={len(g)})")
+            # Parallel efficiency = speedup / N; 1.0 would be perfect sharing.
+            # Concurrency = summed agent time / wall time: how many agents were
+            # working at once on average (only recorded for the supervised arm).
+            agent_min = g["agent_seconds"].mean() / 60
+            conc = f"{agent_min / g['wall_min'].mean():.2f}" if pd.notna(agent_min) else "n/a"
+            print(
+                f"  {arm:16} N={n}  {g['wall_min'].mean():5.1f} min   speedup {sp:.2f}x"
+                f"   par-eff {sp / n:.2f}   agent-min {agent_min:6.1f}   concurrency {conc}   (n={len(g)})"
+            )
 
 
 if __name__ == "__main__":
