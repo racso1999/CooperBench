@@ -368,12 +368,27 @@ def calculation_6() -> None:
                 tgts = set(re.findall(r"git\s+merge\s+(?:--no-edit\s+)?team/(agent\d+)", s.read_text(errors="ignore")))
                 if tgts - {aid, "agent1"}:
                     merged += 1
+        # Supervisor-side integration: git merge of worker branches, or (the
+        # fallback some leaders choose) `git apply` of the patch files workers
+        # export to the shared scratchpad.  Both are centralised integration.
+        lead_merge = lead_apply = lead_total = 0
+        for d in dirs:
+            s1 = d / "agent1_stream.jsonl"
+            if not s1.exists():
+                continue
+            lead_total += 1
+            txt = s1.read_text(errors="ignore")
+            if re.search(r"git\s+merge\s+(--no-edit\s+)?team/", txt):
+                lead_merge += 1
+            elif re.search(r"git\s+apply", txt):
+                lead_apply += 1
         total = sum(pairs.values())
         print(f"B.8  {arm}: {len(dirs)} run dirs, {total} messages")
         for k, v in pairs.most_common():
             print(f"       {k:18} {v:5d}  ({v / total:.1%})" if total else f"       {k}: {v}")
         if workers_seen:
             print(f"       workers merging a peer: {merged}/{workers_seen} ({merged / workers_seen:.1%})")
+        print(f"       supervisors: {lead_merge}/{lead_total} merged branches, {lead_apply} integrated via git apply")
 
 
 def calculation_7() -> None:
