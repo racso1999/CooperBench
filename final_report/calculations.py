@@ -329,6 +329,14 @@ def calculation_5() -> None:
             unweighted = ((g["comm_usd"] + g["rework_usd"]) / g["total"]).mean()
             print(f"  {arm:16} N={n}  {weighted:.3f} | {unweighted:.3f}   (n={len(g)}, mean run ${m.sum():.2f})")
 
+    # The context floor: mean context dollars per run by team size.  The flat
+    # quartet ($0.50 -> $2.27) is the "structural floor, paid before any
+    # message is sent" quoted in Section 5 and The Coordination Tax.
+    print("\n     context floor (mean context_usd per run)")
+    for arm in ("flat", "leader_central"):
+        floor = acc[acc["arm"] == arm].groupby("agents")["context_usd"].mean()
+        print(f"  {arm:16} " + "  ".join(f"N={n}: ${v:.2f}" for n, v in floor.items()))
+
 
 def calculation_6() -> None:
     """Appendix B.8 — message directions and integration behaviour.
