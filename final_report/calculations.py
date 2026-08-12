@@ -1,24 +1,46 @@
-"""Reproduces the headline calculations of the final report, one function per
-Appendix B section. Run from this directory:
+"""Reproduces every quantitative result in the final report.
+
+Run from this directory:
 
     uv run --with pandas --with scipy python calculations.py
 
+Each function is named for the appendix section it reproduces, so any number in
+the paper can be traced to the code that computed it:
+
+    paper                                              function
+    ------------------------------------------------   -----------------------------------
+    A.1  replication gap (44.2% vs 12.3%, W = 3)        a1_replication_gap
+    A.1  cost gap (0.675 vs 0.107 passes per dollar)    a1_cost_gap
+    A.1  Wilcoxon on cost efficiency (W = 2.0)          a1_cost_efficiency_wilcoxon
+    3.6  capability vs integration (62/138, 45 losses)  capability_vs_integration
+    A.2  token pricing                                  (no computation: a published rate table)
+    A.3  topology arms by team size (Table 2)           a3_topology_by_team_size
+    A.4  efficiency power laws and their crossover      a4_efficiency_power_laws
+    A.5  pool-matched comparison                        a5_pool_matched
+    A.6  what centralising integration changed          a6_central_integration_effect
+    A.7  outcome mix and the messaging share            a7_outcome_mix_and_accounts
+    A.8  message directions and integration behaviour   a8_message_directions
+    A.9  wall-clock time and realised speedup           a9_wallclock_and_speedup
+    A.10 the supervised arm's serial critical path      a10_serial_critical_path
+
 Data files, all one row per run, all committed alongside this script:
 
-* ``all_runs.csv``       — replication + protocol studies (Sections 3-4).
+* ``all_runs.csv``       — the replication study (Section 3).
 * ``leader_records.csv`` — the three topology arms of the scaling and
-  supervision studies (Sections 5-6): ``flat`` (N peers), ``leader``
+  supervision studies (Sections 4-5): ``flat`` (N peers), ``leader``
   (Opus supervisor, workers merged each other) and ``leader_central``
   (Sonnet supervisor as sole integrator).  Derived from
   ``results_topo/runs.csv`` by mapping condition -> arm and, for the
   supervised arms, reporting ``agents = workers + 1``.
 * ``cost_accounts.csv``  — the four dollar-denominated token accounts per run.
 
-Message-direction and allocation figures are recomputed from the raw agent
-logs under ``logs/`` (also committed), so no number in the report rests on an
-intermediate file that this script cannot rebuild.
+Message-direction, integration-behaviour and critical-path figures (A.8, A.10)
+are recomputed from the raw agent logs, so no number in the report rests on an
+intermediate file that this script cannot rebuild.  Point ``POOLBENCH_LOGS`` at
+those logs if they are not in the default location (``../logs``).
 """
 
+import os
 from collections import Counter
 from pathlib import Path
 
@@ -29,11 +51,23 @@ HERE = Path(__file__).parent
 DATA = HERE / "all_runs.csv"
 LEADER = HERE / "leader_records.csv"
 ACCOUNTS = HERE / "cost_accounts.csv"
-LOGS = HERE.parent / "logs"
+# A.8 and A.10 read the raw agent logs.  Look beside this script first (how the
+# submission bundle is laid out), then one level up (how the repository is), and
+# let POOLBENCH_LOGS override both.
+def _find_logs() -> Path:
+    if "POOLBENCH_LOGS" in os.environ:
+        return Path(os.environ["POOLBENCH_LOGS"])
+    for candidate in (HERE / "logs", HERE.parent / "logs"):
+        if candidate.is_dir():
+            return candidate
+    return HERE.parent / "logs"
 
 
-def calculation_1() -> None:
-    """Appendix B.1 — the replication gap.
+LOGS = _find_logs()
+
+
+def a1_replication_gap() -> None:
+    """Appendix A.1 — the replication gap.
 
     44.2% (solo) vs 12.3% (messaging) over 46 matched pairs,
     Wilcoxon W = 3, p < .001.
@@ -82,7 +116,7 @@ def calculation_1() -> None:
         print(f"  |d| = {size:.0f}/3: {len(grp)} pairs, shared rank {ranks[grp.index].iloc[0]:.1f}")
     print(f"  W+ = {w_plus:.1f}, W- = {w_minus:.1f}, sum = {w_plus + w_minus:.0f} = n(n+1)/2")
     print(f"  W = {stat:.1f}, p = {p:.3e}")
-    # First 10 pairs in data order — the worked table reproduced in Appendix B.1.
+    # First 10 pairs in data order — the worked table reproduced in Appendix A.1.
     print("\n  pair          solo   msg      d    |d|   rank")
     for key in list(diffs.index)[:10]:
         d = diffs[key]
@@ -90,8 +124,8 @@ def calculation_1() -> None:
         cells += ["0", "-", "-"] if d == 0 else [f"{d:+.0f}/3", f"{abs(d):.0f}/3", f"{ranks[key]:.1f}"]
         print("  {:<12}{:>6}{:>6}{:>7}{:>7}{:>7}".format(*cells))
 
-def calculation_1_5() -> None:
-    """Appendix B.1.5 — capability vs integration.
+def capability_vs_integration() -> None:
+    """Appendix A.1.5 — capability vs integration.
 
     Pooled over the same 46 pairs x 3 repeats: both paired agents pass
     their own suite pre-merge in 62/138 runs vs the solo condition's
@@ -125,8 +159,8 @@ def calculation_1_5() -> None:
     print(f"  merge strategy of the successes: {won['merge_strategy'].value_counts().to_dict()}")
 
 
-def calculation_2() -> None:
-    """Appendix B — the cost gap.
+def a1_cost_gap() -> None:
+    """Appendix A.1 — the cost gap.
 
     Solo 0.675 vs messaging 0.107 passes per dollar: a 6.3x gap, versus
     3.6x in raw pass rate, because messaging runs also cost 1.75x more.
@@ -148,8 +182,8 @@ def calculation_2() -> None:
     print(f"mean cost per run: solo ${solo['total_cost'].mean():.3f}, messaging ${msg['total_cost'].mean():.3f}")
 
 
-def calculation_2_5() -> None:
-    """Appendix B — Wilcoxon on per-pair cost efficiency.
+def a1_cost_efficiency_wilcoxon() -> None:
+    """Appendix A.1 — Wilcoxon on per-pair cost efficiency.
 
     W = 2.0, p = 2.4e-05. Unlike calculation 1, the 24 informative
     differences are distinct reals, so there are no rank ties.
@@ -203,14 +237,14 @@ def _power_law(points: list[tuple[float, float]]) -> tuple[float, float, float]:
     return math.exp(intercept), -slope, 1 - ss_res / ss_tot
 
 
-def calculation_3() -> None:
-    """Appendix B.3 — the supervised arm by team size.
+def a3_topology_by_team_size() -> None:
+    """Appendix A.3 — the supervised arm by team size.
 
     Cell means over all pools for each (arm, total agent count): graded score,
     strict all-pass rate, cost, wall-clock, and efficiency = score / cost.
     """
     df = pd.read_csv(LEADER)
-    print("B.3  Topology arms by total agent count")
+    print("A.3  Topology arms by total agent count")
     print(f"  runs: {dict(Counter(df['arm']))}")
     print(f"  spend by arm: {df.groupby('arm')['cost'].sum().round(2).to_dict()}")
     print(f"\n  {'arm':16}{'agents':>7}{'runs':>6}{'score':>8}{'all-pass':>10}{'cost':>9}{'wall/min':>10}{'eff':>8}")
@@ -224,8 +258,8 @@ def calculation_3() -> None:
             )
 
 
-def calculation_3_5() -> None:
-    """Appendix B.4 — efficiency power laws and the crossover.
+def a4_efficiency_power_laws() -> None:
+    """Appendix A.4 — efficiency power laws and the crossover.
 
     Fit efficiency(N) = a * N^-b to the per-N cell means of each arm, then
     solve a1 N^-b1 = a2 N^-b2 for the crossover.
@@ -240,22 +274,22 @@ def calculation_3_5() -> None:
         a, b, r2 = _power_law(pts)
         fits[arm] = (a, b)
         pretty = "  ".join(f"N={n}:{e:.3f}" for n, e in pts)
-        print(f"B.4  {arm:16} eff = {a:.3f} * N^-{b:.3f}   R2 = {r2:.3f}   [{pretty}]")
+        print(f"A.4  {arm:16} eff = {a:.3f} * N^-{b:.3f}   R2 = {r2:.3f}   [{pretty}]")
     (a1, b1), (a2, b2) = fits["flat"], fits["leader_central"]
     print(f"     crossover flat vs leader_central: N = {math.exp(math.log(a2 / a1) / (b2 - b1)):.2f} agents")
     (a3, b3) = fits["leader"]
     print(f"     crossover flat vs leader (opus):  N = {math.exp(math.log(a3 / a1) / (b3 - b1)):.2f} agents")
 
 
-def calculation_4() -> None:
-    """Appendix B.5 — pool-matched comparison, supervised vs flat.
+def a5_pool_matched() -> None:
+    """Appendix A.5 — pool-matched comparison, supervised vs flat.
 
     Each arm is first averaged within a pool, then compared only on pools both
     arms cover, so an uneven pool mix cannot drive the ratio.
     """
     df = pd.read_csv(LEADER)
     cell = df.groupby(["arm", "agents", "pool_id"])[["cost", "score", "wall_seconds"]].mean()
-    print("B.5  Pool-matched: leader_central vs flat, equal total agent count")
+    print("A.5  Pool-matched: leader_central vs flat, equal total agent count")
     for n in sorted(df[df["arm"] == "leader_central"]["agents"].unique()):
         try:
             sup, flat = cell.loc[("leader_central", n)], cell.loc[("flat", n)]
@@ -274,15 +308,15 @@ def calculation_4() -> None:
         )
 
 
-def calculation_4_5() -> None:
-    """Appendix B.6 — what centralising integration changed.
+def a6_central_integration_effect() -> None:
+    """Appendix A.6 — what centralising integration changed.
 
     leader_central vs leader on the pools both cover, at equal worker count.
     The two arms differ in who merges AND in leader model (Sonnet vs Opus).
     """
     df = pd.read_csv(LEADER)
     cell = df.groupby(["arm", "workers", "pool_id"])[["cost", "score"]].mean()
-    print("B.6  leader_central vs leader (Opus), equal worker count")
+    print("A.6  leader_central vs leader (Opus), equal worker count")
     for w in sorted(df[df["arm"] == "leader_central"]["workers"].unique()):
         try:
             c, o = cell.loc[("leader_central", w)], cell.loc[("leader", w)]
@@ -299,14 +333,14 @@ def calculation_4_5() -> None:
         )
 
 
-def calculation_5() -> None:
-    """Appendix B.7 — outcome mix and the cost accounts by topology.
+def a7_outcome_mix_and_accounts() -> None:
+    """Appendix A.7 — outcome mix and the cost accounts by topology.
 
     'Partial' = a run scoring strictly between 0 and 1 (some features pass).
     Account shares are comm+rework as a fraction of the run's four accounts.
     """
     df = pd.read_csv(LEADER)
-    print("B.7  Outcome mix (share of runs)")
+    print("A.7  Outcome mix (share of runs)")
     for arm in ("flat", "leader_central"):
         for n, g in df[df["arm"] == arm].groupby("agents"):
             s = g["score"]
@@ -338,8 +372,8 @@ def calculation_5() -> None:
         print(f"  {arm:16} " + "  ".join(f"N={n}: ${v:.2f}" for n, v in floor.items()))
 
 
-def calculation_6() -> None:
-    """Appendix B.8 — message directions and integration behaviour.
+def a8_message_directions() -> None:
+    """Appendix A.8 — message directions and integration behaviour.
 
     Recomputed from the committed agent logs.  'agent1' is the supervisor in
     the supervised arms.  A worker is counted as having merged a peer if its
@@ -391,7 +425,7 @@ def calculation_6() -> None:
             elif re.search(r"git\s+apply", txt):
                 lead_apply += 1
         total = sum(pairs.values())
-        print(f"B.8  {arm}: {len(dirs)} run dirs, {total} messages")
+        print(f"A.8  {arm}: {len(dirs)} run dirs, {total} messages")
         for k, v in pairs.most_common():
             print(f"       {k:18} {v:5d}  ({v / total:.1%})" if total else f"       {k}: {v}")
         if workers_seen:
@@ -399,8 +433,8 @@ def calculation_6() -> None:
         print(f"       supervisors: {lead_merge}/{lead_total} merged branches, {lead_apply} integrated via git apply")
 
 
-def calculation_7() -> None:
-    """Appendix B.9 — wall-clock time and realised speedup by topology.
+def a9_wallclock_and_speedup() -> None:
+    """Appendix A.9 — wall-clock time and realised speedup by topology.
 
     Speedup is paired within a pool: the flat solo (1-agent) mean time for that
     pool divided by the arm's mean time for that pool at team size N, then
@@ -409,7 +443,7 @@ def calculation_7() -> None:
     df = pd.read_csv(LEADER)
     df["wall_min"] = df["wall_seconds"] / 60
     solo = df[(df["arm"] == "flat") & (df["agents"] == 1)].groupby("pool_id")["wall_min"].mean()
-    print(f"B.9  flat solo baseline: {solo.mean():.1f} min over {len(solo)} pools")
+    print(f"A.9  flat solo baseline: {solo.mean():.1f} min over {len(solo)} pools")
     for arm in ("flat", "leader_central"):
         for n, g in df[(df["arm"] == arm) & (df["agents"] > 1)].groupby("agents"):
             m = g.groupby("pool_id")["wall_min"].mean()
@@ -426,8 +460,8 @@ def calculation_7() -> None:
             )
 
 
-def calculation_8() -> None:
-    """Appendix B.10 — the supervised arm's serial critical-path segments.
+def a10_serial_critical_path() -> None:
+    """Appendix A.10 — the supervised arm's serial critical-path segments.
 
     A supervised run is a sandwich: a serial startup (workers idle while the
     supervisor reads the K specs, writes the plan, and creates their tasks),
@@ -468,7 +502,7 @@ def calculation_8() -> None:
         claims = [e["ts"] for e in events if e.get("kind") == "claim" and e.get("by") != "agent1"]
         if seed and claims:
             startup[n].append(min(claims) - min(seed))
-    print(f"B.10 supervised critical path: {runs} runs, supervisor finished last in {leader_last}/{runs}")
+    print(f"A.10 supervised critical path: {runs} runs, supervisor finished last in {leader_last}/{runs}")
     print("     workers  startup(min)  tail(min)  serial total")
     for n in sorted(tail):
         s, t = mean(startup[n]) / 60, mean(tail[n]) / 60
@@ -476,22 +510,22 @@ def calculation_8() -> None:
 
 
 if __name__ == "__main__":
-    calculation_1()
+    a1_replication_gap()
     print()
-    calculation_1_5()
+    capability_vs_integration()
     print()
-    calculation_2()
+    a1_cost_gap()
     print()
-    calculation_2_5()
+    a1_cost_efficiency_wilcoxon()
     for f in (
-        calculation_3,
-        calculation_3_5,
-        calculation_4,
-        calculation_4_5,
-        calculation_5,
-        calculation_6,
-        calculation_7,
-        calculation_8,
+        a3_topology_by_team_size,
+        a4_efficiency_power_laws,
+        a5_pool_matched,
+        a6_central_integration_effect,
+        a7_outcome_mix_and_accounts,
+        a8_message_directions,
+        a9_wallclock_and_speedup,
+        a10_serial_critical_path,
     ):
         print()
         f()

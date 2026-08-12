@@ -1,8 +1,10 @@
 # Calculations
 
-Each section reproduces one headline result, by hand, from `all_runs.csv`. Code: `calculations.py`.
+The replication study's results, worked through by hand from `all_runs.csv`, as a companion to the
+code in `calculations.py` (named function in each heading). The topology results are not hand-worked
+here — see Appendix A.3–A.10 of the report and the corresponding functions.
 
-## Calculation 1 — the replication gap
+## A.1 — the replication gap (`a1_replication_gap`)
 
 **Claim.** Over 46 matched pairs, pass rate falls from 44.2% (solo) to 12.3% (messaging); Wilcoxon W = 3, p < .001.
 
@@ -41,7 +43,7 @@ Count in thirds throughout — d ∈ {0, ±⅓, ±⅔, ±1} exactly. First 10 of
 3. **Total the ranks by sign.** Solo wins 19 pairs — four of the five ⅓s, all four ⅔s, all eleven 1s → W⁺ = 4(3) + 4(7.5) + 11(15) = 12 + 30 + 165 = **207**. Messaging wins 1, the fifth ⅓ (pair 1559/f4_f8) → W⁻ = **3**. Check: W⁺ + W⁻ = 210 = n(n+1)/2.
 4. **W = min(W⁺, W⁻) = 3** — of 210 available rank points, messaging earned 3 against 105 expected under the null. Normal approximation: μ = n(n+1)/4 = 105; σ² = n(n+1)(2n+1)/24 − Σ(t³−t)/48 = 717.5 − 31.25 = 686.25 (tie groups t = 5, 4, 11), so σ = 26.20; z = (3 − 105)/26.20 = −3.89 → two-sided **p = 9.9×10⁻⁵**.
 
-## Calculation 1.5 — capability vs integration
+## Section 3.5 — capability vs integration (`capability_vs_integration`)
 
 **Claim.** Pairing costs nothing in individual capability; the loss happens at merge. Same data as Calculation 1 (46 pairs × 3 repeats, pooled at run level, n = 138 per condition).
 
@@ -64,11 +66,11 @@ All 17 survivors are genuine clean naive merges (no solo-rescues), and every coo
 
 **Checks.** No error rows, no missing independent results; 4 runs with `no_patch` and 12 with zero tests executed all count as failures (none as passes); no pass was recorded with zero tests run.
 
-## Calculation 2 — the cost gap
+## A.1 — the cost gap (`a1_cost_gap`)
 
 **Claim.** Solo achieves 0.675 passes per dollar vs 0.107 under messaging — a 6.3× gap, versus 3.6× in raw pass rate.
 
-**Data.** Same 46 pairs × 3 repeats. Cost of a run = `total_cost` (the CLI's `total_cost_usd`, summed over the run's agents; see Appendix B.2 for the price table).
+**Data.** Same 46 pairs × 3 repeats. Cost of a run = `total_cost` (the CLI's `total_cost_usd`, summed over the run's agents; see Appendix A.2 for the price table).
 
 **Aggregate passes per dollar** = total passes ÷ total dollars:
 
@@ -85,7 +87,7 @@ $$\frac{0.675}{0.107} = \underbrace{\frac{61}{17}}_{3.59\times \text{ fewer pass
 
 Messaging fails more often *and* each run costs more (mean $1.147 vs $0.655 per run — two agents, plus message traffic). The cost-normalised gap is the product of the two penalties.
 
-## Calculation 2.5 — Wilcoxon on per-pair cost efficiency
+## A.1 — Wilcoxon on per-pair cost efficiency (`a1_cost_efficiency_wilcoxon`)
 
 **Claim.** The efficiency gap is significant: W = 2.0, p < .001.
 
