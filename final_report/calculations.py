@@ -12,7 +12,7 @@ the paper can be traced to the code that computed it:
     A.1  replication gap (44.2% vs 12.3%, W = 3)        a1_replication_gap
     A.1  cost gap (0.675 vs 0.107 passes per dollar)    a1_cost_gap
     A.1  Wilcoxon on cost efficiency (W = 2.0)          a1_cost_efficiency_wilcoxon
-    3.6  capability vs integration (62/138, 45 losses)  capability_vs_integration
+    4.5  capability vs integration (62/138, 45 losses)  capability_vs_integration
     A.2  token pricing                                  (no computation: a published rate table)
     A.3  topology arms by team size (Table 2)           a3_topology_by_team_size
     A.4  efficiency power laws and their crossover      a4_efficiency_power_laws
@@ -25,9 +25,9 @@ the paper can be traced to the code that computed it:
 
 Data files, all one row per run, all committed alongside this script:
 
-* ``all_runs.csv``       — the replication study (Section 3).
+* ``all_runs.csv``       — the replication study (Section 4).
 * ``leader_records.csv`` — the three topology arms of the scaling and
-  supervision studies (Sections 4-5): ``flat`` (N peers), ``leader``
+  supervision studies (Sections 5-7): ``flat`` (N peers), ``leader``
   (Opus supervisor, workers merged each other) and ``leader_central``
   (Sonnet supervisor as sole integrator).  Derived from
   ``results_topo/runs.csv`` by mapping condition -> arm and, for the
@@ -363,9 +363,21 @@ def a7_outcome_mix_and_accounts() -> None:
             unweighted = ((g["comm_usd"] + g["rework_usd"]) / g["total"]).mean()
             print(f"  {arm:16} N={n}  {weighted:.3f} | {unweighted:.3f}   (n={len(g)}, mean run ${m.sum():.2f})")
 
+    # The comm and rework dollars behind that share, which Section 5 quotes
+    # separately ("$0.48 communication + $0.16 rework at N = 2, rising to
+    # $1.82 + $0.75 at N = 4"), plus the comm-only share ("23--25%").
+    print("\n     comm and rework dollars per run   (comm$ + rework$ | comm-only share)")
+    for arm in ("flat", "leader_central"):
+        for n, g in acc[acc["arm"] == arm].groupby("agents"):
+            m = g[cols].mean()
+            print(
+                f"  {arm:16} N={n}  ${m['comm_usd']:.2f} + ${m['rework_usd']:.2f}"
+                f" | {m['comm_usd'] / m.sum():.3f}   (n={len(g)})"
+            )
+
     # The context floor: mean context dollars per run by team size.  The flat
     # quartet ($0.50 -> $2.27) is the "structural floor, paid before any
-    # message is sent" quoted in Section 5 and The Coordination Tax.
+    # message is sent" quoted in Section 5.
     print("\n     context floor (mean context_usd per run)")
     for arm in ("flat", "leader_central"):
         floor = acc[acc["arm"] == arm].groupby("agents")["context_usd"].mean()

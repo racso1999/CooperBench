@@ -43,7 +43,7 @@ Count in thirds throughout — d ∈ {0, ±⅓, ±⅔, ±1} exactly. First 10 of
 3. **Total the ranks by sign.** Solo wins 19 pairs — four of the five ⅓s, all four ⅔s, all eleven 1s → W⁺ = 4(3) + 4(7.5) + 11(15) = 12 + 30 + 165 = **207**. Messaging wins 1, the fifth ⅓ (pair 1559/f4_f8) → W⁻ = **3**. Check: W⁺ + W⁻ = 210 = n(n+1)/2.
 4. **W = min(W⁺, W⁻) = 3** — of 210 available rank points, messaging earned 3 against 105 expected under the null. Normal approximation: μ = n(n+1)/4 = 105; σ² = n(n+1)(2n+1)/24 − Σ(t³−t)/48 = 717.5 − 31.25 = 686.25 (tie groups t = 5, 4, 11), so σ = 26.20; z = (3 − 105)/26.20 = −3.89 → two-sided **p = 9.9×10⁻⁵**.
 
-## Section 3.5 — capability vs integration (`capability_vs_integration`)
+## Section 4.5 — capability vs integration (`capability_vs_integration`)
 
 **Claim.** Pairing costs nothing in individual capability; the loss happens at merge. Same data as Calculation 1 (46 pairs × 3 repeats, pooled at run level, n = 138 per condition).
 
