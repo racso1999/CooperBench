@@ -13,7 +13,7 @@ the paper can be traced to the code that computed it:
     A.1  cost gap (0.675 vs 0.107 passes per dollar)    a1_cost_gap
     A.1  Wilcoxon on cost efficiency (W = 2.0)          a1_cost_efficiency_wilcoxon
     4.5  capability vs integration (62/138, 45 losses)  capability_vs_integration
-    A.2  token pricing                                  (no computation: a published rate table)
+    A.2  token pricing                                  (a published rate table; nothing to compute)\n    A.2  what the experiments cost (853 runs, $1927.50)  a2_study_costs
     A.3  topology arms by team size (Table 2)           a3_topology_by_team_size
     A.4  efficiency power laws and their crossover      a4_efficiency_power_laws
     A.5  pool-matched comparison                        a5_pool_matched
@@ -21,7 +21,7 @@ the paper can be traced to the code that computed it:
     A.7  outcome mix and the messaging share            a7_outcome_mix_and_accounts
     A.8  message directions and integration behaviour   a8_message_directions
     A.9  wall-clock time and realised speedup           a9_wallclock_and_speedup
-    A.10 the supervised arm's serial critical path      a10_serial_critical_path
+    A.10 the supervised arm's serial critical path      a10_serial_critical_path\n    5    per-pool exponents, correctness, task dollars   s5_per_pool_detail\n    B.6  cost-account coverage (440 / 423 / 17)          b6_account_coverage
 
 Data files, all one row per run, all committed alongside this script:
 
@@ -375,6 +375,16 @@ def a7_outcome_mix_and_accounts() -> None:
                 f" | {m['comm_usd'] / m.sum():.3f}   (n={len(g)})"
             )
 
+    # The task account per run and per agent.  Section 5 reads this as "each
+    # agent does more work as the team grows": if the workload were merely
+    # divided, the per-run total would stay flat and the per-agent figure would
+    # fall as 1/N.  Neither happens.
+    print("\n     task account   (per run | per agent)")
+    for arm in ("flat", "leader_central"):
+        for n, g in acc[acc["arm"] == arm].groupby("agents"):
+            t = g["task_usd"].mean()
+            print(f"  {arm:16} N={n}  ${t:.2f} | ${t / n:.2f}   (n={len(g)})")
+
     # The context floor: mean context dollars per run by team size.  The flat
     # quartet ($0.50 -> $2.27) is the "structural floor, paid before any
     # message is sent" quoted in Section 5.
@@ -521,6 +531,104 @@ def a10_serial_critical_path() -> None:
         print(f"       {n}       {s:5.1f}        {t:5.1f}      {s + t:5.1f}")
 
 
+def a2_study_costs() -> None:
+    """Appendix A.2 — what the experiments cost.
+
+    Total ``total_cost_usd`` at list rates, summed over every run of each study.
+    The introductory rates in effect during the runs were exactly two-thirds of
+    the standard ones, so the amount actually billed was two-thirds of this.
+    """
+    df = pd.read_csv(DATA)
+    lead = pd.read_csv(LEADER)
+    excl = (df["repo"] == "typst_task") & (df["task_id"] == 6554)
+
+    rows = []
+    for arm, label in (("flash_solo", "replication - solo arm (46-pair set)"),
+                       ("flash_msg", "replication - messaging arm (46-pair set)")):
+        g = df[(df["arm"] == arm) & ~excl]
+        rows.append((label, len(g), g["total_cost"].sum()))
+    g = df[df["arm"].isin(["flash_solo", "flash_msg"]) & excl]
+    rows.append(("replication - excluded typst/6554 runs", len(g), g["total_cost"].sum()))
+    g = df[~df["arm"].isin(["flash_solo", "flash_msg"])]
+    g = g[g["arm"].str.contains("pool|solo|smoke|confirm", na=False)]
+    rows.append(("screening, solo baselines, and smoke runs", len(g), g["total_cost"].sum()))
+    for arm, label in (("flat", "scaling - flat arm"),
+                       ("leader", "scaling - superseded supervised arm"),
+                       ("leader_central", "scaling - supervised arm (central integration)")):
+        g = lead[lead["arm"] == arm]
+        rows.append((label, len(g), g["cost"].sum()))
+
+    print("A.2  What the experiments cost (list rates)")
+    for label, n, cost in rows:
+        print(f"  {label:48} {n:4d} runs  ${cost:8.2f}")
+    total_n = sum(n for _, n, _ in rows)
+    total_c = sum(c for _, _, c in rows)
+    print(f"  {'total':48} {total_n:4d} runs  ${total_c:8.2f}")
+    print(f"  billed at the introductory rates (two-thirds):     ${total_c * 2 / 3:8.2f}")
+
+
+def s5_per_pool_detail() -> None:
+    """Section 5 — the per-pool claims behind the pooled fit.
+
+    The pooled exponent could hide a couple of badly-behaved pools, so Section 5
+    also reports that every pool collapses as a power law, names the pool that
+    integrates perfectly at every N yet still loses efficiency, and counts the
+    pools whose correctness holds.  All of it is per-pool, so none of it is
+    visible in the cell means of A.3.
+    """
+    d = pd.read_csv(LEADER)
+    flat = d[d["arm"] == "flat"]
+    cell = flat.groupby(["pool_id", "agents"]).agg(score=("score", "mean"), cost=("cost", "mean"))
+    cell["eff"] = cell["score"] / cell["cost"]
+
+    exps = {}
+    for pool, g in cell.groupby(level=0):
+        pts = [(n, e) for (_, n), e in g["eff"].items() if e > 0]
+        if len(pts) >= 2:
+            _, b, _ = _power_law(pts)
+            exps[pool] = b
+
+    print("S5   Per-pool efficiency exponents (eff = a * N^-b), flat arm")
+    print(f"       {flat['pool_id'].nunique()} pools across {flat['repo'].nunique()} repositories, {len(flat)} runs")
+    print(f"       every pool collapses as a power law: b ranges {min(exps.values()):.2f} to {max(exps.values()):.2f}")
+    print(f"       (b = 1 is the reference at which coordination costs nothing extra)")
+
+    print("\n       pools that integrate perfectly at every N yet still lose efficiency:")
+    for pool, g in cell.groupby(level=0):
+        if g["score"].min() < 1.0:
+            continue
+        e = g["eff"]
+        print(f"         {pool}: eff {e.iloc[0]:.2f} -> {e.iloc[-1]:.2f}  ({e.iloc[0] / e.iloc[-1]:.1f}x loss)")
+
+    print("\n       correctness by pool (graded score at each N):")
+    for pool, g in cell.groupby(level=0):
+        marker = "  degrades" if g["score"].iloc[-1] < g["score"].iloc[0] else ""
+        print(f"         {pool:46} " + " -> ".join(f"{v:.2f}" for v in g["score"]) + marker)
+    for thr, label in ((1.0, "exactly 1.00"), (0.9, "at or above 0.90")):
+        n = sum(1 for _, g in cell.groupby(level=0) if g["score"].min() >= thr)
+        print(f"       pools holding {label} at every N: {n}/{len(exps)}")
+
+
+def b6_account_coverage() -> None:
+    """Appendix B.6 — coverage of the cost decomposition.
+
+    Runs without a parsed per-turn stream are reported with their billed cost
+    intact and an empty decomposition, and excluded from every per-account
+    figure -- marked missing rather than recorded as zero.
+    """
+    d = pd.read_csv(LEADER)
+    acc = pd.read_csv(ACCOUNTS)
+    key = ["pool_id", "arm", "agents", "trial"]
+    merged = d.merge(acc[key].assign(_priced=1), on=key, how="left")
+    unpriced = merged[merged["_priced"].isna()]
+
+    print("B.6  Cost-account coverage")
+    print(f"       {len(d)} runs across the three arms, {len(acc)} priced, {len(unpriced)} without a decomposition")
+    for arm, g in unpriced.groupby("arm"):
+        scores = sorted(float(v) for v in g["score"].unique())
+        print(f"         {arm:16} {len(g):3d} runs  ${g['cost'].sum():6.2f}  scores {scores}")
+
+
 if __name__ == "__main__":
     a1_replication_gap()
     print()
@@ -530,6 +638,7 @@ if __name__ == "__main__":
     print()
     a1_cost_efficiency_wilcoxon()
     for f in (
+        a2_study_costs,
         a3_topology_by_team_size,
         a4_efficiency_power_laws,
         a5_pool_matched,
@@ -538,6 +647,8 @@ if __name__ == "__main__":
         a8_message_directions,
         a9_wallclock_and_speedup,
         a10_serial_critical_path,
+        s5_per_pool_detail,
+        b6_account_coverage,
     ):
         print()
         f()
